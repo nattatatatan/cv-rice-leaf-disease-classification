@@ -68,9 +68,9 @@ Class index order (fixed, used in every confusion matrix): `0 Brown Spot, 1 Leaf
 - Expected size per split: train ~774, val ~166, test ~166, of which ~50 are field test images.
 
 ### T2.6 Dataset figures and tables for the report
-- [ ] `_work/results/dataset_counts.md`: class x domain table with totals.
-- [ ] `_work/figures/dataset_grid.png`: 2 rows (white, field) x 5 classes, one sample each, fixed seed, EXIF-correct (reuse the audit notebook's layout). This becomes Figure 1 of the report.
-- [ ] `_work/figures/class_domain_counts.png`: grouped bar chart.
+- [x] `_work/results/dataset_counts.md`: class x domain table with totals.
+- [x] `_work/figures/dataset_grid.png`: 2 rows (white, field) x 5 classes, one sample each, fixed seed, EXIF-correct (reuse the audit notebook's layout). This becomes Figure 1 of the report.
+- [x] `_work/figures/class_domain_counts.png`: grouped bar chart.
 
 ### T2.7 `prepare` command
 - [ ] Wires T2.1-T2.6 (and later the pseudo-masks of T5.1) behind `python <group_name>.py prepare`.

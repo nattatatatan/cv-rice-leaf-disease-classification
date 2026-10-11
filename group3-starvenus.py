@@ -891,6 +891,95 @@ def split_counts(split: dict, records: list[Record]) -> dict:
         for part in ("train", "val", "test")
     }
 
+GRID_SEED = 42
+DOMAIN_LABELS = {"white": "White background", "field": "Field background"}
+
+
+def class_domain_counts(records: list[Record]) -> dict[tuple[str, str], int]:
+    counts = Counter(r.stratum for r in records)
+    return {(c, d): counts.get((c, d), 0) for c in CLASS_NAMES for d in DOMAINS}
+
+
+def dataset_counts_markdown(records: list[Record]) -> str:
+    counts = class_domain_counts(records)
+    lines = ["| Class | White background | Field background | Total |", "|---|---:|---:|---:|"]
+    for cls in CLASS_NAMES:
+        white, field = counts[(cls, "white")], counts[(cls, "field")]
+        lines.append(f"| {cls} | {white} | {field} | {white + field} |")
+    white_total = sum(counts[(c, "white")] for c in CLASS_NAMES)
+    field_total = sum(counts[(c, "field")] for c in CLASS_NAMES)
+    lines.append(f"| **Total** | **{white_total}** | **{field_total}** | **{white_total + field_total}** |")
+    return "\n".join(lines) + "\n"
+
+
+def write_dataset_counts(data_root, records: list[Record]) -> Path:
+    path = results_dir(data_root) / "dataset_counts.md"
+    write_text_atomic(path, dataset_counts_markdown(records))
+    return path
+
+
+def save_dataset_grid(data_root, records: list[Record], path: Path | None = None, seed: int = GRID_SEED) -> Path:
+    """2 rows (white, field) x 5 classes, one random (seeded) sample each, read from the cache."""
+    plt = pyplot()
+    path = path or figures_dir(data_root) / "dataset_grid.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed)
+    chosen = {}
+    for domain in DOMAINS:
+        for cls in CLASS_NAMES:
+            names = sorted(r.filename for r in records if r.stratum == (cls, domain))
+            chosen[(cls, domain)] = names[int(rng.integers(len(names)))] if names else None
+    with plt.rc_context({"font.size": 8.5}):
+        fig = plt.figure(figsize=(5.6, 4.72))
+        grid = fig.add_gridspec(2, 5, left=0.065, right=0.995, top=0.94, bottom=0.004, wspace=0.05, hspace=0.02)
+        for row, domain in enumerate(DOMAINS):
+            for col, cls in enumerate(CLASS_NAMES):
+                ax = fig.add_subplot(grid[row, col])
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+                name = chosen[(cls, domain)]
+                if name is not None:
+                    ax.imshow(thumbnail(read_cached_rgb(data_root, name), 760))
+                if row == 0:
+                    ax.set_title(cls, fontsize=8.5, fontweight="bold", pad=3)
+                if col == 0:
+                    ax.set_ylabel(DOMAIN_LABELS[domain], fontsize=8.5, fontweight="bold", labelpad=4)
+        fig.savefig(path, dpi=FIGURE_DPI)
+        plt.close(fig)
+    return path
+
+
+def save_class_domain_counts(data_root, records: list[Record], path: Path | None = None) -> Path:
+    """Grouped bar chart: images per class, one bar per domain, value labels on the bars."""
+    plt = pyplot()
+    path = path or figures_dir(data_root) / "class_domain_counts.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    counts = class_domain_counts(records)
+    x = np.arange(len(CLASS_NAMES))
+    width = 0.38
+    with plt.rc_context({"font.size": 9}):
+        fig, ax = plt.subplots(figsize=(5.4, 3.3))
+        for k, domain in enumerate(DOMAINS):
+            values = [counts[(c, domain)] for c in CLASS_NAMES]
+            bars = ax.bar(
+                x + (k - 0.5) * width, values, width * 0.94, color=DOMAIN_COLORS[domain], label=DOMAIN_LABELS[domain]
+            )
+            ax.bar_label(bars, fontsize=8, padding=2)
+        ax.set_xticks(x, [c.replace(" ", "\n") for c in CLASS_NAMES])
+        ax.set_ylabel("Number of images")
+        ax.set_ylim(0, max(counts.values(), default=1) * 1.15)
+        ax.yaxis.grid(True, color="#DDDDDD", linewidth=0.6)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.legend(frameon=False, loc="upper left", fontsize=8.5)
+        fig.tight_layout(pad=0.6)
+        fig.savefig(path, dpi=FIGURE_DPI)
+        plt.close(fig)
+    return path
+
 # ---- from 20_classifier.ipynb ----
 # Phase 03 (classifier): datasets, transforms, models and the train/eval loop are added here.
 
