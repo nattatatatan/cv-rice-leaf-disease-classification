@@ -55,8 +55,8 @@ Class index order (fixed, used in every confusion matrix): `0 Brown Spot, 1 Leaf
 - Done when: a full cache build takes under ~5 min on Colab, and the cached image count is 1106.
 
 ### T2.4 Near-duplicate audit (leakage guard)
-- [ ] Compute a 64-bit difference hash (dHash) per cached image: grayscale, resize to 9x8, compare adjacent pixels. Report all pairs with Hamming distance <= 6, within and across domains.
-- [ ] Save `_work/results/near_duplicates.csv` and a contact sheet `_work/figures/near_duplicates.png` for visual confirmation.
+- [x] Compute a 64-bit difference hash (dHash) per cached image: grayscale, resize to 9x8, compare adjacent pixels. Report all pairs with Hamming distance <= 6, within and across domains. (Implemented deviation: the hash is taken while caching and stored in the cache manifest. Because the dHash alone flags 1526 pairs on this dataset, almost all unrelated leaves on a plain wall, every pair also gets a SIFT/RANSAC `feature_inliers` score used only to rank the review order.)
+- [x] Save `_work/results/near_duplicates.csv` (all candidates, in review order) and contact sheets `_work/figures/near_duplicates_<n>.png` (top 48 pairs, 8 per page) for visual confirmation.
 - [ ] Nattan confirms which pairs are true duplicates (same leaf/scene). Confirmed pairs go into `_work/duplicate_groups.json` (committed). Groups are kept in the same split by T2.5.
 - Why: if the same leaf appears twice and lands in train and test, test accuracy is inflated. Small agricultural datasets often contain bursts of near-identical shots.
 

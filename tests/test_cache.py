@@ -37,6 +37,7 @@ def test_cache_files_and_manifest(gs, indexed):
         assert max(width, height) <= 64
         assert (manifest[record.filename]["width"], manifest[record.filename]["height"]) == (width, height)
         assert manifest[record.filename]["sha1"] == record.sha1
+        assert len(manifest[record.filename]["dhash"]) == 16
     wide = manifest["sbf_wide.jpg"]
     assert wide["rotated_landscape"] is True and (wide["width"], wide["height"]) == (32, 64)
 
@@ -76,6 +77,16 @@ def test_cache_rebuilds_only_what_changed(gs, indexed):
     (root / "_work/cache/bs_wb_1.jpg").unlink()
     stats = gs.build_cache(root, gs.build_index(root, expected_counts=None), workers=1)
     assert (stats.built, stats.reused) == (2, 10)
+
+
+def test_manifest_entry_without_dhash_is_rebuilt(gs, indexed):
+    root, records = indexed
+    gs.build_cache(root, records, workers=1)
+    path = root / "_work/cache/manifest.json"
+    manifest = json.loads(path.read_text())
+    del manifest["sbf_0.jpg"]["dhash"]
+    path.write_text(json.dumps(manifest))
+    assert gs.build_cache(root, records, workers=1).built == 1
 
 
 def test_damaged_manifest_means_rebuild(gs, indexed):

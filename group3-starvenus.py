@@ -367,6 +367,23 @@ def read_rgb(path) -> np.ndarray:
     rgb, _ = to_portrait(decode_oriented(read_file_bytes(path), str(path)))
     return np.ascontiguousarray(rgb)
 
+DHASH_SIZE = (9, 8)  # width, height of the resized gray image -> 8 x 8 = 64 bits
+
+
+def dhash_bits(rgb: np.ndarray) -> np.ndarray:
+    """64 bits (uint8 0/1) of the difference hash of an RGB image."""
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    small = cv2.resize(gray, DHASH_SIZE, interpolation=cv2.INTER_AREA).astype(np.int16)
+    return (small[:, 1:] > small[:, :-1]).ravel().astype(np.uint8)
+
+
+def dhash_hex(bits: np.ndarray) -> str:
+    return np.packbits(bits).tobytes().hex()
+
+
+def hex_to_bits(text: str) -> np.ndarray:
+    return np.unpackbits(np.frombuffer(bytes.fromhex(text), dtype=np.uint8))
+
 CACHE_LONG_SIDE = 1280
 CACHE_JPEG_QUALITY = 95
 MAX_WORKERS = 8
@@ -438,7 +455,12 @@ def _cache_one(task: tuple) -> tuple[str, dict]:
         write_bytes_atomic(Path(target), encode_jpeg(small, quality))
     except Exception as exc:
         raise DatasetError(f"{source}: caching failed: {exc}") from exc
-    return filename, {"width": int(small.shape[1]), "height": int(small.shape[0]), "rotated_landscape": bool(rotated)}
+    return filename, {
+        "width": int(small.shape[1]),
+        "height": int(small.shape[0]),
+        "rotated_landscape": bool(rotated),
+        "dhash": dhash_hex(dhash_bits(small)),  # of the downsized image, before JPEG encoding
+    }
 
 
 @dataclass
@@ -483,7 +505,12 @@ def build_cache(
 
     def current(record: Record) -> bool:
         entry = manifest.get(record.filename)
-        return bool(entry) and entry.get("sha1") == record.sha1 and (root / record.filename).is_file()
+        return (
+            bool(entry)
+            and entry.get("sha1") == record.sha1
+            and "dhash" in entry
+            and (root / record.filename).is_file()
+        )
 
     todo = [r for r in records if not current(r)]
     tasks = [(r.filename, str(data_root / r.rel_path), str(root / r.filename), long_side, quality) for r in todo]
@@ -505,6 +532,256 @@ def build_cache(
 def read_cached_rgb(data_root, filename: str) -> np.ndarray:
     """A cached image: (H, W, 3) uint8 RGB, portrait, long side <= 1280."""
     return read_rgb(cache_dir(data_root) / filename)
+
+NEAR_DUPLICATE_MAX_DISTANCE = 6
+DUPLICATE_GROUPS_FILENAME = "duplicate_groups.json"
+FEATURE_LONG_SIDE = 1000  # images are downscaled to this long side before SIFT
+FEATURE_MAX_KEYPOINTS = 3000
+FEATURE_CONTRAST = 0.01  # below OpenCV's 0.04 default: leaves on a plain wall have few strong corners
+FEATURE_RATIO = 0.75  # Lowe ratio test
+FEATURE_RANSAC_PX = 6.0
+SHEET_MAX_PAIRS = 48  # pairs shown on contact sheets (the top of the ranking)
+SHEET_PAIRS_PER_PAGE = 8
+
+
+def hamming_matrix(bits: np.ndarray) -> np.ndarray:
+    """All pairwise Hamming distances of an (N, 64) 0/1 matrix, as an (N, N) int matrix."""
+    b = bits.astype(np.float32)
+    return np.rint(b @ (1.0 - b).T + (1.0 - b) @ b.T).astype(np.int32)
+
+
+def find_near_duplicates(bits: np.ndarray, max_distance: int = NEAR_DUPLICATE_MAX_DISTANCE) -> list[tuple[int, int, int]]:
+    """(i, j, distance) with i < j and distance <= max_distance, sorted by distance then index."""
+    dist = hamming_matrix(bits)
+    rows, cols = np.nonzero(np.triu(dist <= max_distance, k=1))
+    pairs = [(int(i), int(j), int(dist[i, j])) for i, j in zip(rows, cols)]
+    return sorted(pairs, key=lambda p: (p[2], p[0], p[1]))
+
+
+def sift_features(rgb: np.ndarray):
+    """(keypoint coordinates (K, 2) float32, descriptors (K, 128) float32) at FEATURE_LONG_SIDE."""
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    scale = FEATURE_LONG_SIDE / max(gray.shape)
+    if scale < 1.0:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    keypoints, descriptors = cv2.SIFT_create(nfeatures=FEATURE_MAX_KEYPOINTS, contrastThreshold=FEATURE_CONTRAST).detectAndCompute(gray, None)
+    points = np.float32([k.pt for k in keypoints]).reshape(-1, 2)
+    return points, descriptors
+
+
+def feature_inliers(features_a, features_b) -> int:
+    """Number of ratio-test SIFT matches consistent with one similarity transform (RANSAC)."""
+    (points_a, desc_a), (points_b, desc_b) = features_a, features_b
+    if desc_a is None or desc_b is None or len(desc_a) < 8 or len(desc_b) < 8:
+        return 0
+    matches = cv2.BFMatcher(cv2.NORM_L2).knnMatch(desc_a, desc_b, k=2)
+    good = [m[0] for m in matches if len(m) == 2 and m[0].distance < FEATURE_RATIO * m[1].distance]
+    if len(good) < 8:
+        return 0
+    src = points_a[[m.queryIdx for m in good]]
+    dst = points_b[[m.trainIdx for m in good]]
+    _, mask = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=FEATURE_RANSAC_PX)
+    return int(mask.sum()) if mask is not None else 0
+
+
+@dataclass(frozen=True)
+class DuplicatePair:
+    pair_id: int  # review rank, 1 = most likely a duplicate
+    hamming: int
+    feature_inliers: int
+    a: Record
+    b: Record
+
+    @property
+    def scope(self) -> str:
+        return "within domain" if self.a.domain == self.b.domain else "across domains"
+
+
+def load_dhashes(data_root, records: list[Record]) -> np.ndarray:
+    """(N, 64) uint8 matrix of the dHashes stored in the cache manifest (run build_cache first)."""
+    manifest = load_manifest(data_root)
+    missing = [r.filename for r in records if "dhash" not in manifest.get(r.filename, {})]
+    if missing:
+        raise DatasetError(f"no dHash for {len(missing)} images (e.g. {missing[:3]}); run `prepare` to build the cache")
+    return np.stack([hex_to_bits(manifest[r.filename]["dhash"]) for r in records]) if records else np.zeros((0, 64), np.uint8)
+
+
+def duplicate_pairs(
+    data_root, records: list[Record], bits: np.ndarray, max_distance: int = NEAR_DUPLICATE_MAX_DISTANCE
+) -> list[DuplicatePair]:
+    """All candidate pairs, ranked: most feature inliers first, then smallest Hamming distance, then names."""
+    candidates = find_near_duplicates(bits, max_distance)
+    needed = sorted({i for i, j, _ in candidates} | {j for i, j, _ in candidates})
+    features = {i: sift_features(read_cached_rgb(data_root, records[i].filename)) for i in needed}
+    scored = [
+        (-feature_inliers(features[i], features[j]), d, records[i].filename, records[j].filename, records[i], records[j])
+        for i, j, d in candidates
+    ]
+    scored.sort(key=lambda t: t[:4])
+    return [DuplicatePair(rank, d, -neg, a, b) for rank, (neg, d, _, _, a, b) in enumerate(scored, start=1)]
+
+
+def duplicate_stats(pairs: list[DuplicatePair]) -> dict:
+    """Counts of candidate pairs per Hamming distance and per scope (within / across domains)."""
+    by_distance = Counter(p.hamming for p in pairs)
+    by_scope = Counter(p.scope for p in pairs)
+    inliers = [p.feature_inliers for p in pairs]
+    return {
+        "total": len(pairs),
+        "by_distance": {d: by_distance[d] for d in sorted(by_distance)},
+        "within_domain": by_scope["within domain"],
+        "across_domains": by_scope["across domains"],
+        "same_class": sum(p.a.cls == p.b.cls for p in pairs),
+        "images_involved": len({p.a.filename for p in pairs} | {p.b.filename for p in pairs}),
+        "max_feature_inliers": max(inliers, default=0),
+    }
+
+
+def results_dir(data_root) -> Path:
+    return work_dir(data_root) / "results"
+
+
+def figures_dir(data_root) -> Path:
+    return work_dir(data_root) / "figures"
+
+
+def write_duplicate_report(data_root, pairs: list[DuplicatePair]) -> Path:
+    """`_work/results/near_duplicates.csv`: every candidate pair, in review order."""
+    path = results_dir(data_root) / "near_duplicates.csv"
+    lines = ["pair_id,hamming,feature_inliers,scope,file_a,file_b,class_a,class_b,domain_a,domain_b"]
+    for p in pairs:
+        lines.append(
+            f"{p.pair_id},{p.hamming},{p.feature_inliers},{p.scope},{p.a.filename},{p.b.filename},"
+            f"{p.a.cls},{p.b.cls},{p.a.domain},{p.b.domain}"
+        )
+    write_text_atomic(path, "\n".join(lines) + "\n")
+    return path
+
+
+def merge_groups(groups: list[list[str]]) -> list[list[str]]:
+    """Transitive merge: groups that share a filename become one group. Sorted, deterministic."""
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for group in groups:
+        for name in group:
+            parent.setdefault(name, name)
+        for name in group[1:]:
+            parent[find(name)] = find(group[0])
+    merged: dict[str, list[str]] = {}
+    for name in parent:
+        merged.setdefault(find(name), []).append(name)
+    return sorted((sorted(members) for members in merged.values() if len(members) > 1), key=lambda m: m[0])
+
+
+def duplicate_groups_path(data_root) -> Path:
+    return work_dir(data_root) / DUPLICATE_GROUPS_FILENAME
+
+
+def load_duplicate_groups(data_root, filenames) -> list[list[str]] | None:
+    """The human-confirmed duplicate groups, transitively merged; ``None`` if the file does not exist
+    (duplicates are then UNCONFIRMED, which is different from an empty list: "confirmed, none")."""
+    path = duplicate_groups_path(data_root)
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(read_file_bytes(path).decode("utf-8"))
+    except ValueError as exc:
+        raise DatasetError(f"{path}: not valid JSON: {exc}") from exc
+    if not isinstance(raw, list) or not all(isinstance(g, list) and all(isinstance(n, str) for n in g) for g in raw):
+        raise DatasetError(f"{path}: expected a list of lists of filenames")
+    known = set(filenames)
+    unknown = sorted({n for g in raw for n in g} - known)
+    if unknown:
+        raise DatasetError(f"{path}: {len(unknown)} filenames are not in the index, e.g. {unknown[:5]}")
+    return merge_groups(raw)
+
+# Okabe-Ito colour-blind-safe palette.
+OKABE_ITO = {
+    "black": "#000000",
+    "orange": "#E69F00",
+    "sky": "#56B4E9",
+    "green": "#009E73",
+    "yellow": "#F0E442",
+    "blue": "#0072B2",
+    "vermilion": "#D55E00",
+    "purple": "#CC79A7",
+}
+# One colour per domain (2 series: they must stay distinguishable in grayscale print as well).
+DOMAIN_COLORS = {"white": OKABE_ITO["blue"], "field": OKABE_ITO["orange"]}
+FIGURE_DPI = 300
+
+
+def pyplot():
+    """matplotlib.pyplot on the Agg backend (no display needed, also on Colab and on servers)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    return plt
+
+
+def thumbnail(rgb: np.ndarray, height: int) -> np.ndarray:
+    scale = height / rgb.shape[0]
+    return cv2.resize(rgb, (max(1, round(rgb.shape[1] * scale)), height), interpolation=cv2.INTER_AREA)
+
+
+def save_duplicate_sheets(
+    data_root,
+    pairs: list[DuplicatePair],
+    *,
+    max_pairs: int = SHEET_MAX_PAIRS,
+    per_page: int = SHEET_PAIRS_PER_PAGE,
+) -> list[Path]:
+    """Contact sheets `near_duplicates_<n>.png` of the top-ranked pairs, side by side, labelled with
+    filename, class, domain, dHash distance and feature inliers. Old pages are removed first."""
+    plt = pyplot()
+    out_dir = figures_dir(data_root)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("near_duplicates*.png"):
+        old.unlink()
+    shown = pairs[:max_pairs]
+    cols, rows = 4, max(1, per_page // 4)
+    pages = [shown[i : i + per_page] for i in range(0, len(shown), per_page)]
+    paths = []
+    for number, chunk in enumerate(pages, start=1):
+        fig = plt.figure(figsize=(20, 11.4 if rows == 2 else 6), dpi=100)
+        grid = fig.add_gridspec(rows, cols, left=0.005, right=0.995, top=0.935, bottom=0.005, wspace=0.05, hspace=0.1)
+        for k, pair in enumerate(chunk):
+            inner = grid[k // cols, k % cols].subgridspec(2, 2, height_ratios=[0.055, 1], wspace=0.03, hspace=0.01)
+            head = fig.add_subplot(inner[0, :])
+            head.axis("off")
+            head.text(
+                0.5, 0.5,
+                f"#{pair.pair_id}   dHash {pair.hamming}   inliers {pair.feature_inliers}   ({pair.scope})",
+                ha="center", va="center", fontsize=11, fontweight="bold",
+            )
+            for side, record in enumerate((pair.a, pair.b)):
+                ax = fig.add_subplot(inner[1, side])
+                ax.imshow(thumbnail(read_cached_rgb(data_root, record.filename), 560))
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_edgecolor(DOMAIN_COLORS[record.domain])
+                    spine.set_linewidth(2.5)
+                ax.set_xlabel(f"{record.filename}\n{record.cls}, {record.domain}", fontsize=9)
+        first, last = chunk[0].pair_id, chunk[-1].pair_id
+        fig.suptitle(
+            f"Near-duplicate candidates, page {number}/{len(pages)} (pairs #{first}-#{last} of {len(pairs)}; "
+            "border colour: blue = white background, orange = field)",
+            fontsize=13, y=0.985,
+        )
+        path = out_dir / f"near_duplicates_{number:02d}.png"
+        fig.savefig(path, dpi=100)
+        plt.close(fig)
+        paths.append(path)
+    return paths
 
 # ---- from 20_classifier.ipynb ----
 # Phase 03 (classifier): datasets, transforms, models and the train/eval loop are added here.
