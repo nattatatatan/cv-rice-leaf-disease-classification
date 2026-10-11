@@ -1,4 +1,4 @@
-"""Phase 03 T3.4-T3.5: run folders, idempotence, sweep + choose-lr, dev routing."""
+"""Phase 03 T3.4-T3.6: run folders, idempotence, sweep + choose-lr, dev routing, predict."""
 
 import csv
 import json
@@ -195,6 +195,31 @@ def test_choose_lr_refuses_missing_fast_and_dev_runs(gs, tmp_path, capsys):
         gs.choose_lr(root, "resnet50")
     assert gs.run_cli(["choose-lr", "--backbone", "swin_t", "--data-root", str(root)]) == 1
     assert "choose-lr: FAIL" in capsys.readouterr().err
+
+
+def test_predict_prints_probabilities_from_a_run_folder(gs, prepared, capsys):
+    out = prepared / "_work" / "runs" / "E0-rect" / "split_0"
+    gs.run_split(tiny_resolved(gs), 0, data_root=prepared, out_dir=out, options=gs.RunOptions(**OPTIONS), log=lambda _: None)
+    image = gs.cache_dir(prepared) / gs.load_index(prepared)[0].filename
+    capsys.readouterr()
+    assert gs.run_cli(["predict", "--data-root", str(prepared), "--device", "cpu", "--exp", "E0-rect", "--image", str(image)]) == 0
+    text = capsys.readouterr().out
+    assert "prediction" in text and all(name in text for name in gs.CLASS_NAMES)
+    percentages = [float(line.split()[-2].rstrip("%")) if line.rstrip().endswith("#") else float(line.split()[-1].rstrip("%"))
+                   for line in text.splitlines() if line.startswith("  ") and any(n in line for n in gs.CLASS_NAMES)]
+    assert abs(sum(percentages) - 100) < 1
+    assert gs.run_cli(["predict", "--data-root", str(prepared), "--device", "cpu", "--run-dir", str(out), "--image", str(image)]) == 0
+
+
+def test_predict_errors_are_clear(gs, prepared, capsys):
+    image = gs.cache_dir(prepared) / gs.load_index(prepared)[0].filename
+    base = ["predict", "--data-root", str(prepared), "--device", "cpu", "--image", str(image)]
+    assert gs.run_cli(base) == 1
+    assert "recommended" in capsys.readouterr().err
+    assert gs.run_cli([*base, "--exp", "E0-rect"]) == 1
+    assert "best.pt" in capsys.readouterr().err
+    assert gs.run_cli(["predict", "--data-root", str(prepared), "--exp", "E0-rect", "--image", "missing.jpg"]) == 1
+    assert "does not exist" in capsys.readouterr().err
 
 
 def test_alias_resolves_to_the_winning_e0_run_folder(gs, tmp_path):

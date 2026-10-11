@@ -1105,8 +1105,11 @@ def smoke_require(condition: bool, message: str) -> None:
         raise DatasetError(f"data smoke check failed: {message}")
 
 
-def run_data_smoke(data_root, n_images: int = 20, workers: int = 2, log=print) -> None:
-    """Cheap end-to-end check of the data path on ~20 real images. Writes only to a temp folder."""
+def run_data_smoke(data_root, n_images: int = 20, workers: int = 2, log=print, extra_checks=None) -> None:
+    """Cheap end-to-end check of the data path on ~20 real images. Writes only to a temp folder.
+
+    ``extra_checks(tmp_root, selected_records)``, if given, runs at the end while the temp folder (with the
+    cache of the selected images) still exists; later phases use it to build on the same tiny dataset."""
     data_root = Path(data_root)
     records = build_index(data_root, expected_counts=None, with_sha1=False)
     log(f"smoke: OK - index of {len(records)} images, labels match filename prefixes (and the CSV if present)")
@@ -1156,6 +1159,8 @@ def run_data_smoke(data_root, n_images: int = 20, workers: int = 2, log=print) -
             "figures were not written",
         )
         log("smoke: OK - tables and figures")
+        if extra_checks is not None:
+            extra_checks(tmp_root, selected)
 
 # ---- from 20_classifier.ipynb ----
 import gc
@@ -2170,6 +2175,49 @@ def run_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out
         f"white {fmt3(test_metrics['white']['macro_f1'])} field {fmt3(test_metrics['field']['macro_f1'])}")
     return {"status": "done", "metrics": metrics, "out_dir": out_dir}
 
+def load_run_model(run_dir, device: str = "cpu") -> tuple[nn.Module, dict]:
+    """(model in eval mode on ``device``, checkpoint dict) from <run_dir>/best.pt."""
+    path = Path(run_dir) / "best.pt"
+    if not path.is_file():
+        raise ExperimentError(
+            f"{path} does not exist. Checkpoints are not synced back from Colab by default "
+            "(*.pt is excluded): re-run the batch with keep_checkpoints=True, or copy best.pt from the Colab session."
+        )
+    checkpoint = torch.load(fs_path(path), map_location="cpu", weights_only=True)
+    model = build_model(checkpoint["backbone"], pretrained=False, dropout=checkpoint["dropout"])
+    model.load_state_dict(checkpoint["state_dict"])
+    return model.to(device).eval(), checkpoint
+
+
+def read_image_like_the_cache(path) -> np.ndarray:
+    """An arbitrary JPEG as the classifier saw its training images: EXIF applied, portrait, long side <= 1280."""
+    return resize_long_side(read_rgb(path), CACHE_LONG_SIDE)
+
+
+def classify_rgb(model: nn.Module, checkpoint: dict, rgb: np.ndarray, device: str, input_hook=None) -> np.ndarray:
+    """Class probabilities [5] of one RGB image under the evaluation pipeline of the checkpoint's experiment."""
+    if input_hook is not None:
+        rgb = input_hook(rgb, None)
+    transform = ImageTransform(checkpoint["input_mode"], train=False, size_div=checkpoint["size_div"])
+    batch = torch.from_numpy(np.ascontiguousarray(transform(rgb).transpose(2, 0, 1)))[None]
+    return predict_probs(model, batch, device)[0]
+
+
+def format_prediction(image, probs: np.ndarray, label: str) -> str:
+    order = np.argsort(-probs)
+    lines = [f"image       {image}", f"model       {label}", f"prediction  {CLASS_NAMES[order[0]]} ({100 * probs[order[0]]:.1f}%)", "probabilities"]
+    lines += [f"  {CLASS_NAMES[i]:<14}{100 * probs[i]:5.1f}%  {'#' * round(40 * probs[i])}" for i in order]
+    return "\n".join(lines)
+
+
+def predict_image(run_dir, image, device: str, data_root=None, out=print) -> np.ndarray:
+    model, checkpoint = load_run_model(run_dir, device)
+    cfg = ExperimentConfig(**checkpoint["config"])
+    hook = make_input_hook(cfg, data_root, checkpoint["split"]) if cfg.seg_crop else None
+    probs = classify_rgb(model, checkpoint, read_image_like_the_cache(image), device, hook)
+    out(format_prediction(image, probs, f"{checkpoint['exp_id']} split {checkpoint['split']} ({Path(run_dir) / 'best.pt'})"))
+    return probs
+
 # ---- from 30_copy_paste.ipynb ----
 # Phase 05 (copy-paste): pseudo-masks and composites are added here.
 
@@ -2559,6 +2607,28 @@ def cmd_choose_lr(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     return EXIT_OK
 
+def cmd_predict(args: argparse.Namespace) -> int:
+    data_root = Path(args.data_root)
+    try:
+        if args.run_dir is not None:
+            run_dir = Path(args.run_dir)
+        else:
+            choices = load_choices(data_root)
+            exp_id = args.exp or choices.raw("recommended")
+            if not exp_id:
+                raise ExperimentError(
+                    f"no --exp given and {choices.path} has no 'recommended' experiment (written by gate G2, phase 06). "
+                    "Pass --exp ID, for example --exp E1-U, or --run-dir PATH"
+                )
+            run_dir = split_dir(runs_dir(data_root) / run_folder_name(exp_id, choices), args.split)
+        if not Path(args.image).is_file():
+            raise ExperimentError(f"image {args.image} does not exist")
+        predict_image(run_dir, args.image, resolve_device(args.device), data_root)
+    except (ExperimentError, DatasetError) as exc:
+        print(f"predict: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
+
 def resolve_device(requested: str = "auto") -> str:
     """Map the --device flag to a concrete torch device name; raise if it is unavailable."""
     import torch
@@ -2601,12 +2671,46 @@ def smoke_split(selected: list[Record], seed: int = 0) -> dict:
     return {"seed": seed, "train": train, "val": val, "test": test, "sha256": split_sha256(seed, train, val, test)}
 
 
-def cmd_smoke(args: argparse.Namespace) -> int:
-    """Tiny end-to-end check: data root, image discovery, library imports, device, and the data path
-    (index, EXIF read, cache, dHash, splits, figures on ~20 images in a temp folder).
+def classifier_smoke(data_root, tmp_root, selected: list[Record], log=print) -> None:
+    """One tiny experiment (E0-rect, ResNet50, 1 epoch per stage, input size / 4) through the real `run` code
+    path on CPU, with a complete run folder written under ``tmp_root``; then `predict` on one image of it."""
+    started = time.time()
+    write_index(tmp_root, selected)
+    split = smoke_split(selected)
+    smoke_require(all(split[k] for k in ("train", "val", "test")), "tiny split has an empty part")
+    write_json(split_path(tmp_root, 0), split)
+    resolved = resolve_experiment("E0-rect", Choices(choices_path(tmp_root), {}), lr=3e-4)
+    pretrained = pretrained_available(resolved.config.backbone, data_root)
+    resolved = replace(resolved, config=replace(resolved.config, pretrained=pretrained, **FAST_CONFIG))
+    options = RunOptions(device="cpu", num_workers=2, weights_root=Path(data_root))
+    run_dir = split_dir(tmp_root / WORK_DIRNAME / "runs" / "E0-rect_smoke", 0)
+    lines: list[str] = []
+    result = run_split(resolved, 0, data_root=tmp_root, out_dir=run_dir, options=options, log=lines.append)
+    smoke_require(result["status"] == "done", "the tiny run did not train")
+    for name in (*RUN_FILES, "best.pt"):
+        smoke_require((run_dir / name).is_file(), f"run folder lacks {name}")
+    smoke_require(not list(run_dir.glob("*.tmp*")), "temporary files left behind (non-atomic write)")
+    metrics = read_metrics(run_dir)
+    smoke_require(metrics["split_sha256"] == split["sha256"] and metrics["wall_time_s"] > 0, "metrics.json is incomplete")
+    for part in ("val", "test"):
+        with open(run_dir / f"predictions_{part}.csv", newline="") as handle:
+            rows = list(csv.reader(handle))
+        smoke_require(rows[0][:4] == ["filename", "domain", "true", "pred"] and len(rows) - 1 == len(split[part]),
+                      f"predictions_{part}.csv has the wrong rows")
+    again = run_split(resolved, 0, data_root=tmp_root, out_dir=run_dir, options=options, log=lines.append)
+    smoke_require(again["status"] == "skipped", "a finished split was not skipped (idempotence)")
+    image = Path(data_root) / selected[0].rel_path
+    probs = predict_image(run_dir, image, "cpu", data_root, out=lambda text: None)
+    smoke_require(probs.shape == (NUM_CLASSES,) and abs(float(probs.sum()) - 1.0) < 1e-4, "predict returned bad probabilities")
+    log(f"smoke: OK - tiny {resolved.config.exp_id} run ({'pretrained' if pretrained else 'random'} weights, "
+        f"{len(split['train'])}/{len(split['val'])}/{len(split['test'])} train/val/test images, workers 2): complete run folder, "
+        f"skipped on rerun, predict OK ({time.time() - started:.0f} s)")
 
-    Later phases extend this into the full tiny run (20 images, 1 epoch, CPU).
-    """
+
+def cmd_smoke(args: argparse.Namespace) -> int:
+    """Tiny end-to-end check: data root, image discovery, library imports, device, the data path (index, EXIF
+    read, cache, dHash, splits, figures on ~20 images in a temp folder) and one tiny classifier experiment
+    through the real `run` code path on CPU, followed by `predict` (everything in a temp folder)."""
     data_root = Path(args.data_root)
     print(f"smoke: data root = {data_root.resolve()}")
     if not data_root.is_dir():
@@ -2632,8 +2736,8 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     device = resolve_device(args.device)
     print(f"smoke: OK - device = {device} (requested: {args.device}), fast = {args.fast}")
     try:
-        run_data_smoke(data_root)
-    except DatasetError as exc:
+        run_data_smoke(data_root, extra_checks=lambda tmp_root, selected: classifier_smoke(data_root, tmp_root, selected))
+    except (DatasetError, ExperimentError) as exc:
         print(f"smoke: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
     print("smoke: PASSED")
@@ -2736,9 +2840,10 @@ def _configure_gradcam(parser: argparse.ArgumentParser) -> None:
 
 
 def _configure_predict(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--exp", default=None, metavar="ID", help="experiment ID (default: the recommended one)")
+    parser.add_argument("--exp", default=None, metavar="ID", help="experiment ID (default: the recommended one in choices.json)")
     parser.add_argument("--split", type=int, default=0, metavar="K", help="split seed (default: 0)")
     parser.add_argument("--image", type=Path, required=True, metavar="PATH", help="image to classify")
+    parser.add_argument("--run-dir", type=Path, default=None, metavar="DIR", help="use DIR/best.pt directly instead of the run folder of --exp")
 
 
 @dataclass(frozen=True)
@@ -2774,8 +2879,8 @@ COMMANDS = (
         not_implemented("summarize", "07"),
     ),
     Command("gradcam", "Grad-CAM figures for one experiment and split", not_implemented("gradcam", "07"), _configure_gradcam),
-    Command("predict", "classify a single image and print class probabilities", not_implemented("predict", "03"), _configure_predict),
-    Command("smoke", "tiny end-to-end check (currently: data root, imports, device, data path)", cmd_smoke),
+    Command("predict", "classify a single image and print class probabilities", cmd_predict, _configure_predict),
+    Command("smoke", "tiny end-to-end check: imports, device, data path, one tiny experiment and predict", cmd_smoke),
     Command(
         "reproduce",
         "download-weights, prepare, every reported experiment, summarize",
