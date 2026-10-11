@@ -1676,6 +1676,500 @@ def download_weights(data_root, out=print) -> list[dict]:
         rows.append({"name": name, "weights": member, "url": weights.url, "path": str(path), "bytes": path.stat().st_size, "state": state})
     return rows
 
+def classification_metrics(y_true, y_pred) -> dict:
+    """Accuracy, macro-F1, per-class precision / recall / F1 / support and the 5x5 confusion matrix
+    (rows = true class, columns = predicted class, in CLASS_NAMES order)."""
+    y_true, y_pred = np.asarray(y_true, dtype=np.int64), np.asarray(y_pred, dtype=np.int64)
+    n = int(len(y_true))
+    if n == 0:
+        return {"n": 0, "accuracy": None, "macro_f1": None, "per_class": {}, "confusion_matrix": []}
+    labels = list(range(NUM_CLASSES))
+    precision, recall, f1, support = precision_recall_fscore_support(y_true, y_pred, labels=labels, zero_division=0)
+    present = sorted(set(y_true.tolist()) | set(y_pred.tolist()))
+    return {
+        "n": n,
+        "accuracy": float((y_true == y_pred).mean()),
+        "macro_f1": float(f1_score(y_true, y_pred, labels=present, average="macro", zero_division=0)),
+        "per_class": {
+            name: {"precision": float(precision[i]), "recall": float(recall[i]), "f1": float(f1[i]), "support": int(support[i])}
+            for i, name in enumerate(CLASS_NAMES)
+        },
+        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
+    }
+
+
+def subset_mask(domains, subset: str) -> np.ndarray:
+    domains = np.asarray(domains)
+    return np.ones(len(domains), dtype=bool) if subset == "mixed" else domains == subset
+
+
+def subset_metrics(probs: np.ndarray, labels, domains) -> dict:
+    """{"white": ..., "field": ..., "mixed": ..., "domain_balanced": {"accuracy", "macro_f1"}} for one split part."""
+    preds = probs.argmax(axis=1)
+    result = {s: classification_metrics(labels[m], preds[m]) for s in SUBSETS for m in [subset_mask(domains, s)]}
+    balanced = {}
+    for key in ("accuracy", "macro_f1"):
+        values = [result[s][key] for s in DOMAINS]
+        balanced[key] = None if any(v is None for v in values) else float(np.mean(values))
+    result["domain_balanced"] = balanced
+    return result
+
+
+def macro_f1(labels, preds) -> float:
+    return classification_metrics(labels, preds)["macro_f1"] if len(labels) else float("nan")
+
+
+@torch.no_grad()
+def predict_probs(model: nn.Module, images: torch.Tensor, device, *, batch_size: int = 64, amp: bool = False) -> np.ndarray:
+    """Softmax probabilities [N, 5] (float32, numpy) for a uint8 image tensor."""
+    model.eval()
+    out = []
+    for start in range(0, len(images), batch_size):
+        x = normalize_batch(images[start : start + batch_size], device)
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp):
+            logits = model(x)
+        out.append(torch.softmax(logits.float(), dim=1).cpu())
+    return torch.cat(out).numpy() if out else np.zeros((0, NUM_CLASSES), dtype=np.float32)
+
+
+def evaluate_model(model: nn.Module, eval_set: EvalSet, device, *, amp: bool = False) -> tuple[dict, np.ndarray]:
+    """(metrics for white / field / mixed / domain_balanced, probabilities) of a model on an EvalSet."""
+    probs = predict_probs(model, eval_set.images, device, amp=amp)
+    return subset_metrics(probs, eval_set.labels, eval_set.domains), probs
+
+import contextlib
+
+FALLBACK_BATCH = 16
+
+
+def seed_everything(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed % (2**32))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def lr_at_step(step: int, *, base_lr: float, warmup_steps: int, total_steps: int) -> float:
+    """Linear warmup over ``warmup_steps`` optimiser steps, then cosine decay to 0 at ``total_steps``."""
+    if warmup_steps > 0 and step < warmup_steps:
+        return base_lr * (step + 1) / warmup_steps
+    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+    return base_lr * 0.5 * (1.0 + math.cos(math.pi * min(1.0, max(0.0, progress))))
+
+
+class CheckpointSelector:
+    """Remembers the best state by the selection metric and decides when to stop early. Only epochs that are
+    passed with ``counts_for_patience=True`` (stage 2) can run the patience out."""
+
+    def __init__(self, patience: int):
+        self.patience, self.stale = patience, 0
+        self.best_score, self.best_epoch, self.best_state = -math.inf, 0, None
+
+    def update(self, score: float, epoch: int, snapshot, *, counts_for_patience: bool) -> bool:
+        """Record an epoch. ``snapshot`` is a function returning the state to keep. True if it is the new best."""
+        if score > self.best_score:
+            self.best_score, self.best_epoch, self.best_state, self.stale = score, epoch, snapshot(), 0
+            return True
+        if counts_for_patience:
+            self.stale += 1
+        return False
+
+    @property
+    def should_stop(self) -> bool:
+        return self.stale >= self.patience
+
+
+def is_out_of_memory(exc: BaseException) -> bool:
+    return isinstance(exc, torch.cuda.OutOfMemoryError) or (
+        isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower()
+    )
+
+
+def free_device_memory(device: str) -> None:
+    gc.collect()
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    elif device == "mps":
+        torch.mps.empty_cache()
+
+
+def cpu_state_dict(model: nn.Module) -> dict:
+    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+
+@dataclass
+class TrainOutcome:
+    best_state: dict
+    best_epoch: int
+    best_score: float
+    history: list[dict]
+    stopped_early: bool
+    seconds: float
+
+
+def train_classifier(cfg: ExperimentConfig, model: nn.Module, train_ds: LeafDataset, val_set: EvalSet, device: str, *,
+                     seed: int, num_workers: int = 0, mp_context=None, log=print) -> TrainOutcome:
+    """The two-stage LP-FT loop. Returns the best checkpoint (by validation macro-F1 on cfg.select_domains)."""
+    started = time.time()
+    amp = device == "cuda"
+    sampler = EpochSampler(len(train_ds), seed)
+    drop_last = len(train_ds) % cfg.batch_size == 1  # a final batch of one sample breaks BatchNorm
+    loader = make_loader(train_ds, cfg.batch_size, sampler=sampler, num_workers=num_workers, drop_last=drop_last,
+                         pin_memory=device == "cuda", mp_context=mp_context)
+    micro_steps = len(loader)
+    steps_per_epoch = math.ceil(micro_steps / cfg.grad_accum)
+    select_mask = np.isin(np.asarray(val_set.domains), cfg.select_domains)
+    if not select_mask.any():
+        raise ExperimentError(f"{cfg.exp_id}: the validation part has no images of the domains {cfg.select_domains}")
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
+    selector = CheckpointSelector(cfg.patience)
+    history: list[dict] = []
+    epoch = 0
+    stopped_early = False
+    head_params = head_parameters(model)
+
+    for stage, n_epochs in (("lp", cfg.stage1_epochs), ("ft", cfg.epochs)):
+        if n_epochs <= 0:
+            continue
+        trainable = head_params if stage == "lp" else list(model.parameters())
+        for p in model.parameters():
+            p.requires_grad_(False)
+        for p in trainable:
+            p.requires_grad_(True)
+        base_lr = cfg.stage1_lr if stage == "lp" else cfg.lr
+        optimizer = torch.optim.AdamW(trainable, lr=base_lr, weight_decay=cfg.weight_decay)
+        total_steps = n_epochs * steps_per_epoch
+        warmup_steps = cfg.warmup_epochs * steps_per_epoch if stage == "ft" else 0
+        step = 0
+        for _ in range(n_epochs):
+            epoch += 1
+            epoch_started = time.time()
+            sampler.set_epoch(epoch - 1)
+            train_ds.epoch = epoch - 1
+            model.train() if stage == "ft" else model.eval()  # LP: frozen backbone incl. BatchNorm statistics
+            if stage == "lp":
+                head_module(model).train()
+            loss_sum, seen, lr_now = 0.0, 0, base_lr
+            optimizer.zero_grad(set_to_none=True)
+            for i, (images, labels, _) in enumerate(loader):
+                x = normalize_batch(images, device)
+                y = labels.to(device)
+                with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp):
+                    loss = F.cross_entropy(model(x), y, label_smoothing=cfg.label_smoothing)
+                loss_value = loss.item()
+                if not math.isfinite(loss_value):
+                    raise ExperimentError(f"{cfg.exp_id}: the training loss became {loss_value} (diverged); try a lower lr")
+                scaler.scale(loss / cfg.grad_accum).backward()
+                loss_sum += loss_value * len(y)
+                seen += len(y)
+                if (i + 1) % cfg.grad_accum == 0 or i + 1 == micro_steps:
+                    lr_now = base_lr if stage == "lp" else lr_at_step(step, base_lr=base_lr, warmup_steps=warmup_steps,
+                                                                    total_steps=total_steps)
+                    for group in optimizer.param_groups:
+                        group["lr"] = lr_now
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(trainable, cfg.clip_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
+                    step += 1
+            probs = predict_probs(model, val_set.images, device, amp=amp)
+            preds, labels_np = probs.argmax(axis=1), val_set.labels
+            domains = np.asarray(val_set.domains)
+            score = macro_f1(labels_np[select_mask], preds[select_mask])
+            improved = selector.update(score, epoch, lambda: cpu_state_dict(model), counts_for_patience=stage == "ft")
+            row = {
+                "epoch": epoch, "stage": stage, "lr": lr_now, "train_loss": loss_sum / max(1, seen),
+                "val_loss": float(-np.log(np.clip(probs[np.arange(len(labels_np)), labels_np], 1e-8, 1.0)).mean()),
+                "val_macro_f1": score,
+                "val_accuracy": float((preds[select_mask] == labels_np[select_mask]).mean()),
+                "val_f1_white": macro_f1(labels_np[domains == "white"], preds[domains == "white"]),
+                "val_f1_field": macro_f1(labels_np[domains == "field"], preds[domains == "field"]),
+                "val_f1_mixed": macro_f1(labels_np, preds),
+                "best": int(improved), "seconds": time.time() - epoch_started,
+            }
+            history.append(row)
+            log(f"  epoch {epoch:2d}/{cfg.stage1_epochs + cfg.epochs} {stage}  lr {lr_now:.2e}  loss {row['train_loss']:.3f}  "
+                f"val F1 {score:.3f}{' *' if improved else '  '} (white {row['val_f1_white']:.3f} field {row['val_f1_field']:.3f})  "
+                f"{row['seconds']:.1f}s")
+            if stage == "ft" and selector.should_stop:
+                stopped_early = True
+                log(f"  early stop: no improvement for {cfg.patience} fine-tuning epochs (best epoch {selector.best_epoch})")
+                break
+    return TrainOutcome(selector.best_state, selector.best_epoch, selector.best_score, history, stopped_early,
+                        time.time() - started)
+
+import io
+
+RUN_FORMAT = 1
+FINGERPRINT_IGNORED = ("batch_size", "grad_accum")
+RUN_FILES = ("config.json", "env.json", "history.csv", "predictions_val.csv", "predictions_test.csv", "metrics.json")
+
+
+def runs_dir(data_root) -> Path:
+    return work_dir(data_root) / "runs"
+
+
+def sweep_dir(data_root) -> Path:
+    return runs_dir(data_root) / "sweep"
+
+
+def scratch_dir(data_root) -> Path:
+    return runs_dir(data_root) / "scratch"
+
+
+def lr_tag(lr: float) -> str:
+    """1e-4 -> '1e-4', 3e-4 -> '3e-4' (used in sweep folder names)."""
+    return f"{lr:.0e}".replace("e-0", "e-").replace("e+0", "e+")
+
+
+def sweep_run_name(exp_id: str, lr: float) -> str:
+    return f"{exp_id}_lr{lr_tag(lr)}"
+
+
+def split_dir(root: Path, split_seed: int) -> Path:
+    return Path(root) / f"split_{split_seed}"
+
+
+def config_fingerprint(cfg: ExperimentConfig, extra: dict | None = None) -> str:
+    payload = {k: v for k, v in asdict(cfg).items() if k not in FINGERPRINT_IGNORED}
+    payload.update(extra or {})
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def environment_record(device: str) -> dict:
+    import numpy
+    import sklearn
+
+    info = {
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "torch": torch.__version__,
+        "torchvision": torchvision.__version__,
+        "opencv": cv2.__version__,
+        "numpy": numpy.__version__,
+        "sklearn": sklearn.__version__,
+        "device": device,
+        "cpu_count": os.cpu_count(),
+        "torch_home": os.environ.get("TORCH_HOME", ""),
+        "gpu": None,
+        "cuda": torch.version.cuda,
+    }
+    if device == "cuda":
+        info["gpu"] = torch.cuda.get_device_name(0)
+    elif device == "mps":
+        info["gpu"] = "Apple MPS"
+    return info
+
+
+def fmt3(value) -> str:
+    return "n/a" if value is None else f"{value:.3f}"
+
+
+def csv_text(header: list[str], rows) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(header)
+    writer.writerows(rows)
+    return buffer.getvalue()
+
+
+HISTORY_COLUMNS = ["epoch", "stage", "lr", "train_loss", "val_loss", "val_macro_f1", "val_accuracy",
+                   "val_f1_white", "val_f1_field", "val_f1_mixed", "best", "seconds"]
+
+
+def history_csv(history: list[dict]) -> str:
+    return csv_text(HISTORY_COLUMNS, [[f"{row[c]:.6g}" if isinstance(row[c], float) else row[c] for c in HISTORY_COLUMNS] for row in history])
+
+
+def predictions_csv(eval_set: EvalSet, probs: np.ndarray) -> str:
+    preds = probs.argmax(axis=1)
+    rows = [
+        [name, domain, CLASS_NAMES[int(true)], CLASS_NAMES[int(pred)], *[f"{p:.6f}" for p in row]]
+        for name, domain, true, pred, row in zip(eval_set.names, eval_set.domains, eval_set.labels, preds, probs)
+    ]
+    return csv_text(["filename", "domain", "true", "pred", *[f"p{i}" for i in range(NUM_CLASSES)]], rows)
+
+
+def save_torch_atomic(obj, path: Path) -> None:
+    path = Path(path)
+    os.makedirs(fs_path(path.parent), exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+    with open(fs_path(tmp), "wb") as handle:
+        torch.save(obj, handle)
+    os.replace(fs_path(tmp), fs_path(path))
+
+
+def read_metrics(run_dir: Path) -> dict | None:
+    path = Path(run_dir) / "metrics.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(read_file_bytes(path).decode("utf-8"))
+    except ValueError:
+        return None  # atomic writes make this impossible in practice; treat as "not done"
+
+
+def result_state(run_dir: Path, split_sha256: str, fingerprint: str) -> tuple[str, str]:
+    """('fresh' | 'stale' | 'missing', reason) for the metrics.json of a run folder."""
+    metrics = read_metrics(run_dir)
+    if metrics is None:
+        return "missing", "no metrics.json"
+    if metrics.get("split_sha256") != split_sha256:
+        return "stale", "the split changed since this run (split sha256 differs)"
+    if metrics.get("config_fingerprint") != fingerprint:
+        return "stale", "the experiment config changed since this run (config fingerprint differs)"
+    return "fresh", "metrics.json is current"
+
+
+def make_extra_sources(cfg: ExperimentConfig, data_root, split_seed: int, seed: int) -> tuple:
+    """Extra training samples. PHASE 05 REPLACES THIS BODY: return (CompositeSource(split_seed, n_per_epoch, seed),)
+    when ``cfg.use_composites``."""
+    if cfg.use_composites:
+        raise NotReadyError(
+            f"{cfg.exp_id} trains with copy-paste composites (Method A), which need phase 05 "
+            "(CompositeSource, docs/instructions/05-copy-paste-method-a.md)"
+        )
+    return ()
+
+
+def make_input_hook(cfg: ExperimentConfig, data_root, split_seed: int):
+    """``hook(image, record) -> image`` applied before the transforms. PHASE 06 REPLACES THIS BODY: return the
+    segmentation-crop hook when ``cfg.seg_crop``. ``record`` is None for ad-hoc images (the predict command)."""
+    if cfg.seg_crop:
+        raise NotReadyError(
+            f"{cfg.exp_id} crops to the segmented leaf (Method B), which needs phase 06 "
+            "(docs/instructions/06-segmentation-method-b.md)"
+        )
+    return None
+
+
+def check_cache_complete(data_root, records: list[Record]) -> None:
+    missing = [r.filename for r in records if not (cache_dir(data_root) / r.filename).is_file()]
+    if missing:
+        raise DatasetError(f"{len(missing)} cached images are missing under {cache_dir(data_root)}, e.g. {missing[:3]}; run `prepare`")
+
+@dataclass(frozen=True)
+class RunOptions:
+    """How to run (as opposed to what to run): nothing here changes the experiment's result definition."""
+
+    device: str = "cpu"
+    seed_offset: int = 0
+    num_workers: int | None = None  # None: default_num_workers()
+    force: bool = False
+    limit: int | None = None  # --fast: at most this many images per split part
+    overrides: tuple = ()  # (name, value) pairs applied on top of the registry, recorded in config.json
+    weights_root: Path | None = None  # where the pretrained weights live (default: the data root)
+    mp_context: str | None = None  # tests only: force the worker start method
+
+
+def train_with_fallback(cfg, train_ds, val_set, options: RunOptions, seed: int, log):
+    """Build a fresh model and train it; on out-of-memory retry once with batch 16 and accumulation x2
+    (same effective batch). Returns (model, outcome, cfg actually used)."""
+    workers = default_num_workers() if options.num_workers is None else options.num_workers
+    while True:
+        try:
+            seed_everything(seed)
+            model = build_model(cfg.backbone, pretrained=cfg.pretrained, dropout=cfg.dropout,
+                                data_root=options.weights_root).to(options.device)
+            outcome = train_classifier(cfg, model, train_ds, val_set, options.device, seed=seed, num_workers=workers,
+                                       mp_context=options.mp_context, log=log)
+            return model, outcome, cfg
+        except Exception as exc:
+            if not (is_out_of_memory(exc) and cfg.batch_size > FALLBACK_BATCH):
+                raise
+            model = None
+            log(f"  out of memory at batch {cfg.batch_size}: retrying with batch {FALLBACK_BATCH} and gradient accumulation "
+                f"{cfg.grad_accum * cfg.batch_size // FALLBACK_BATCH}")
+            cfg = replace(cfg, batch_size=FALLBACK_BATCH, grad_accum=cfg.grad_accum * cfg.batch_size // FALLBACK_BATCH)
+        free_device_memory(options.device)
+
+
+def run_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out_dir: Path, options: RunOptions,
+              log=print) -> dict:
+    """Train and evaluate one experiment on one split and write the run folder (see the table above).
+
+    Returns {"status": "skipped" | "done", "metrics": dict, "out_dir": Path}."""
+    data_root, out_dir = Path(data_root), Path(out_dir)
+    cfg = resolved.config
+    split = load_split(data_root, split_seed)  # verifies the sha256
+    fingerprint = config_fingerprint(cfg, {"seed_offset": options.seed_offset, "limit": options.limit})
+    state, reason = result_state(out_dir, split["sha256"], fingerprint)
+    if state == "fresh" and not options.force:
+        log(f"[{resolved.requested} split {split_seed}] skipped: {out_dir / 'metrics.json'} exists and is current (--force to retrain)")
+        return {"status": "skipped", "metrics": read_metrics(out_dir), "out_dir": out_dir}
+    if state == "stale":
+        log(f"[{resolved.requested} split {split_seed}] existing result is stale: {reason}; retraining")
+    (out_dir / "metrics.json").unlink(missing_ok=True)  # a half-finished retrain must not look complete
+
+    started = time.time()
+    seed = split_seed + options.seed_offset
+    records = load_index(data_root)
+    train_recs = select_records(records, split["train"], cfg.train_domains)
+    val_recs = select_records(records, split["val"])
+    test_recs = select_records(records, split["test"])
+    if options.limit:
+        train_recs, val_recs, test_recs = (subsample_records(r, options.limit) for r in (train_recs, val_recs, test_recs))
+    check_cache_complete(data_root, [*train_recs, *val_recs, *test_recs])
+
+    extra_sources = make_extra_sources(cfg, data_root, split_seed, seed)
+    input_hook = make_input_hook(cfg, data_root, split_seed)
+    train_tf = ImageTransform(cfg.input_mode, train=True, size_div=cfg.size_div)
+    eval_tf = ImageTransform(cfg.input_mode, train=False, size_div=cfg.size_div)
+    train_ds = LeafDataset(data_root, train_recs, train_tf, seed=seed, extra_sources=extra_sources, input_hook=input_hook)
+    workers = default_num_workers() if options.num_workers is None else options.num_workers
+    val_set = materialize(LeafDataset(data_root, val_recs, eval_tf, input_hook=input_hook), num_workers=workers)
+
+    log(f"[{resolved.requested} split {split_seed}] {cfg.exp_id}: {cfg.backbone} / {cfg.input_mode}  lr {cfg.lr:g}  "
+        f"train {len(train_ds)} ({'+'.join(cfg.train_domains)}), val {len(val_set)}, test {len(test_recs)}  "
+        f"device {options.device}, batch {cfg.batch_size}x{cfg.grad_accum}, workers {usable_workers(workers)}")
+    write_json(out_dir / "config.json", {
+        "format": RUN_FORMAT, "requested_exp_id": resolved.requested, "experiment": asdict(cfg),
+        "split": split_seed, "seed": seed, "seed_offset": options.seed_offset, "limit": options.limit,
+        "choices_used": resolved.choices_used, "notes": list(resolved.notes), "overrides": dict(options.overrides),
+        "weights": BACKBONE_SPECS[cfg.backbone].weights if cfg.pretrained else None,
+        "input_size": list(input_size(cfg.input_mode, cfg.size_div)), "config_fingerprint": fingerprint,
+    })
+    write_json(out_dir / "env.json", environment_record(options.device))
+
+    model, outcome, used_cfg = train_with_fallback(cfg, train_ds, val_set, options, seed, log)
+    model.load_state_dict(outcome.best_state)
+    amp = options.device == "cuda"
+    val_metrics, val_probs = evaluate_model(model, val_set, options.device, amp=amp)
+    test_set = materialize(LeafDataset(data_root, test_recs, eval_tf, input_hook=input_hook), num_workers=workers)
+    test_metrics, test_probs = evaluate_model(model, test_set, options.device, amp=amp)
+
+    write_text_atomic(out_dir / "history.csv", history_csv(outcome.history))
+    write_text_atomic(out_dir / "predictions_val.csv", predictions_csv(val_set, val_probs))
+    write_text_atomic(out_dir / "predictions_test.csv", predictions_csv(test_set, test_probs))
+    save_torch_atomic({
+        "format": RUN_FORMAT, "state_dict": outcome.best_state, "backbone": cfg.backbone, "input_mode": cfg.input_mode,
+        "size_div": cfg.size_div, "dropout": cfg.dropout, "class_names": list(CLASS_NAMES), "epoch": outcome.best_epoch,
+        "val_select_macro_f1": outcome.best_score, "exp_id": cfg.exp_id, "split": split_seed, "config": asdict(cfg),
+    }, out_dir / "best.pt")
+    epoch_seconds = [row["seconds"] for row in outcome.history]
+    metrics = {
+        "format": RUN_FORMAT, "exp_id": cfg.exp_id, "requested_exp_id": resolved.requested, "split": split_seed,
+        "seed": seed, "split_sha256": split["sha256"], "config_fingerprint": fingerprint,
+        "wall_time_s": round(time.time() - started, 2), "train_time_s": round(outcome.seconds, 2),
+        "seconds_per_epoch": round(float(np.mean(epoch_seconds)), 3) if epoch_seconds else None,
+        "device": options.device, "backbone": cfg.backbone, "input_mode": cfg.input_mode, "lr": cfg.lr,
+        "parameters": count_parameters(model), "train_domains": list(cfg.train_domains),
+        "select_domains": list(cfg.select_domains), "test_subsets": list(cfg.test_subsets),
+        "n_train": len(train_ds), "n_val": len(val_set), "n_test": len(test_set),
+        "epochs_run": len(outcome.history), "best_epoch": outcome.best_epoch,
+        "best_val_select_macro_f1": outcome.best_score, "stopped_early": outcome.stopped_early,
+        "batch_size": used_cfg.batch_size, "grad_accum": used_cfg.grad_accum,
+        "oom_fallback": used_cfg.batch_size != cfg.batch_size, "fast": options.limit is not None,
+        "overrides": dict(options.overrides), "val": val_metrics, "test": test_metrics,
+    }
+    write_json(out_dir / "metrics.json", metrics, indent=1)  # last: its presence marks the run as complete
+    log(f"[{resolved.requested} split {split_seed}] done in {metrics['wall_time_s']:.0f}s  best epoch {outcome.best_epoch}  "
+        f"val mixed F1 {fmt3(val_metrics['mixed']['macro_f1'])}  test F1 mixed {fmt3(test_metrics['mixed']['macro_f1'])} "
+        f"white {fmt3(test_metrics['white']['macro_f1'])} field {fmt3(test_metrics['field']['macro_f1'])}")
+    return {"status": "done", "metrics": metrics, "out_dir": out_dir}
+
 # ---- from 30_copy_paste.ipynb ----
 # Phase 05 (copy-paste): pseudo-masks and composites are added here.
 
@@ -1921,6 +2415,150 @@ def cmd_download_weights(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     return EXIT_OK
 
+FAST_CONFIG = {"stage1_epochs": 1, "epochs": 1, "size_div": 4, "batch_size": 8}
+FAST_IMAGES = 24
+
+
+def pretrained_available(backbone: str, data_root) -> bool:
+    """True if the pretrained file is already stored under <data_root>/_work/weights (no download is triggered)."""
+    previous = os.environ.get("TORCH_HOME")
+    try:
+        set_torch_home(data_root, create=False)
+        return weight_file_ok(weight_checkpoint_path(backbone_weights(backbone)))
+    finally:
+        if previous is None:
+            os.environ.pop("TORCH_HOME", None)
+        else:
+            os.environ["TORCH_HOME"] = previous
+
+
+def run_destination(data_root, args, cfg: ExperimentConfig, dev: bool) -> tuple[Path, str]:
+    """(root folder, run name) for one resolved config; see the table in the notebook."""
+    if args.out_dir:
+        root = Path(args.out_dir)
+    elif dev:
+        root = scratch_dir(data_root)
+    else:
+        root = sweep_dir(data_root) if args.sweep_lr else runs_dir(data_root)
+    if args.sweep_lr:
+        return root, sweep_run_name(cfg.exp_id, cfg.lr)
+    suffix = "" if args.out_dir or not dev else "_fast" if args.fast else "_dev"
+    return root, cfg.exp_id + suffix
+
+
+def apply_run_flags(args, resolved: ResolvedExperiment, data_root) -> tuple[ResolvedExperiment, dict, int | None]:
+    """Apply --fast and the dev/system overrides to a resolved experiment. Returns (resolved, overrides, limit)."""
+    changes: dict = {}
+    overrides: dict = {}
+    limit = None
+    if args.fast:
+        changes.update(FAST_CONFIG)
+        changes["pretrained"] = pretrained_available(resolved.config.backbone, data_root)
+        overrides["fast"] = True
+        limit = FAST_IMAGES
+    for flag, field_name in (("epochs", "epochs"), ("stage1_epochs", "stage1_epochs"), ("lr", "lr")):
+        value = getattr(args, flag, None)
+        if value is not None:
+            changes[field_name] = value
+            overrides[flag] = value
+    for flag in ("batch_size", "grad_accum"):
+        value = getattr(args, flag, None)
+        if value is not None:
+            changes[flag] = value
+    notes = resolved.notes
+    if args.fast and not changes["pretrained"]:
+        notes = (*notes, f"--fast: {resolved.config.backbone} weights are not downloaded, using random initialisation")
+    return replace(resolved, config=replace(resolved.config, **changes), notes=notes), overrides, limit
+
+
+def run_command(args) -> int:
+    data_root = Path(args.data_root)
+    choices = load_choices(data_root)
+    device = resolve_device(args.device)
+    ids = expand_experiment_ids(args.exp)
+    sweep = args.sweep_lr
+    if sweep and args.lr is not None:
+        raise ExperimentError("--sweep-lr already sets the learning rates (1e-4 and 3e-4); do not combine it with --lr")
+    splits = (0,) if sweep else tuple(args.splits)
+    if sweep and tuple(args.splits) != DEFAULT_SPLITS and tuple(args.splits) != (0,):
+        print("run: note - --sweep-lr always uses split 0 only (T3.4 rule)")
+    dev = bool(args.fast or args.lr is not None or args.epochs is not None or args.stage1_epochs is not None)
+    options_base = dict(device=device, seed_offset=args.seed_offset, num_workers=args.num_workers, force=args.force,
+                        weights_root=data_root)
+    weights_home = set_torch_home(data_root)
+    print(f"run: device {device}, data root {data_root}, TORCH_HOME {weights_home}")
+    summary = []
+    for exp_id in ids:
+        for sweep_lr in (SWEEP_LRS if sweep else (None,)):
+            resolved = resolve_experiment(exp_id, choices, lr=sweep_lr if sweep else args.lr, placeholders=args.fast)
+            resolved, overrides, limit = apply_run_flags(args, resolved, data_root)
+            cfg = resolved.config
+            if sweep and cfg.exp_id != SWEEP_EXPERIMENT.get(cfg.backbone):
+                print(f"run: note - choose-lr reads the sweep of {SWEEP_EXPERIMENT.get(cfg.backbone)} for {cfg.backbone}, not {cfg.exp_id}")
+            root, name = run_destination(data_root, args, cfg, dev)
+            for note in resolved.notes:
+                print(f"run: {note}")
+            print(f"run: {resolved.requested} -> {root / name}/split_<k>/" + ("  (sweep, never a result)" if sweep else "  (scratch, never a result)" if dev else ""))
+            options = RunOptions(limit=limit, overrides=tuple(overrides.items()), **options_base)
+            for split_seed in splits:
+                result = run_split(resolved, split_seed, data_root=data_root, out_dir=split_dir(root / name, split_seed),
+                                   options=options, log=lambda text: print(text, flush=True))
+                metrics = result["metrics"]
+                summary.append((name, split_seed, result["status"], metrics["val"]["mixed"]["macro_f1"], metrics["test"]["mixed"]["macro_f1"]))
+    print("run: summary (macro-F1)")
+    print(f"  {'run':<22}{'split':>5}  {'status':<8}{'val mixed':>10}{'test mixed':>11}")
+    for name, split_seed, status, val_f1, test_f1 in summary:
+        print(f"  {name:<22}{split_seed:>5}  {status:<8}{fmt3(val_f1):>10}{fmt3(test_f1):>11}")
+    return EXIT_OK
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    try:
+        return run_command(args)
+    except (ExperimentError, DatasetError) as exc:
+        print(f"run: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+
+
+def choose_lr(data_root, backbone: str, out=print) -> dict:
+    """T3.4 rule: of the two split-0 sweep runs, take the lr with the higher validation mixed macro-F1."""
+    if backbone not in SWEEP_EXPERIMENT:
+        raise ExperimentError(f"unknown backbone {backbone!r}, expected one of {', '.join(SWEEP_EXPERIMENT)}")
+    exp_id = SWEEP_EXPERIMENT[backbone]
+    scores, shas = {}, set()
+    for lr in SWEEP_LRS:
+        run_dir = split_dir(sweep_dir(data_root) / sweep_run_name(exp_id, lr), 0)
+        metrics = read_metrics(run_dir)
+        if metrics is None:
+            raise ExperimentError(f"missing sweep result {run_dir / 'metrics.json'}; run `run --exp {exp_id} --sweep-lr` first")
+        if metrics.get("fast") or metrics.get("overrides"):
+            raise ExperimentError(f"{run_dir} is a --fast / dev-override run, not a real sweep run; re-run the sweep without those flags")
+        if metrics.get("backbone") != backbone or abs(metrics.get("lr", -1) - lr) > 1e-12:
+            raise ExperimentError(f"{run_dir}: expected backbone {backbone} at lr {lr}, found {metrics.get('backbone')} at {metrics.get('lr')}")
+        scores[lr] = metrics["val"]["mixed"]["macro_f1"]
+        shas.add(metrics["split_sha256"])
+    if len(shas) != 1:
+        raise ExperimentError("the two sweep runs used different splits; re-run both")
+    best = max(SWEEP_LRS, key=lambda lr: (scores[lr], -lr))  # ties: the smaller lr
+    evidence = {
+        "experiment": exp_id, "split": 0, "split_sha256": shas.pop(),
+        "val_mixed_macro_f1": {lr_tag(lr): scores[lr] for lr in SWEEP_LRS},
+        "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr",
+    }
+    path = write_choice(data_root, "lr", best, evidence, sub=backbone)
+    out(f"choose-lr: {backbone}: " + ", ".join(f"lr {lr_tag(lr)} -> val mixed F1 {fmt3(scores[lr])}" for lr in SWEEP_LRS)
+        + f"  =>  lr {lr_tag(best)}  (written to {path})")
+    return {"lr": best, "evidence": evidence}
+
+
+def cmd_choose_lr(args: argparse.Namespace) -> int:
+    try:
+        choose_lr(Path(args.data_root), args.backbone)
+    except (ExperimentError, DatasetError) as exc:
+        print(f"choose-lr: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
+
 def resolve_device(requested: str = "auto") -> str:
     """Map the --device flag to a concrete torch device name; raise if it is unavailable."""
     import torch
@@ -1944,6 +2582,23 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         print(f"prepare: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
     return EXIT_OK
+
+
+def smoke_split(selected: list[Record], seed: int = 0) -> dict:
+    """A deterministic tiny split of the smoke images: every class x domain stratum contributes to train, and
+    val / test get the other members alternately (the real splits need >= 7 images per stratum, the smoke
+    images have ~2)."""
+    parts: dict[str, list[str]] = {"train": [], "val": [], "test": []}
+    by_stratum: dict = {}
+    for record in sorted(selected, key=lambda r: r.filename):
+        by_stratum.setdefault(record.stratum, []).append(record.filename)
+    for (cls, domain), names in by_stratum.items():
+        even = (CLASS_NAMES.index(cls) + DOMAINS.index(domain)) % 2 == 0
+        cycle = ("train", "val" if even else "test", "test" if even else "val", "train")
+        for k, name in enumerate(names):
+            parts[cycle[k % 4]].append(name)
+    train, val, test = (sorted(parts[key]) for key in ("train", "val", "test"))
+    return {"seed": seed, "train": train, "val": val, "test": test, "sha256": split_sha256(seed, train, val, test)}
 
 
 def cmd_smoke(args: argparse.Namespace) -> int:
@@ -2050,7 +2705,7 @@ def _configure_prepare(parser: argparse.ArgumentParser) -> None:
 
 
 def _configure_run(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--exp", required=True, metavar="ID", help="experiment ID, e.g. E1-U")
+    parser.add_argument("--exp", required=True, metavar="ID", help="experiment ID (E1-U), a group (E0, E1, E2, X-domain) or a comma-separated list")
     parser.add_argument(
         "--splits",
         type=parse_splits,
@@ -2058,6 +2713,21 @@ def _configure_run(parser: argparse.ArgumentParser) -> None:
         metavar="LIST",
         help="comma-separated split seeds (default: 0,1,2,3,4)",
     )
+    parser.add_argument("--force", action="store_true", help="retrain splits whose metrics.json already exists")
+    parser.add_argument("--sweep-lr", action="store_true",
+                        help="learning-rate sweep: split 0 at lr 1e-4 and 3e-4 into _work/runs/sweep/ (never a result)")
+    parser.add_argument("--batch-size", type=int, default=None, metavar="N", help="batch size (default 32; 16 + --grad-accum 2 if memory is short)")
+    parser.add_argument("--grad-accum", type=int, default=None, metavar="N", help="gradient accumulation steps (default 1)")
+    parser.add_argument("--num-workers", type=int, default=None, metavar="N", help="data-loading processes (default: cores - 1, at most 4)")
+    parser.add_argument("--out-dir", type=Path, default=None, metavar="DIR", help="write DIR/<ID>/split_<k>/ instead of _work/runs/<ID>/")
+    dev = parser.add_argument_group("dev overrides (output goes to _work/runs/scratch/, never counted as a result)")
+    dev.add_argument("--lr", type=float, default=None, metavar="LR", help="fine-tuning learning rate instead of choices.json")
+    dev.add_argument("--epochs", type=int, default=None, metavar="N", help="fine-tuning epochs (default 30)")
+    dev.add_argument("--stage1-epochs", type=int, default=None, metavar="N", help="linear-probe epochs (default 2)")
+
+
+def _configure_choose_lr(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--backbone", required=True, choices=BACKBONES, help="backbone whose split-0 sweep to evaluate")
 
 
 def _configure_gradcam(parser: argparse.ArgumentParser) -> None:
@@ -2091,7 +2761,13 @@ COMMANDS = (
         cmd_prepare,
         _configure_prepare,
     ),
-    Command("run", "train and evaluate one experiment over the given splits", not_implemented("run", "03"), _configure_run),
+    Command("run", "train and evaluate one experiment over the given splits", cmd_run, _configure_run),
+    Command(
+        "choose-lr",
+        "record the learning rate of a backbone from its split-0 sweep (T3.4 rule) in choices.json",
+        cmd_choose_lr,
+        _configure_choose_lr,
+    ),
     Command(
         "summarize",
         "aggregate all runs into tables and figures",
