@@ -783,6 +783,114 @@ def save_duplicate_sheets(
         paths.append(path)
     return paths
 
+SPLIT_SEEDS = (0, 1, 2, 3, 4)
+SPLIT_PERCENT = 15  # test and val each; train gets the remaining 70
+
+
+def split_size(n_units: int, percent: int = SPLIT_PERCENT) -> int:
+    """round(percent / 100 * n) with halves rounded up, in integer arithmetic."""
+    return (percent * n_units + 50) // 100
+
+
+def split_sha256(seed: int, train: list[str], val: list[str], test: list[str]) -> str:
+    payload = json.dumps(
+        {"seed": seed, "train": sorted(train), "val": sorted(val), "test": sorted(test)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def stratum_order(stratum: tuple[str, str]) -> tuple[int, int]:
+    return (CLASS_NAMES.index(stratum[0]), DOMAINS.index(stratum[1]))
+
+
+def build_units(records: list[Record], groups: list[list[str]] | None) -> dict[tuple[str, str], list[tuple[str, ...]]]:
+    """{stratum: units}; a unit is a sorted tuple of filenames. ``groups=None`` (unconfirmed) and
+    ``groups=[]`` (confirmed, none) both give one unit per image."""
+    by_name = {r.filename: r for r in records}
+    units: dict[tuple[str, str], list[tuple[str, ...]]] = {}
+    grouped: set[str] = set()
+    for group in merge_groups(groups or []):
+        members = tuple(sorted(group))
+        grouped.update(members)
+        units.setdefault(by_name[members[0]].stratum, []).append(members)
+    for record in records:
+        if record.filename not in grouped:
+            units.setdefault(record.stratum, []).append((record.filename,))
+    return units
+
+
+def make_split(records: list[Record], groups: list[list[str]] | None, seed: int) -> dict:
+    """One split as a dict with keys seed, train, val, test (sorted filename lists) and sha256."""
+    train: list[str] = []
+    val: list[str] = []
+    test: list[str] = []
+    units_by_stratum = build_units(records, groups)
+    for stratum in sorted(units_by_stratum, key=stratum_order):
+        units = sorted(units_by_stratum[stratum])
+        shuffled = [units[i] for i in np.random.default_rng(seed).permutation(len(units))]
+        n_test = split_size(len(units))
+        n_val = split_size(len(units))
+        for target, chosen in (
+            (test, shuffled[:n_test]),
+            (val, shuffled[n_test : n_test + n_val]),
+            (train, shuffled[n_test + n_val :]),
+        ):
+            target.extend(name for unit in chosen for name in unit)
+    train, val, test = sorted(train), sorted(val), sorted(test)
+    return {"seed": seed, "train": train, "val": val, "test": test, "sha256": split_sha256(seed, train, val, test)}
+
+
+def splits_dir(data_root) -> Path:
+    return work_dir(data_root) / "splits"
+
+
+def split_path(data_root, seed: int) -> Path:
+    return splits_dir(data_root) / f"split_{seed}.json"
+
+
+def write_splits(
+    data_root, records: list[Record], groups: list[list[str]] | None, seeds=SPLIT_SEEDS
+) -> dict[int, str]:
+    """Generate and write split_<k>.json. Returns {seed: "new" | "unchanged" | "CHANGED"} so that the
+    caller can say loudly when an existing (committed) split differs from the regenerated one."""
+    status = {}
+    for seed in seeds:
+        split = make_split(records, groups, seed)
+        path = split_path(data_root, seed)
+        before = None
+        if path.is_file():
+            try:
+                before = json.loads(read_file_bytes(path).decode("utf-8")).get("sha256")
+            except ValueError:
+                before = ""
+        status[seed] = "new" if before is None else "unchanged" if before == split["sha256"] else "CHANGED"
+        if status[seed] != "unchanged":
+            write_json(path, split)
+    return status
+
+
+def load_split(data_root, seed: int) -> dict:
+    """A split written by `prepare`, with its sha256 re-computed and verified."""
+    path = split_path(data_root, seed)
+    if not path.is_file():
+        raise DatasetError(f"{path} does not exist; run the `prepare` command first")
+    split = json.loads(read_file_bytes(path).decode("utf-8"))
+    expected = split_sha256(split["seed"], split["train"], split["val"], split["test"])
+    if split.get("sha256") != expected:
+        raise DatasetError(f"{path}: sha256 does not match its content (file edited by hand?)")
+    return split
+
+
+def split_counts(split: dict, records: list[Record]) -> dict:
+    """{'train': {'white': n, 'field': n, 'all': n}, 'val': ..., 'test': ...}"""
+    domain_of = {r.filename: r.domain for r in records}
+    return {
+        part: {**{d: sum(domain_of[n] == d for n in split[part]) for d in DOMAINS}, "all": len(split[part])}
+        for part in ("train", "val", "test")
+    }
+
 # ---- from 20_classifier.ipynb ----
 # Phase 03 (classifier): datasets, transforms, models and the train/eval loop are added here.
 

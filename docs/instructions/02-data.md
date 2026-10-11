@@ -61,8 +61,8 @@ Class index order (fixed, used in every confusion matrix): `0 Brown Spot, 1 Leaf
 - Why: if the same leaf appears twice and lands in train and test, test accuracy is inflated. Small agricultural datasets often contain bursts of near-identical shots.
 
 ### T2.5 Stratified, group-aware splits
-- [ ] For seed `k` in `0..4`: within each class x domain stratum, sort units (single images, or duplicate groups as one unit) by filename, shuffle with `np.random.default_rng(k)`, and assign `round(0.15 n)` to test, `round(0.15 n)` to val, rest to train.
-- [ ] Write `_work/splits/split_k.json` with `{"seed", "train", "val", "test", "sha256"}`. Commit these files so local and Colab runs are guaranteed identical.
+- [x] For seed `k` in `0..4`: within each class x domain stratum, sort units (single images, or duplicate groups as one unit) by filename, shuffle with `np.random.default_rng(k)`, and assign `round(0.15 n)` to test, `round(0.15 n)` to val, rest to train.
+- [x] Write `_work/splits/split_k.json` with `{"seed", "train", "val", "test", "sha256"}`. Commit these files so local and Colab runs are guaranteed identical. (Commit only after Nattan confirms duplicates; see T2.4.)
 - [ ] Every run's `metrics.json` records the split sha256. `summarize` refuses to aggregate runs whose sha differs from the committed split.
 - Tests: train/val/test disjoint and covering all 1106; each stratum within +-1 of target counts; duplicate groups never straddle splits; regenerating gives identical sha256.
 - Expected size per split: train ~774, val ~166, test ~166, of which ~50 are field test images.
