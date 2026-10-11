@@ -1247,6 +1247,435 @@ class ExperimentConfig:
     def is_resolved(self) -> bool:
         return self.backbone is not None and self.input_mode is not None and self.lr is not None
 
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+PAD_COLOR = tuple(round(m * 255) for m in IMAGENET_MEAN)  # letterbox colour: the ImageNet mean, (124, 116, 104)
+
+AUG_CROP_AREA = (0.6, 1.0)  # fraction of the image area kept by the random crop
+AUG_ROTATION_DEG = 15.0
+AUG_BRIGHTNESS = 0.2
+AUG_CONTRAST = 0.2
+AUG_SATURATION = 0.15
+AUG_HUE = 0.02  # fraction of the hue circle: +-7.2 degrees at most
+
+
+def input_size(mode: str, size_div: int = 1) -> tuple[int, int]:
+    """(height, width) of the network input for an input mode. ``size_div`` > 1 is for smoke tests only."""
+    if mode not in INPUT_SIZES:
+        raise ValueError(f"unknown input mode {mode!r}, expected one of {INPUT_MODES}")
+    height, width = INPUT_SIZES[mode]
+    return max(8, height // size_div), max(8, width // size_div)
+
+
+def resize_exact(rgb: np.ndarray, height: int, width: int) -> np.ndarray:
+    shrinking = height * width < rgb.shape[0] * rgb.shape[1]
+    return cv2.resize(rgb, (width, height), interpolation=cv2.INTER_AREA if shrinking else cv2.INTER_LINEAR)
+
+
+def resize_content(rgb: np.ndarray, mode: str, size: tuple[int, int]) -> np.ndarray:
+    """The image content at network resolution. For `pad` this is the aspect-preserving fit inside the
+    box (smaller than the box in one dimension); `letterbox` then places it on the canvas."""
+    height, width = size
+    if mode != "pad":
+        return resize_exact(rgb, height, width)
+    scale = min(height / rgb.shape[0], width / rgb.shape[1])
+    return resize_exact(rgb, max(1, round(rgb.shape[0] * scale)), max(1, round(rgb.shape[1] * scale)))
+
+
+def letterbox(content: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    height, width = size
+    if content.shape[:2] == (height, width):
+        return content
+    canvas = np.empty((height, width, 3), dtype=np.uint8)
+    canvas[:] = PAD_COLOR
+    top, left = (height - content.shape[0]) // 2, (width - content.shape[1]) // 2
+    canvas[top : top + content.shape[0], left : left + content.shape[1]] = content
+    return canvas
+
+
+def random_crop(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Crop covering 60-100% of the area at the image's own aspect (a zoom / framing change)."""
+    height, width = rgb.shape[:2]
+    side = math.sqrt(rng.uniform(*AUG_CROP_AREA))
+    crop_h, crop_w = max(1, round(height * side)), max(1, round(width * side))
+    top = int(rng.integers(0, height - crop_h + 1))
+    left = int(rng.integers(0, width - crop_w + 1))
+    return rgb[top : top + crop_h, left : left + crop_w]
+
+
+def random_flips(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    flip_h, flip_v = rng.random() < 0.5, rng.random() < 0.5
+    if flip_h:
+        rgb = rgb[:, ::-1]
+    if flip_v:
+        rgb = rgb[::-1]
+    return np.ascontiguousarray(rgb)
+
+
+def random_rotation(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    angle = rng.uniform(-AUG_ROTATION_DEG, AUG_ROTATION_DEG)
+    height, width = rgb.shape[:2]
+    matrix = cv2.getRotationMatrix2D((width / 2, height / 2), angle, 1.0)
+    return cv2.warpAffine(rgb, matrix, (width, height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+
+
+def _gray(img: np.ndarray) -> np.ndarray:
+    return img[..., 0] * 0.299 + img[..., 1] * 0.587 + img[..., 2] * 0.114
+
+
+def color_jitter(rgb: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Brightness, contrast, saturation (multiplicative factors) and a small hue shift, in random order."""
+    brightness = rng.uniform(1 - AUG_BRIGHTNESS, 1 + AUG_BRIGHTNESS)
+    contrast = rng.uniform(1 - AUG_CONTRAST, 1 + AUG_CONTRAST)
+    saturation = rng.uniform(1 - AUG_SATURATION, 1 + AUG_SATURATION)
+    hue = rng.uniform(-AUG_HUE, AUG_HUE)
+    order = rng.permutation(4)  # all draws happen up front so the stream does not depend on the order
+    img = rgb.astype(np.float32) / 255.0
+    for op in order:
+        if op == 0:
+            img = np.clip(img * brightness, 0.0, 1.0)
+        elif op == 1:
+            mean = float(_gray(img).mean())
+            img = np.clip((img - mean) * contrast + mean, 0.0, 1.0)
+        elif op == 2:
+            gray = _gray(img)[..., None]
+            img = np.clip((img - gray) * saturation + gray, 0.0, 1.0)
+        else:
+            hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)  # float32: H in [0, 360), S and V in [0, 1]
+            hsv[..., 0] = (hsv[..., 0] + hue * 360.0) % 360.0
+            img = np.clip(cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB), 0.0, 1.0)
+    return np.clip(img * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
+@dataclass(frozen=True)
+class ImageTransform:
+    """uint8 RGB image -> uint8 RGB image of the network input size. ``train`` adds the augmentation (and
+    needs an ``rng``); the evaluation transform is the input-mode resize only and is deterministic."""
+
+    mode: str
+    train: bool = False
+    size_div: int = 1
+
+    @property
+    def size(self) -> tuple[int, int]:
+        return input_size(self.mode, self.size_div)
+
+    def __call__(self, rgb: np.ndarray, rng: np.random.Generator | None = None) -> np.ndarray:
+        if self.train:
+            if rng is None:
+                raise ValueError("the training transform needs an rng")
+            rgb = random_rotation(random_flips(random_crop(rgb, rng), rng), rng)
+        content = resize_content(np.ascontiguousarray(rgb), self.mode, self.size)
+        if self.train:
+            content = color_jitter(content, rng)
+        return letterbox(content, self.size)
+
+
+def normalize_batch(images: torch.Tensor, device) -> torch.Tensor:
+    """uint8 [N, 3, H, W] -> float32 on ``device``, scaled to [0, 1] and normalised with the ImageNet mean/std."""
+    x = images.to(device, non_blocking=True).float().div_(255.0)
+    mean = torch.tensor(IMAGENET_MEAN, device=x.device).view(1, 3, 1, 1)
+    std = torch.tensor(IMAGENET_STD, device=x.device).view(1, 3, 1, 1)
+    return (x - mean) / std
+
+
+def select_records(records: list[Record], filenames, domains=None) -> list[Record]:
+    """Records of a split part (``filenames``, e.g. split['train']) restricted to ``domains``, in split order."""
+    by_name = {r.filename: r for r in records}
+    missing = [name for name in filenames if name not in by_name]
+    if missing:
+        raise DatasetError(f"{len(missing)} split entries are not in the index, e.g. {missing[:3]}; re-run `prepare`")
+    chosen = [by_name[name] for name in filenames]
+    return [r for r in chosen if domains is None or r.domain in domains]
+
+
+def subsample_records(records: list[Record], n: int) -> list[Record]:
+    """At most ``n`` records, round-robin over the class x domain strata (deterministic). For smoke runs."""
+    queues: dict = {}
+    for record in records:
+        queues.setdefault(record.stratum, []).append(record)
+    order = sorted(queues, key=stratum_order)
+    chosen: list[Record] = []
+    while len(chosen) < min(n, len(records)):
+        for stratum in order:
+            if queues[stratum] and len(chosen) < n:
+                chosen.append(queues[stratum].pop(0))
+    return chosen
+
+
+def _sample_seed(seed: int) -> int:
+    return int(seed) & 0x7FFFFFFF
+
+
+class LeafDataset:
+    """Map-style dataset over cached images.
+
+    ``dataset[i]`` and ``dataset[(i, epoch)]`` both return ``(uint8 CHW tensor, class index, i)``. The
+    augmentation of a sample is a pure function of ``(seed, epoch, i)``. Indices ``0..len(records)-1`` are
+    the real records; the extra sources follow.
+    """
+
+    def __init__(self, data_root, records, transform, *, seed=0, extra_sources=(), input_hook=None, epoch=0):
+        self.data_root = Path(data_root)
+        self.records = list(records)
+        self.transform = transform
+        self.seed = _sample_seed(seed)
+        self.extra_sources = tuple(extra_sources)
+        self.input_hook = input_hook
+        self.epoch = epoch
+        self._extra_offsets = np.cumsum([0, *[len(s) for s in self.extra_sources]])
+
+    def __len__(self) -> int:
+        return len(self.records) + int(self._extra_offsets[-1])
+
+    def sample_rng(self, index: int, epoch: int) -> np.random.Generator:
+        return np.random.default_rng([self.seed, int(epoch), int(index)])
+
+    def load_raw(self, index: int, epoch: int = 0) -> tuple[np.ndarray, int, str]:
+        """(uint8 RGB before the transform, class index, name) after the hook for real images."""
+        if index < len(self.records):
+            record = self.records[index]
+            rgb = read_cached_rgb(self.data_root, record.filename)
+            if self.input_hook is not None:
+                rgb = self.input_hook(rgb, record)
+            return rgb, record.cls_idx, record.filename
+        extra = index - len(self.records)
+        which = int(np.searchsorted(self._extra_offsets, extra, side="right") - 1)
+        return self.extra_sources[which].load(extra - int(self._extra_offsets[which]), epoch)
+
+    def __getitem__(self, key):
+        index, epoch = key if isinstance(key, tuple) else (key, self.epoch)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        rgb, label, _ = self.load_raw(index, epoch)
+        rng = self.sample_rng(index, epoch) if self.transform.train else None
+        image = self.transform(rgb, rng)
+        return torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1))), int(label), index
+
+
+class EpochSampler(torch.utils.data.Sampler):
+    """Shuffled ``(index, epoch)`` pairs; the order is a function of (seed, epoch) only."""
+
+    def __init__(self, n: int, seed: int):
+        self.n, self.seed, self.epoch = n, _sample_seed(seed), 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __iter__(self):
+        order = np.random.default_rng([self.seed, self.epoch]).permutation(self.n)
+        return iter([(int(i), self.epoch) for i in order])
+
+
+def _worker_init(worker_id: int) -> None:
+    cv2.setNumThreads(0)  # OpenCV's own thread pool would fight with the DataLoader workers
+    torch.set_num_threads(1)
+
+
+def default_num_workers() -> int:
+    """Data-loading processes, at most 4. Decoding and augmenting one image costs ~30 ms of CPU, so on a 2-vCPU
+    Colab machine the workers, not the GPU, set the speed; the main process mostly waits for the GPU there, so
+    every core gets a worker. From 3 cores up, one core is left to the main process."""
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except AttributeError:
+        cores = os.cpu_count() or 1
+    return max(1, min(4, cores if cores <= 2 else cores - 1))
+
+
+def usable_workers(requested: int) -> int:
+    """Workers that can really start: under `spawn` they re-import this file, which only works when it runs
+    as the main script (the same rule as the cache's process pool)."""
+    return requested if requested > 0 and pool_is_safe() else 0
+
+
+def make_loader(dataset, batch_size, *, sampler=None, num_workers=0, drop_last=False, pin_memory=False, mp_context=None):
+    num_workers = usable_workers(num_workers) if mp_context is None else num_workers
+    kwargs = {}
+    if num_workers > 0:
+        kwargs.update(
+            persistent_workers=True, worker_init_fn=_worker_init, multiprocessing_context=mp_context, prefetch_factor=4
+        )
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        shuffle=False,
+        num_workers=num_workers,
+        drop_last=drop_last,
+        pin_memory=pin_memory,
+        **kwargs,
+    )
+
+
+@dataclass
+class EvalSet:
+    """A fully materialised evaluation set: the deterministic eval transform applied once, kept as uint8."""
+
+    images: torch.Tensor  # [N, 3, H, W] uint8
+    labels: np.ndarray  # [N] int64
+    names: list[str]
+    domains: list[str]
+
+    def __len__(self) -> int:
+        return len(self.names)
+
+
+def materialize(dataset: LeafDataset, *, num_workers: int = 0, batch_size: int = 32) -> EvalSet:
+    """Run the (deterministic) eval transform over a dataset once. Per-epoch validation then costs only the
+    forward pass instead of decoding JPEGs every epoch."""
+    if len(dataset) != len(dataset.records):
+        raise ValueError("materialize() is for real records only (no extra_sources)")
+    loader = make_loader(dataset, batch_size, num_workers=num_workers)
+    batches = [images for images, _, _ in loader]
+    images = torch.cat(batches) if batches else torch.empty(0, 3, *dataset.transform.size, dtype=torch.uint8)
+    return EvalSet(
+        images,
+        np.array([r.cls_idx for r in dataset.records], dtype=np.int64),
+        [r.filename for r in dataset.records],
+        [r.domain for r in dataset.records],
+    )
+
+from torch import nn
+
+
+@dataclass(frozen=True)
+class BackboneSpec:
+    builder: str  # function in torchvision.models
+    weights: str  # "<Weights enum>.<member>", resolved with torchvision.models.get_weight
+
+
+BACKBONE_SPECS = {
+    "resnet50": BackboneSpec("resnet50", "ResNet50_Weights.IMAGENET1K_V2"),
+    "convnext_tiny": BackboneSpec("convnext_tiny", "ConvNeXt_Tiny_Weights.IMAGENET1K_V1"),
+    "swin_t": BackboneSpec("swin_t", "Swin_T_Weights.IMAGENET1K_V1"),
+}
+# Weights that `download-weights` fetches: (name, weights enum member, what it is for).
+SEGMENTER_WEIGHTS = "LRASPP_MobileNet_V3_Large_Weights.COCO_WITH_VOC_LABELS_V1"
+WEIGHT_TABLE = (
+    ("resnet50", BACKBONE_SPECS["resnet50"].weights, "ResNet50 classifier (E0, E1)"),
+    ("convnext_tiny", BACKBONE_SPECS["convnext_tiny"].weights, "ConvNeXt-Tiny classifier (E2)"),
+    ("swin_t", BACKBONE_SPECS["swin_t"].weights, "Swin-Tiny classifier (E2)"),
+    ("lraspp_mobilenet_v3_large", SEGMENTER_WEIGHTS, "leaf segmenter (phase 06)"),
+)
+
+
+def backbone_weights(backbone: str):
+    return torchvision.models.get_weight(BACKBONE_SPECS[backbone].weights)
+
+
+def backbone_of(model: nn.Module) -> str:
+    models = torchvision.models
+    for name, cls in (("resnet50", models.ResNet), ("convnext_tiny", models.ConvNeXt), ("swin_t", models.SwinTransformer)):
+        if isinstance(model, cls):
+            return name
+    raise ValueError(f"not one of our backbones: {type(model).__name__}")
+
+
+def build_model(backbone: str, num_classes: int = NUM_CLASSES, *, pretrained: bool = True, dropout: float = 0.2, data_root=None):
+    """torchvision backbone with the final layer replaced by Dropout + Linear. ``pretrained=False`` (tests,
+    ``predict``) builds the same architecture with random weights and downloads nothing. With ``data_root``
+    the weights are read from, and downloaded to, ``<data_root>/_work/weights``."""
+    if backbone not in BACKBONE_SPECS:
+        raise ValueError(f"unknown backbone {backbone!r}, expected one of {BACKBONES}")
+    if data_root is not None and pretrained:
+        set_torch_home(data_root)
+    spec = BACKBONE_SPECS[backbone]
+    model = getattr(torchvision.models, spec.builder)(weights=backbone_weights(backbone) if pretrained else None)
+    if backbone == "resnet50":
+        model.fc = nn.Sequential(nn.Dropout(dropout), nn.Linear(model.fc.in_features, num_classes))
+    elif backbone == "convnext_tiny":
+        model.classifier[2] = nn.Sequential(nn.Dropout(dropout), nn.Linear(model.classifier[2].in_features, num_classes))
+    else:
+        model.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(model.head.in_features, num_classes))
+    return model
+
+
+def head_module(model: nn.Module) -> nn.Module:
+    return {"resnet50": lambda m: m.fc, "convnext_tiny": lambda m: m.classifier[2], "swin_t": lambda m: m.head}[
+        backbone_of(model)
+    ](model)
+
+
+def head_parameters(model: nn.Module) -> list[nn.Parameter]:
+    return list(head_module(model).parameters())
+
+
+def backbone_parameters(model: nn.Module) -> list[nn.Parameter]:
+    head_ids = {id(p) for p in head_parameters(model)}
+    return [p for p in model.parameters() if id(p) not in head_ids]
+
+
+def gradcam_target_layer(model: nn.Module) -> nn.Module:
+    """Layer whose activations Grad-CAM uses. Swin's output is NHWC: pass it through `cam_to_nchw`."""
+    return model.layer4 if backbone_of(model) == "resnet50" else model.features[-1]
+
+
+def cam_to_nchw(activation: torch.Tensor, model: nn.Module) -> torch.Tensor:
+    return activation.permute(0, 3, 1, 2) if backbone_of(model) == "swin_t" else activation
+
+
+def count_parameters(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters())
+
+def weights_dir(data_root) -> Path:
+    return work_dir(data_root) / "weights"
+
+
+def set_torch_home(data_root, create: bool = True) -> Path:
+    """Point torch's download cache at <data_root>/_work/weights (documented location of the pretrained weights)."""
+    path = weights_dir(data_root)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    os.environ["TORCH_HOME"] = str(path)
+    return path
+
+
+def weight_checkpoint_path(weights) -> Path:
+    """Where torch stores the file of a torchvision weights enum member (under the current TORCH_HOME)."""
+    return Path(torch.hub.get_dir()) / "checkpoints" / Path(urlparse(weights.url).path).name
+
+
+def weight_file_ok(path: Path) -> bool:
+    """The file exists and, when its name carries a sha256 prefix (resnet50-11ad3fa6.pth), matches it."""
+    if not path.is_file() or path.stat().st_size == 0:
+        return False
+    match = re.search(r"-([0-9a-f]{8})\.pth$", path.name)
+    if not match:
+        return True
+    digest = hashlib.sha256()
+    with open(fs_path(path), "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest().startswith(match.group(1))
+
+
+def download_weights(data_root, out=print) -> list[dict]:
+    """Fetch every pretrained weight file into <data_root>/_work/weights. Safe to call repeatedly."""
+    home = set_torch_home(data_root)
+    out(f"download-weights: TORCH_HOME = {home}")
+    rows = []
+    for name, member, purpose in WEIGHT_TABLE:
+        weights = torchvision.models.get_weight(member)
+        path = weight_checkpoint_path(weights)
+        state = "already present"
+        if not weight_file_ok(path):
+            if path.exists():
+                path.unlink()
+                state = "re-downloaded (the stored file was damaged)"
+            else:
+                state = "downloaded"
+            weights.get_state_dict(progress=True, check_hash=True)
+            if not weight_file_ok(path):
+                raise ExperimentError(f"{member}: the downloaded file {path} fails its checksum")
+        size = path.stat().st_size / 1e6
+        out(f"  {member}: {state}\n    purpose  {purpose}\n    url      {weights.url}\n    stored   {path} ({size:.1f} MB)")
+        rows.append({"name": name, "weights": member, "url": weights.url, "path": str(path), "bytes": path.stat().st_size, "state": state})
+    return rows
+
 # ---- from 30_copy_paste.ipynb ----
 # Phase 05 (copy-paste): pseudo-masks and composites are added here.
 
@@ -1407,6 +1836,14 @@ NON_CLASSIFIER_MESSAGE = {
 }
 
 
+def run_folder_name(exp_id: str, choices: Choices) -> str:
+    """Folder (under runs/) that holds the results of an experiment ID: itself, except for the E1-U alias."""
+    if exp_id not in EXPERIMENTS:
+        expand_experiment_ids(exp_id)  # raises with suggestions
+    base = EXPERIMENTS[exp_id]
+    return f"{base.alias_of_winner}-{choices.get('input_mode')}" if base.alias_of_winner else exp_id
+
+
 def expand_experiment_ids(text: str) -> list[str]:
     """'E0' -> its three rows; 'E1-U,E1-WW' -> two rows. Unknown IDs raise UnknownExperimentError."""
     ids: list[str] = []
@@ -1475,6 +1912,14 @@ def resolve_experiment(
         lr = base.lr if base.lr is not None else pick("lr", backbone)
     config = replace(base, backbone=backbone, input_mode=mode, lr=lr)
     return ResolvedExperiment(config, exp_id, used, tuple(notes))
+
+def cmd_download_weights(args: argparse.Namespace) -> int:
+    try:
+        download_weights(Path(args.data_root))
+    except (ExperimentError, OSError) as exc:
+        print(f"download-weights: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
 
 def resolve_device(requested: str = "auto") -> str:
     """Map the --device flag to a concrete torch device name; raise if it is unavailable."""
@@ -1637,8 +2082,8 @@ class Command:
 COMMANDS = (
     Command(
         "download-weights",
-        "fetch the torchvision pretrained weights into <data-root>/_work/weights/",
-        not_implemented("download-weights", "03"),
+        "fetch the torchvision pretrained weights into <data-root>/_work/weights/ (idempotent)",
+        cmd_download_weights,
     ),
     Command(
         "prepare",

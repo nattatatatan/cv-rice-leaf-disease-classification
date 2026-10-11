@@ -88,3 +88,20 @@ def tiny_tree(tmp_path: Path) -> Path:
                 seed += 1
                 make_jpeg(root / top / folder / f"{prefix}{i}.jpg", orientation=[1, 6, 8][i], seed=seed)
     return root
+
+
+def make_cache(gs, root, n=8, size=(260, 120)):
+    """Write ``n`` random blocky portrait JPEGs into <root>/_work/cache and return matching Records."""
+    import numpy as np
+
+    records = []
+    prefixes = {(c, d): p for p, c, d, _ in gs.LABEL_TABLE}
+    for i in range(n):
+        cls, domain = gs.CLASS_NAMES[i % 5], gs.DOMAINS[i % 2]
+        name = f"{prefixes[(cls, domain)]}{i}.jpg"
+        rng = np.random.default_rng(i)
+        blocks = rng.integers(0, 256, size=(size[0] // 20, size[1] // 20, 3), dtype=np.uint8)
+        rgb = np.kron(blocks, np.ones((20, 20, 1), dtype=np.uint8))
+        gs.write_bytes_atomic(gs.cache_dir(root) / name, gs.encode_jpeg(rgb, 95))
+        records.append(gs.Record(name, f"x/{name}", cls, gs.CLASS_NAMES.index(cls), domain, 1, ""))
+    return records
