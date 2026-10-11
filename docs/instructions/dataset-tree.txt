@@ -1,0 +1,17 @@
+# Original Dhan-Shomadhan tree (folder names shown with repr() so trailing spaces are visible).
+# Source of truth: initial commit e6af236 (unmodified download); matches MyDrive/csci935/Dhan-Shomadhan.zip.
+# Excludes .DS_Store and _work/.
+'Dhan-Shomadhan/'
+  'Field Background  /'
+    'Browon Spot'/  49 jpg
+    'Leaf Scaled'/  74 jpg
+    'Rice Blast'/  74 jpg
+    'Rice Turgro'/  76 jpg
+    'Sheath Blight'/  64 jpg
+  'White Background /'
+    'Brown Spot'/  90 jpg
+    'Leaf Scaled'/  143 jpg
+    'Rice Blast'/  198 jpg
+    'Rice Tungro'/  119 jpg
+    'Shath Blight'/  219 jpg
+  'Dhan-Shomadhan_picture_Information.csv'

@@ -43,9 +43,9 @@ group/
 - Done when: `python -c "import torch, torchvision, cv2, sklearn, skimage; print(cv2.__version__)"` prints `4.12.x` on Python 3.12, and `torch.backends.mps.is_available()` is `True` on the M2.
 
 ### T1.2 Restore original dataset structure
-- [ ] Revert the rename from commit `8a7b131`: `Dhan-Shomadhan/White Background /Sheath Blight` -> `Dhan-Shomadhan/White Background /Shath Blight` (use `git mv`; note the trailing space in `White Background `).
-- [ ] Compare the tree against a fresh download from Mendeley (doi 10.17632/znsxdctwtt.1). Any other difference in folder or file names must be reverted too. Record the original tree (folder names with `repr()` so trailing spaces are visible) in `docs/instructions/dataset-tree.txt`.
-- [ ] Upload the **original** Mendeley zip to Google Drive (`MyDrive/csci935/Dhan-Shomadhan.zip`). Colab always runs against this copy, so it doubles as an E2E test of what the marker will have.
+- [x] Revert the rename from commit `8a7b131`: `Dhan-Shomadhan/White Background /Sheath Blight` -> `Dhan-Shomadhan/White Background /Shath Blight` (use `git mv`; note the trailing space in `White Background `).
+- [x] Compare the tree against the original download (initial commit `e6af236`; a fresh Mendeley download, doi 10.17632/znsxdctwtt.1, is the upstream fallback). Any other difference in folder or file names must be reverted too. Done 2026-10-11: all 1107 dataset file paths identical to `e6af236`. Record the original tree (folder names with `repr()` so trailing spaces are visible) in `docs/instructions/dataset-tree.txt`.
+- [x] Upload an **unmodified** dataset zip (rebuilt with `zip -r -X`, no `.DS_Store`/`__MACOSX`) to Google Drive (`MyDrive/csci935/Dhan-Shomadhan.zip`). Colab always runs against this copy, so it doubles as an E2E test of what the marker will have.
 - Why: the marker runs our code on their copy. If we only test against a cleaned copy, a path bug only shows up during marking.
 
 ### T1.3 Git hygiene
