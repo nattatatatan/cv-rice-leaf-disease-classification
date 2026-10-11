@@ -12,7 +12,9 @@ What it does:
 2. Collects every code cell whose first line is exactly ``#| export`` (the marker
    line itself is dropped) and concatenates them, with a comment header per notebook.
 3. Prepends a module docstring and appends ``if __name__ == "__main__": main()``.
-4. Validates the result and refuses to write anything if a check fails:
+4. Embeds the JSON files listed in ``EMBEDDED_FILES`` (``annotations/*.json``) as Python
+   constants before the notebook code, because the submission is the single ``.py``.
+5. Validates the result and refuses to write anything if a check fails:
    - cells contain no notebook-only syntax (``!cmd``, ``%magic``, ``display(...)``),
    - every import is stdlib or one of ``ALLOWED_THIRD_PARTY`` (the import guard),
    - the module defines a top-level ``main`` function,
@@ -78,21 +80,105 @@ class NotebookExport:
     sections: list[Section]
 
 
-def embedded_sections(repo_root: Path) -> list[Section]:
-    """EXTENSION POINT (phase 06, T6.x): embed data files as Python constants.
+@dataclass(frozen=True)
+class EmbeddedFile:
+    """A JSON data file that is embedded in the generated module as a Python constant.
 
-    Phase 06 must ship the hand-annotated field polygons inside the single ``.py``
-    (decision D8). When that is implemented, read the JSON file here and return a
-    ``Section`` whose source assigns it to a constant, for example::
-
-        Section("embedded:field_polygons.json",
-                "FIELD_POLYGONS = json.loads(" + repr(text) + ")\\n")
-
-    Returned sections are placed before the notebook code and go through the same
-    guards (imports, syntax, compile) as notebook cells, so they may only use
-    allowed imports. Not implemented yet: no data is embedded today.
+    ``path`` is relative to the repo root. A ``required`` file that is missing is an error;
+    an optional one is skipped (its phase has not produced the file yet).
     """
-    return []
+
+    path: str
+    constant: str
+    required: bool = True
+
+
+# The data files that ship inside the single .py (the marker only receives the .py and the PDF).
+# To embed another file, add a row here and read the constant in a notebook cell.
+EMBEDDED_FILES = (
+    EmbeddedFile("annotations/duplicate_groups.json", "DUPLICATE_GROUPS"),
+    # Phase 06 (T6.1): hand-annotated salient-leaf polygons. Skipped until the file exists.
+    EmbeddedFile("annotations/field_salient_leaf.json", "FIELD_ANNOTATIONS", required=False),
+)
+
+LITERAL_WIDTH = 100  # soft line-length limit of embedded literals
+
+
+def _scalar_literal(value) -> str:
+    if isinstance(value, str):
+        return json.dumps(value)  # double quotes; ASCII escapes are valid Python too
+    if value is None or isinstance(value, (bool, int, float)):
+        return repr(value)
+    raise ExportError(f"cannot embed value of type {type(value).__name__}")
+
+
+def _is_numeric(value) -> bool:
+    """A number, or a (nested) list of numbers: such lists are packed several entries per line."""
+    if isinstance(value, list):
+        return all(_is_numeric(v) for v in value)
+    return not isinstance(value, (str, dict))
+
+
+def format_literal(value, indent: int = 0, width: int = LITERAL_WIDTH) -> str:
+    """Render JSON-compatible data as a readable, deterministic Python literal.
+
+    A container is written on one line when it fits in ``width`` columns, otherwise one entry per
+    line (lists of numbers, e.g. polygon vertices, are packed several per line). Starts at column
+    ``indent`` of the first line; continuation lines are indented relative to ``indent``.
+    """
+    if not isinstance(value, (list, dict)):
+        return _scalar_literal(value)
+    pad = " " * (indent + 4)
+    if isinstance(value, list):
+        items = [format_literal(v, indent + 4, width) for v in value]
+        open_, close = "[", "]"
+    else:
+        if not all(isinstance(k, str) for k in value):
+            raise ExportError("cannot embed an object with non-string keys")
+        items = [f"{_scalar_literal(k)}: {format_literal(v, indent + 4, width)}" for k, v in value.items()]
+        open_, close = "{", "}"
+    one_line = open_ + ", ".join(items) + close
+    if "\n" not in one_line and indent + len(one_line) <= width:
+        return one_line
+    if isinstance(value, list) and all(_is_numeric(v) for v in value):
+        lines, current = [], ""
+        for item in items:
+            piece = item + ","
+            if current and len(pad) + len(current) + 1 + len(piece) > width:
+                lines.append(pad + current)
+                current = piece
+            else:
+                current = f"{current} {piece}" if current else piece
+        lines.append(pad + current)
+        return open_ + "\n" + "\n".join(lines) + "\n" + " " * indent + close
+    body = "".join(f"{pad}{item},\n" for item in items)
+    return open_ + "\n" + body + " " * indent + close
+
+
+def embedded_sections(repo_root: Path, files: tuple[EmbeddedFile, ...] = EMBEDDED_FILES) -> list[Section]:
+    """Python source for every embedded data file, to be placed before the notebook code.
+
+    Each file becomes ``CONSTANT = <literal>`` preceded by a comment naming the source file. The
+    sections go through the same guards (imports, syntax, compile) as notebook cells. A missing
+    required file is an ``ExportError``; a missing optional file is skipped.
+    """
+    sections = []
+    for spec in files:
+        path = repo_root / spec.path
+        if not path.is_file():
+            if spec.required:
+                raise ExportError(f"embedded data file {spec.path} is missing (needed for {spec.constant})")
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ExportError(f"{spec.path}: cannot read JSON: {exc}") from exc
+        source = (
+            f"# Embedded from {spec.path} by tools/export_py.py. Edit that file, not this block.\n"
+            f"{spec.constant} = {format_literal(data)}\n"
+        )
+        sections.append(Section(f"embedded:{spec.path}", source))
+    return sections
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +371,7 @@ def export(
     out_path: Path | None = None,
     group_name: str = GROUP_NAME,
     repo_root: Path = REPO_ROOT,
+    embedded_files: tuple[EmbeddedFile, ...] = EMBEDDED_FILES,
 ) -> Path:
     """Build the module and write it. Nothing is written if any check fails."""
     out_path = out_path or repo_root / f"{group_name}.py"
@@ -292,7 +379,7 @@ def export(
     if not notebooks:
         raise ExportError(f"no notebooks matching {NOTEBOOK_GLOB} in {notebooks_dir}")
     exports = [read_notebook(p) for p in notebooks]
-    text = build_module(exports, embedded_sections(repo_root), group_name)
+    text = build_module(exports, embedded_sections(repo_root, embedded_files), group_name)
     out_path.write_text(text, encoding="utf-8")
     return out_path
 

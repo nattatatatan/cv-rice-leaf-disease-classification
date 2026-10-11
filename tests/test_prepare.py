@@ -25,12 +25,13 @@ def snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
-def test_prepare_writes_everything_and_warns_about_unconfirmed_duplicates(gs, tiny_tree):
+def test_prepare_writes_everything_and_reports_the_duplicate_groups(gs, tiny_tree):
     lines = []
-    summary = gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, workers=1, out=lines.append)
+    summary = gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, groups=[], workers=1, out=lines.append)
     text = "\n".join(lines)
     assert summary["records"] == 12 and summary["cache"].built == 12
-    assert "WARNING" in text and "UNCONFIRMED" in text
+    assert "WARNING" not in text and "UNCONFIRMED" not in text
+    assert "duplicate groups: 0 (0 images), given" in text
     assert "index       12 images" in text and "exif" in text and "splits" in text
     assert len(lines) <= 20, "one-screen summary"
 
@@ -49,29 +50,41 @@ def test_prepare_writes_everything_and_warns_about_unconfirmed_duplicates(gs, ti
 
 
 def test_prepare_is_idempotent(gs, tiny_tree):
-    gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, workers=1, out=lambda _: None)
+    gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, groups=[], workers=1, out=lambda _: None)
     first = snapshot(tiny_tree)
     lines = []
-    summary = gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, workers=1, out=lines.append)
+    summary = gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, groups=[], workers=1, out=lines.append)
     assert summary["cache"].built == 0 and summary["cache"].reused == 12
     assert set(summary["splits"].values()) == {"unchanged"}
     assert snapshot(tiny_tree) == first, "second run reproduces every output byte for byte"
 
 
-def test_prepare_uses_confirmed_duplicate_groups(gs, tiny_tree):
-    (tiny_tree / "_work").mkdir()
-    (tiny_tree / "_work" / "duplicate_groups.json").write_text(json.dumps([["bsf_0.jpg", "bsf_1.jpg"]]))
+def test_prepare_keeps_given_duplicate_groups_together(gs, tiny_tree):
     lines = []
-    summary = gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, workers=1, out=lines.append)
+    summary = gs.prepare_data(
+        tiny_tree, expected_counts=TINY_COUNTS, groups=[["bsf_1.jpg", "bsf_0.jpg"]], workers=1, out=lines.append
+    )
     assert summary["duplicate_groups"] == [["bsf_0.jpg", "bsf_1.jpg"]]
-    assert "UNCONFIRMED" not in "\n".join(lines)
-    assert "1 confirmed groups" in "\n".join(lines)
+    assert "duplicate groups: 1 (2 images), given" in "\n".join(lines)
+    for seed in range(5):
+        split = gs.load_split(tiny_tree, seed)
+        parts = {name: part for part in ("train", "val", "test") for name in split[part]}
+        assert parts["bsf_0.jpg"] == parts["bsf_1.jpg"]
 
 
 def test_prepare_rejects_groups_with_unknown_files(gs, tiny_tree):
-    (tiny_tree / "_work").mkdir()
-    (tiny_tree / "_work" / "duplicate_groups.json").write_text(json.dumps([["bsf_0.jpg", "ghost.jpg"]]))
     with pytest.raises(gs.DatasetError, match="ghost.jpg"):
+        gs.prepare_data(
+            tiny_tree, expected_counts=TINY_COUNTS, groups=[["bsf_0.jpg", "ghost.jpg"]], workers=1, out=lambda _: None
+        )
+
+
+def test_prepare_uses_the_embedded_groups_and_never_a_side_file(gs, tiny_tree):
+    """Default groups = the embedded constant. The tiny tree lacks most of its files, so this must fail
+    loudly (rather than silently splitting differently); a _work/duplicate_groups.json is ignored."""
+    (tiny_tree / "_work").mkdir()
+    (tiny_tree / "_work" / "duplicate_groups.json").write_text(json.dumps([["bsf_0.jpg", "bsf_1.jpg"]]))
+    with pytest.raises(gs.DatasetError, match="not in the dataset index"):
         gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, workers=1, out=lambda _: None)
 
 
@@ -85,7 +98,7 @@ def test_prepare_works_from_any_working_directory(gs, tiny_tree, tmp_path, monke
     elsewhere.mkdir(parents=True)
     monkeypatch.chdir(elsewhere)
     relative = os.path.relpath(tiny_tree, elsewhere)
-    gs.prepare_data(relative, expected_counts=TINY_COUNTS, workers=1, out=lambda _: None)
+    gs.prepare_data(relative, expected_counts=TINY_COUNTS, groups=[], workers=1, out=lambda _: None)
     assert (tiny_tree / "_work" / "index.json").is_file()
     assert not (elsewhere / "_work").exists()
 
@@ -95,7 +108,7 @@ def test_prepare_does_not_modify_the_dataset(gs, tiny_tree):
         return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file() and "_work" not in p.parts}
 
     before = tree(tiny_tree)
-    gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, workers=1, out=lambda _: None)
+    gs.prepare_data(tiny_tree, expected_counts=TINY_COUNTS, groups=[], workers=1, out=lambda _: None)
     assert tree(tiny_tree) == before
 
 
@@ -103,7 +116,7 @@ def test_prepare_survives_renamed_class_folders(gs, tiny_tree, tmp_path):
     root = tmp_path / "renamed"
     shutil.copytree(tiny_tree, root)
     (root / FIELD_DIR / "Browon Spot").rename(root / FIELD_DIR / "Brown Spot Field")
-    gs.prepare_data(root, expected_counts=TINY_COUNTS, workers=1, out=lambda _: None)
+    gs.prepare_data(root, expected_counts=TINY_COUNTS, groups=[], workers=1, out=lambda _: None)
     assert len(gs.load_index(root)) == 12
 
 

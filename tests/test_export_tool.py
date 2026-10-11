@@ -28,13 +28,15 @@ def make_notebook(path: Path, cells: list[tuple[str, str]]) -> Path:
     return path
 
 
-def export(export_tool, tmp_path: Path, notebooks: dict[str, list[tuple[str, str]]]) -> Path:
+def export(
+    export_tool, tmp_path: Path, notebooks: dict[str, list[tuple[str, str]]], embedded_files: tuple = ()
+) -> Path:
     nb_dir = tmp_path / "notebooks"
     nb_dir.mkdir(exist_ok=True)
     for name, cells in notebooks.items():
         make_notebook(nb_dir / name, cells)
     out = tmp_path / "out.py"
-    export_tool.export(nb_dir, out, repo_root=tmp_path)
+    export_tool.export(nb_dir, out, repo_root=tmp_path, embedded_files=embedded_files)
     return out
 
 
@@ -180,7 +182,7 @@ def test_missing_main_is_an_error(export_tool, tmp_path):
 def test_no_notebooks_is_an_error(export_tool, tmp_path):
     (tmp_path / "notebooks").mkdir()
     with pytest.raises(export_tool.ExportError, match="no notebooks"):
-        export_tool.export(tmp_path / "notebooks", tmp_path / "out.py", repo_root=tmp_path)
+        export_tool.export(tmp_path / "notebooks", tmp_path / "out.py", repo_root=tmp_path, embedded_files=())
 
 
 def test_source_as_plain_string_is_supported(export_tool, tmp_path):
@@ -193,7 +195,7 @@ def test_source_as_plain_string_is_supported(export_tool, tmp_path):
         "cells": [{"cell_type": "code", "metadata": {}, "outputs": [], "source": "#| export\ndef main(): ..."}],
     }
     (nb_dir / "90_cli.ipynb").write_text(json.dumps(nb))
-    export_tool.export(nb_dir, tmp_path / "out.py", repo_root=tmp_path)
+    export_tool.export(nb_dir, tmp_path / "out.py", repo_root=tmp_path, embedded_files=())
     assert "def main()" in (tmp_path / "out.py").read_text()
 
 
@@ -204,12 +206,106 @@ def test_export_is_deterministic(export_tool, tmp_path):
     assert first == second
 
 
-def test_embedded_sections_extension_point_is_empty_but_validated(export_tool, tmp_path):
-    assert export_tool.embedded_sections(tmp_path) == []
-    # Anything returned from the extension point goes through the same import guard.
+def write_json(root: Path, relative: str, data) -> Path:
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_embedded_sections_are_validated_like_notebook_cells(export_tool):
+    # Anything embedded goes through the same import guard.
     bad = export_tool.Section("embedded:data.json", "import pandas")
     with pytest.raises(export_tool.ExportError, match="embedded:data.json"):
         export_tool.build_module([], [bad])
+
+
+def test_embedded_file_becomes_a_constant_with_a_source_comment(export_tool, tmp_path):
+    write_json(tmp_path, "annotations/a.json", [["x.jpg", "y.jpg"]])
+    files = (export_tool.EmbeddedFile("annotations/a.json", "GROUPS"),)
+    [section] = export_tool.embedded_sections(tmp_path, files)
+    assert section.origin == "embedded:annotations/a.json"
+    assert section.source.startswith("# Embedded from annotations/a.json")
+    assert 'GROUPS = [["x.jpg", "y.jpg"]]' in section.source
+
+
+def test_missing_optional_embedded_file_is_skipped(export_tool, tmp_path):
+    write_json(tmp_path, "annotations/a.json", [])
+    files = (
+        export_tool.EmbeddedFile("annotations/a.json", "A"),
+        export_tool.EmbeddedFile("annotations/later.json", "LATER", required=False),
+    )
+    sections = export_tool.embedded_sections(tmp_path, files)
+    assert [s.origin for s in sections] == ["embedded:annotations/a.json"]
+    out = export(export_tool, tmp_path, {"90_cli.ipynb": [exported(MAIN)]}, embedded_files=files)
+    assert "LATER" not in out.read_text()
+
+
+def test_missing_required_embedded_file_fails_clearly_and_writes_nothing(export_tool, tmp_path):
+    files = (export_tool.EmbeddedFile("annotations/gone.json", "GONE"),)
+    with pytest.raises(export_tool.ExportError, match=r"annotations/gone\.json is missing.*GONE"):
+        export(export_tool, tmp_path, {"90_cli.ipynb": [exported(MAIN)]}, embedded_files=files)
+    assert not (tmp_path / "out.py").exists()
+
+
+def test_invalid_embedded_json_fails_clearly(export_tool, tmp_path):
+    (tmp_path / "annotations").mkdir()
+    (tmp_path / "annotations" / "bad.json").write_text("{not json")
+    files = (export_tool.EmbeddedFile("annotations/bad.json", "BAD"),)
+    with pytest.raises(export_tool.ExportError, match=r"annotations/bad\.json: cannot read JSON"):
+        export_tool.embedded_sections(tmp_path, files)
+
+
+def test_embedded_constant_round_trips_through_the_generated_module(export_tool, tmp_path):
+    data = {
+        "a.jpg": {"polygon": [[round(i / 97, 6), round(1 - i / 89, 6)] for i in range(60)], "ambiguous": False},
+        "b.jpg": {"polygon": [], "ambiguous": True, "note": None},
+        "caf\u00e9 \"quoted\".jpg": [1, 2.5, -3, "text", True],
+    }
+    write_json(tmp_path, "annotations/b.json", data)
+    write_json(tmp_path, "annotations/groups.json", [["a", "b"]] * 40)
+    files = (
+        export_tool.EmbeddedFile("annotations/groups.json", "GROUPS"),
+        export_tool.EmbeddedFile("annotations/b.json", "ANNOTATIONS"),
+    )
+    notebooks = {"90_cli.ipynb": [exported("print(GROUPS == [['a', 'b']] * 40, ANNOTATIONS)\n" + MAIN)]}
+    out = export(export_tool, tmp_path, notebooks, embedded_files=files)
+    text = out.read_text()
+    assert text.index("GROUPS = ") < text.index("ANNOTATIONS = ") < text.index("def main")
+    assert max(len(line) for line in text.splitlines()) <= 100, "embedded literals stay within the line width"
+    namespace: dict = {"__name__": "embedded_roundtrip"}
+    exec(compile(text, str(out), "exec"), namespace)
+    assert namespace["GROUPS"] == [["a", "b"]] * 40
+    assert namespace["ANNOTATIONS"] == data
+
+
+def test_format_literal_is_compact_deterministic_python(export_tool):
+    fmt = export_tool.format_literal
+    assert fmt([["a.jpg", "b.jpg"], ["c.jpg", "d.jpg"]]) == '[["a.jpg", "b.jpg"], ["c.jpg", "d.jpg"]]'
+    assert fmt({"k": None, "ok": True}) == '{"k": None, "ok": True}'
+    long = [["file_%d.jpg" % i, "file_%d.jpg" % (i + 1)] for i in range(10)]
+    text = fmt(long)
+    assert text.startswith("[\n    [") and text.endswith("],\n]")
+    assert eval(text) == long and fmt(long) == text
+    with pytest.raises(export_tool.ExportError, match="non-string keys"):
+        fmt({1: 2})
+    with pytest.raises(export_tool.ExportError, match="cannot embed"):
+        fmt(object())
+
+
+def test_the_real_repo_embeds_its_duplicate_groups(export_tool, gs):
+    """The committed annotations file is what ends up in the generated module."""
+    committed = json.loads((REPO_ROOT / "annotations" / "duplicate_groups.json").read_text(encoding="utf-8"))
+    assert gs.DUPLICATE_GROUPS == committed
+    assert (len(committed), sum(map(len, committed))) == (36, 77)
+
+    def natural(name):  # "rtf_10.jpg" -> ("rtf_", 10)
+        stem = name.removesuffix(".jpg")
+        prefix, _, number = stem.rpartition("_")
+        return prefix, int(number)
+
+    assert all(g == sorted(g, key=natural) for g in committed), "files sorted inside each group"
+    assert committed == sorted(committed, key=lambda g: natural(g[0])), "groups sorted by first file"
 
 
 def test_command_line_failure_exit_code_and_message(tmp_path):

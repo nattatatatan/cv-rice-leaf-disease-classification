@@ -1,6 +1,5 @@
 """Phase 02 T2.4: near-duplicate audit."""
 
-import json
 import shutil
 
 import numpy as np
@@ -125,41 +124,3 @@ def test_report_csv_and_sheets(gs, cached):
     assert len(paths) == -(-min(10, len(pairs)) // 4)
     assert all(p.stat().st_size > 5000 for p in paths)
     assert gs.save_duplicate_sheets(root, [], max_pairs=10) == []
-
-
-# ------------------------------------------------------------------ confirmed groups
-
-
-def test_merge_groups_is_transitive_and_deterministic(gs):
-    merged = gs.merge_groups([["c", "b"], ["a", "b"], ["x", "y"], ["z"], ["y", "q"]])
-    assert merged == [["a", "b", "c"], ["q", "x", "y"]]
-    assert gs.merge_groups([]) == []
-    assert gs.merge_groups([["b", "a"], ["d", "c"], ["a", "c"]]) == [["a", "b", "c", "d"]]
-
-
-def write_groups(root, payload):
-    path = root / "_work" / "duplicate_groups.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload if isinstance(payload, str) else json.dumps(payload))
-
-
-def test_missing_groups_file_means_unconfirmed(gs, tiny_tree):
-    assert gs.load_duplicate_groups(tiny_tree, ["a.jpg"]) is None
-
-
-def test_empty_groups_file_means_confirmed_none(gs, tiny_tree):
-    write_groups(tiny_tree, [])
-    assert gs.load_duplicate_groups(tiny_tree, ["a.jpg"]) == []
-
-
-def test_groups_are_validated_and_merged(gs, tiny_tree):
-    names = ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
-    write_groups(tiny_tree, [["a.jpg", "b.jpg"], ["b.jpg", "c.jpg"]])
-    assert gs.load_duplicate_groups(tiny_tree, names) == [["a.jpg", "b.jpg", "c.jpg"]]
-    write_groups(tiny_tree, [["a.jpg", "nope.jpg"]])
-    with pytest.raises(gs.DatasetError, match="nope.jpg"):
-        gs.load_duplicate_groups(tiny_tree, names)
-    for bad in ('{"a": 1}', "[1, 2]", '[["a.jpg", 3]]', "not json"):
-        write_groups(tiny_tree, bad)
-        with pytest.raises(gs.DatasetError):
-            gs.load_duplicate_groups(tiny_tree, names)

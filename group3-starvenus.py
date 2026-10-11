@@ -8,6 +8,48 @@ tools/export_py.py. Edit the notebooks and re-run the export instead.
 Run `python group3-starvenus.py --help` to list the commands.
 """
 
+# ---- embedded:annotations/duplicate_groups.json ----
+# Embedded from annotations/duplicate_groups.json by tools/export_py.py. Edit that file, not this block.
+DUPLICATE_GROUPS = [
+    ["bs_wb_4.jpg", "bs_wb_5.jpg"],
+    ["bs_wb_55.jpg", "bs_wb_56.jpg"],
+    ["bs_wb_80.jpg", "bs_wb_81.jpg"],
+    ["bsf_0.jpg", "bsf_1.jpg"],
+    ["bsf_2.jpg", "bsf_3.jpg"],
+    ["bsf_4.jpg", "bsf_5.jpg"],
+    ["bsf_7.jpg", "bsf_8.jpg"],
+    ["bsf_15.jpg", "bsf_16.jpg"],
+    ["ls_wb_1.jpg", "ls_wb_2.jpg"],
+    ["ls_wb_85.jpg", "ls_wb_86.jpg"],
+    ["ls_wb_99.jpg", "ls_wb_100.jpg"],
+    ["lsf_0.jpg", "lsf_1.jpg"],
+    ["lsf_6.jpg", "lsf_7.jpg"],
+    ["lsf_12.jpg", "lsf_23.jpg"],
+    ["lsf_34.jpg", "lsf_45.jpg"],
+    ["lsf_67.jpg", "lsf_72.jpg"],
+    ["rb_wb_20.jpg", "rb_wb_21.jpg"],
+    ["rb_wb_91.jpg", "rb_wb_92.jpg"],
+    ["rb_wb_113.jpg", "rb_wb_114.jpg"],
+    ["rb_wb_146.jpg", "rb_wb_147.jpg"],
+    ["rb_wb_169.jpg", "rb_wb_170.jpg"],
+    ["rb_wb_180.jpg", "rb_wb_181.jpg"],
+    ["rbf_1.jpg", "rbf_2.jpg"],
+    ["rbf_13.jpg", "rbf_14.jpg"],
+    ["rbf_21.jpg", "rbf_22.jpg"],
+    ["rtf_0.jpg", "rtf_1.jpg"],
+    ["rtf_5.jpg", "rtf_6.jpg"],
+    ["rtf_7.jpg", "rtf_8.jpg", "rtf_9.jpg", "rtf_10.jpg"],
+    ["rtf_11.jpg", "rtf_12.jpg"],
+    ["rtf_17.jpg", "rtf_18.jpg", "rtf_19.jpg"],
+    ["rtf_20.jpg", "rtf_21.jpg"],
+    ["rtf_22.jpg", "rtf_23.jpg"],
+    ["rtf_25.jpg", "rtf_26.jpg", "rtf_27.jpg"],
+    ["rtf_32.jpg", "rtf_33.jpg"],
+    ["sb_wb_210.jpg", "sb_wb_211.jpg"],
+    ["sbf_1.jpg", "sbf_19.jpg", "sbf_47.jpg"],
+]
+
+
 # ---- from 10_data.ipynb ----
 import csv
 import hashlib
@@ -537,7 +579,6 @@ def read_cached_rgb(data_root, filename: str) -> np.ndarray:
     return read_rgb(cache_dir(data_root) / filename)
 
 NEAR_DUPLICATE_MAX_DISTANCE = 6
-DUPLICATE_GROUPS_FILENAME = "duplicate_groups.json"
 FEATURE_LONG_SIDE = 1000  # images are downscaled to this long side before SIFT
 FEATURE_MAX_KEYPOINTS = 3000
 FEATURE_CONTRAST = 0.01  # below OpenCV's 0.04 default: leaves on a plain wall have few strong corners
@@ -661,48 +702,31 @@ def write_duplicate_report(data_root, pairs: list[DuplicatePair]) -> Path:
     return path
 
 
-def merge_groups(groups: list[list[str]]) -> list[list[str]]:
-    """Transitive merge: groups that share a filename become one group. Sorted, deterministic."""
-    parent: dict[str, str] = {}
+def validate_duplicate_groups(groups, records: list[Record]) -> list[list[str]]:
+    """Check the duplicate groups (the embedded ``DUPLICATE_GROUPS``) against the index and return them
+    normalised: members sorted, groups sorted. Raises DatasetError unless
 
-    def find(x: str) -> str:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
+    * every group is a list of at least two filenames,
+    * every filename exists in the index,
+    * no filename appears in two groups (nor twice in one), and
+    * every group lies within one class x domain stratum, because the splits stratify on it.
 
-    for group in groups:
+    Nothing is merged or repaired: a wrong group list is a bug in ``annotations/duplicate_groups.json``."""
+    stratum_of = {r.filename: r.stratum for r in records}
+    first_group: dict[str, int] = {}
+    for number, group in enumerate(groups):
+        if not isinstance(group, (list, tuple)) or len(group) < 2 or not all(isinstance(n, str) for n in group):
+            raise DatasetError(f"duplicate group #{number}: expected a list of at least 2 filenames, got {group!r}")
         for name in group:
-            parent.setdefault(name, name)
-        for name in group[1:]:
-            parent[find(name)] = find(group[0])
-    merged: dict[str, list[str]] = {}
-    for name in parent:
-        merged.setdefault(find(name), []).append(name)
-    return sorted((sorted(members) for members in merged.values() if len(members) > 1), key=lambda m: m[0])
-
-
-def duplicate_groups_path(data_root) -> Path:
-    return work_dir(data_root) / DUPLICATE_GROUPS_FILENAME
-
-
-def load_duplicate_groups(data_root, filenames) -> list[list[str]] | None:
-    """The human-confirmed duplicate groups, transitively merged; ``None`` if the file does not exist
-    (duplicates are then UNCONFIRMED, which is different from an empty list: "confirmed, none")."""
-    path = duplicate_groups_path(data_root)
-    if not path.is_file():
-        return None
-    try:
-        raw = json.loads(read_file_bytes(path).decode("utf-8"))
-    except ValueError as exc:
-        raise DatasetError(f"{path}: not valid JSON: {exc}") from exc
-    if not isinstance(raw, list) or not all(isinstance(g, list) and all(isinstance(n, str) for n in g) for g in raw):
-        raise DatasetError(f"{path}: expected a list of lists of filenames")
-    known = set(filenames)
-    unknown = sorted({n for g in raw for n in g} - known)
-    if unknown:
-        raise DatasetError(f"{path}: {len(unknown)} filenames are not in the index, e.g. {unknown[:5]}")
-    return merge_groups(raw)
+            if name not in stratum_of:
+                raise DatasetError(f"duplicate group #{number}: {name} is not in the dataset index")
+            if name in first_group:
+                raise DatasetError(f"{name} appears in duplicate groups #{first_group[name]} and #{number}")
+            first_group[name] = number
+        strata = sorted({stratum_of[n] for n in group})
+        if len(strata) != 1:
+            raise DatasetError(f"duplicate group #{number} {list(group)} spans several class x domain strata: {strata}")
+    return sorted((sorted(g) for g in groups), key=lambda g: g[0])
 
 # Okabe-Ito colour-blind-safe palette.
 OKABE_ITO = {
@@ -808,14 +832,14 @@ def stratum_order(stratum: tuple[str, str]) -> tuple[int, int]:
     return (CLASS_NAMES.index(stratum[0]), DOMAINS.index(stratum[1]))
 
 
-def build_units(records: list[Record], groups: list[list[str]] | None) -> dict[tuple[str, str], list[tuple[str, ...]]]:
-    """{stratum: units}; a unit is a sorted tuple of filenames. ``groups=None`` (unconfirmed) and
-    ``groups=[]`` (confirmed, none) both give one unit per image."""
+def build_units(records: list[Record], groups: list[list[str]]) -> dict[tuple[str, str], list[tuple[str, ...]]]:
+    """{stratum: units}; a unit is a sorted tuple of filenames: a duplicate group, or a single image.
+    ``groups`` is validated first (see ``validate_duplicate_groups``); ``[]`` gives one unit per image."""
     by_name = {r.filename: r for r in records}
     units: dict[tuple[str, str], list[tuple[str, ...]]] = {}
     grouped: set[str] = set()
-    for group in merge_groups(groups or []):
-        members = tuple(sorted(group))
+    for group in validate_duplicate_groups(groups, records):
+        members = tuple(group)
         grouped.update(members)
         units.setdefault(by_name[members[0]].stratum, []).append(members)
     for record in records:
@@ -824,7 +848,7 @@ def build_units(records: list[Record], groups: list[list[str]] | None) -> dict[t
     return units
 
 
-def make_split(records: list[Record], groups: list[list[str]] | None, seed: int) -> dict:
+def make_split(records: list[Record], groups: list[list[str]], seed: int) -> dict:
     """One split as a dict with keys seed, train, val, test (sorted filename lists) and sha256."""
     train: list[str] = []
     val: list[str] = []
@@ -853,9 +877,7 @@ def split_path(data_root, seed: int) -> Path:
     return splits_dir(data_root) / f"split_{seed}.json"
 
 
-def write_splits(
-    data_root, records: list[Record], groups: list[list[str]] | None, seeds=SPLIT_SEEDS
-) -> dict[int, str]:
+def write_splits(data_root, records: list[Record], groups: list[list[str]], seeds=SPLIT_SEEDS) -> dict[int, str]:
     """Generate and write split_<k>.json. Returns {seed: "new" | "unchanged" | "CHANGED"} so that the
     caller can say loudly when an existing (committed) split differs from the regenerated one."""
     status = {}
@@ -989,9 +1011,14 @@ def exif_summary(records: list[Record]) -> str:
     return f"{sum(tagged.values())} images carry an EXIF rotation tag ({detail or 'none'}); all applied"
 
 
-def prepare_data(data_root, *, expected_counts=EXPECTED_COUNTS, workers: int | None = None, out=print) -> dict:
+def prepare_data(
+    data_root, *, expected_counts=EXPECTED_COUNTS, groups=None, workers: int | None = None, out=print
+) -> dict:
     """index -> cache -> near-duplicate audit -> splits -> tables and figures. Returns a summary dict
-    (also printed through ``out``). Raises DatasetError on any dataset problem."""
+    (also printed through ``out``). Raises DatasetError on any dataset problem.
+
+    ``groups`` are the duplicate groups kept together in the splits; ``None`` means the embedded
+    ``DUPLICATE_GROUPS``, which is what every real run uses (tests pass their own for tiny datasets)."""
     import time
 
     start = time.time()
@@ -1027,13 +1054,9 @@ def prepare_data(data_root, *, expected_counts=EXPECTED_COUNTS, workers: int | N
         f"              best feature-match score {stats['max_feature_inliers']} (a real duplicate shares hundreds); "
         f"{len(sheets)} contact sheets in {figures_dir(data_root)} ({time.time() - t:.0f} s)"
     )
-    groups = load_duplicate_groups(data_root, [r.filename for r in records])
-    if groups is None:
-        out(f"  WARNING     duplicates are UNCONFIRMED: no {duplicate_groups_path(data_root).name} in {work_dir(data_root)}.")
-        out("              Every image is treated as its own unit in the splits. Review the contact sheets and the")
-        out("              CSV, then write the confirmed groups (list of lists of filenames) to that file and re-run.")
-    else:
-        out(f"  duplicates  {len(groups)} confirmed groups ({sum(len(g) for g in groups)} images) are kept together in the splits")
+    source = "embedded" if groups is None else "given"
+    groups = validate_duplicate_groups(DUPLICATE_GROUPS if groups is None else groups, records)
+    out(f"  groups      duplicate groups: {len(groups)} ({sum(len(g) for g in groups)} images), {source}; each is kept in one split")
 
     status = write_splits(data_root, records, groups)
     first = load_split(data_root, SPLIT_SEEDS[0])
@@ -1046,7 +1069,7 @@ def prepare_data(data_root, *, expected_counts=EXPECTED_COUNTS, workers: int | N
     )
     if "CHANGED" in status.values():
         out("  WARNING     an existing split file differs from the regenerated one and was overwritten")
-        out("              (expected after the duplicate groups changed; otherwise investigate before training)")
+        out("              (expected only if the duplicate groups or the dataset changed; otherwise investigate before training)")
     out("              sha256 " + " ".join(load_split(data_root, s)["sha256"][:10] for s in SPLIT_SEEDS))
 
     write_dataset_counts(data_root, records)
@@ -1113,8 +1136,15 @@ def run_data_smoke(data_root, n_images: int = 20, workers: int = 2, log=print, e
     data_root = Path(data_root)
     records = build_index(data_root, expected_counts=None, with_sha1=False)
     log(f"smoke: OK - index of {len(records)} images, labels match filename prefixes (and the CSV if present)")
-    groups = load_duplicate_groups(data_root, [r.filename for r in records])
-    log("smoke: OK - duplicate groups: " + ("not confirmed yet (no file)" if groups is None else f"{len(groups)} confirmed groups"))
+    if class_domain_counts(records) == EXPECTED_COUNTS:
+        groups = validate_duplicate_groups(DUPLICATE_GROUPS, records)
+        for seed in SPLIT_SEEDS:
+            split = make_split(records, groups, seed)
+            where = {name: part for part in ("train", "val", "test") for name in split[part]}
+            smoke_require(all(len({where[n] for n in g}) == 1 for g in groups), f"a duplicate group straddles splits (seed {seed})")
+        log(f"smoke: OK - {len(groups)} embedded duplicate groups ({sum(len(g) for g in groups)} images) match the index and stay in one split")
+    else:
+        log("smoke: SKIPPED - embedded duplicate groups are not checked: this is not the full dataset")
     selected = [
         replace(r, sha1=hashlib.sha1(read_file_bytes(data_root / r.rel_path)).hexdigest())
         for r in pick_smoke_records(records, n_images)
@@ -1145,10 +1175,10 @@ def run_data_smoke(data_root, n_images: int = 20, workers: int = 2, log=print, e
         fake = synthetic_records()
         names = {r.filename for r in fake}
         for seed in SPLIT_SEEDS:
-            split = make_split(fake, None, seed)
+            split = make_split(fake, [], seed)
             parts = [set(split[k]) for k in ("train", "val", "test")]
             smoke_require(sum(len(p) for p in parts) == len(names) and set.union(*parts) == names, "split does not partition")
-            smoke_require(split == make_split(fake, None, seed), "split is not deterministic")
+            smoke_require(split == make_split(fake, [], seed), "split is not deterministic")
         log("smoke: OK - splits are deterministic partitions")
 
         write_dataset_counts(tmp_root, selected)
