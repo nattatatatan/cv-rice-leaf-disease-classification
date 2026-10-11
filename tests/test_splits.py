@@ -6,6 +6,8 @@ import re
 import numpy as np
 import pytest
 
+from conftest import REPO_ROOT
+
 
 @pytest.fixture(scope="module")
 def records(gs):
@@ -199,3 +201,17 @@ def test_load_split_detects_hand_edits_and_missing_files(gs, records, tmp_path):
     path.write_text(json.dumps(data))
     with pytest.raises(gs.DatasetError, match="sha256"):
         gs.load_split(tmp_path, 0)
+
+
+def test_committed_splits_are_what_the_embedded_groups_produce(gs):
+    """The committed split_*.json (final, used by every run and by Colab) equal a fresh regeneration from
+    the committed index and the embedded duplicate groups. Needs only index.json, no images."""
+    data_root = REPO_ROOT / "Dhan-Shomadhan"
+    if not (data_root / "_work" / "index.json").is_file() or not (data_root / "_work" / "splits").is_dir():
+        pytest.skip("no committed index/splits in this checkout")
+    records = gs.load_index(data_root)
+    for seed in gs.SPLIT_SEEDS:
+        committed = gs.load_split(data_root, seed)  # also verifies the stored sha256
+        assert committed == gs.make_split(records, gs.DUPLICATE_GROUPS, seed), (
+            f"split_{seed}.json is stale: re-run `prepare` and commit the new splits"
+        )
