@@ -367,6 +367,145 @@ def read_rgb(path) -> np.ndarray:
     rgb, _ = to_portrait(decode_oriented(read_file_bytes(path), str(path)))
     return np.ascontiguousarray(rgb)
 
+CACHE_LONG_SIDE = 1280
+CACHE_JPEG_QUALITY = 95
+MAX_WORKERS = 8
+
+
+def cache_dir(data_root) -> Path:
+    return work_dir(data_root) / "cache"
+
+
+def manifest_path(data_root) -> Path:
+    return cache_dir(data_root) / "manifest.json"
+
+
+def default_workers() -> int:
+    try:
+        available = len(os.sched_getaffinity(0))
+    except AttributeError:  # macOS, Windows
+        available = os.cpu_count() or 1
+    return max(1, min(available, MAX_WORKERS))
+
+
+def pool_is_safe() -> bool:
+    """True if worker processes can import the functions we send them: always under `fork`; under
+    `spawn` only when this file runs as the main script (children re-run it as `__mp_main__`)."""
+    return multiprocessing.get_start_method() == "fork" or __name__ == "__main__"
+
+
+def _pool_init() -> None:
+    cv2.setNumThreads(1)  # one process per core already; avoid oversubscription
+
+
+def run_parallel(func, tasks, *, workers: int, mp_context=None, chunksize: int = 4):
+    """Yield ``func(task)`` for every task, in order. Uses a process pool when that is possible and
+    worthwhile, otherwise runs inline. ``func`` must be a picklable top-level function."""
+    tasks = list(tasks)
+    use_pool = workers > 1 and len(tasks) > 1 and (mp_context is not None or pool_is_safe())
+    if not use_pool:
+        for task in tasks:
+            yield func(task)
+        return
+    with ProcessPoolExecutor(
+        max_workers=min(workers, len(tasks)), mp_context=mp_context, initializer=_pool_init
+    ) as executor:
+        yield from executor.map(func, tasks, chunksize=chunksize)
+
+
+def resize_long_side(rgb: np.ndarray, long_side: int) -> np.ndarray:
+    height, width = rgb.shape[:2]
+    scale = long_side / max(height, width)
+    if scale >= 1.0:
+        return rgb
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    return cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+
+
+def encode_jpeg(rgb: np.ndarray, quality: int) -> bytes:
+    ok, buffer = cv2.imencode(".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise DatasetError("JPEG encoding failed")
+    return buffer.tobytes()
+
+
+def _cache_one(task: tuple) -> tuple[str, dict]:
+    """Worker: source file -> cached portrait JPEG. Returns (filename, manifest entry without sha1)."""
+    filename, source, target, long_side, quality = task
+    try:
+        rgb, rotated = to_portrait(decode_oriented(read_file_bytes(source), source))
+        small = resize_long_side(np.ascontiguousarray(rgb), long_side)
+        write_bytes_atomic(Path(target), encode_jpeg(small, quality))
+    except Exception as exc:
+        raise DatasetError(f"{source}: caching failed: {exc}") from exc
+    return filename, {"width": int(small.shape[1]), "height": int(small.shape[0]), "rotated_landscape": bool(rotated)}
+
+
+@dataclass
+class CacheStats:
+    total: int
+    built: int
+    reused: int
+    rotated_landscape: int  # images (of `total`) that were landscape after EXIF and were turned to portrait
+
+
+def load_manifest(data_root) -> dict:
+    path = manifest_path(data_root)
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(read_file_bytes(path).decode("utf-8"))
+    except (OSError, ValueError):
+        return {}  # a damaged manifest only means "rebuild everything"
+
+
+def write_manifest(data_root, manifest: dict) -> None:
+    write_json(manifest_path(data_root), dict(sorted(manifest.items())))
+
+
+def build_cache(
+    data_root,
+    records: list[Record],
+    *,
+    workers: int | None = None,
+    mp_context=None,
+    long_side: int = CACHE_LONG_SIDE,
+    quality: int = CACHE_JPEG_QUALITY,
+    log=None,
+) -> CacheStats:
+    """Cache every record (see section text). Idempotent. ``records`` need their sha1 (not the
+    ``with_sha1=False`` kind)."""
+    if any(not r.sha1 for r in records):
+        raise DatasetError("build_cache needs records with sha1 (build_index(..., with_sha1=True))")
+    data_root = Path(data_root)
+    root = cache_dir(data_root)
+    manifest = load_manifest(data_root)
+
+    def current(record: Record) -> bool:
+        entry = manifest.get(record.filename)
+        return bool(entry) and entry.get("sha1") == record.sha1 and (root / record.filename).is_file()
+
+    todo = [r for r in records if not current(r)]
+    tasks = [(r.filename, str(data_root / r.rel_path), str(root / r.filename), long_side, quality) for r in todo]
+    sha_of = {r.filename: r.sha1 for r in todo}
+    done = 0
+    try:
+        for filename, entry in run_parallel(_cache_one, tasks, workers=workers or default_workers()):
+            manifest[filename] = {"sha1": sha_of[filename], **entry}
+            done += 1
+            if log and done % 200 == 0:
+                log(f"cache: {done}/{len(tasks)}")
+    finally:
+        if done:
+            write_manifest(data_root, manifest)  # also after an interrupted run: finished images are kept
+    rotated = sum(bool(manifest[r.filename]["rotated_landscape"]) for r in records)
+    return CacheStats(total=len(records), built=len(todo), reused=len(records) - len(todo), rotated_landscape=rotated)
+
+
+def read_cached_rgb(data_root, filename: str) -> np.ndarray:
+    """A cached image: (H, W, 3) uint8 RGB, portrait, long side <= 1280."""
+    return read_rgb(cache_dir(data_root) / filename)
+
 # ---- from 20_classifier.ipynb ----
 # Phase 03 (classifier): datasets, transforms, models and the train/eval loop are added here.
 

@@ -49,9 +49,9 @@ Class index order (fixed, used in every confusion matrix): `0 Brown Spot, 1 Leaf
 - Tests: `sbf_30.jpg` (EXIF 6) and one EXIF-8 image come out portrait with the same pixels as `PIL.ImageOps.exif_transpose` (PIL only inside the test, which is fine because tests are not submitted). If OpenCV does not honour EXIF in the pinned version, implement the transpose manually from the orientation tag and keep the test.
 
 ### T2.3 Resolution cache
-- [ ] Cache every image at **long side 1280 px**, aspect preserved, portrait, JPEG quality 95, to `_work/cache/<filename>`. Decoding 8 MP JPEGs every epoch would dominate training time; 1280 px leaves headroom for 448 px inputs plus random-resized-crop zoom and for Method B crops.
-- [ ] Idempotent: skip if the cached file exists and `index.json` sha1 matches.
-- [ ] Multiprocess with `concurrent.futures.ProcessPoolExecutor`.
+- [x] Cache every image at **long side 1280 px**, aspect preserved, portrait, JPEG quality 95, to `_work/cache/<filename>`. Decoding 8 MP JPEGs every epoch would dominate training time; 1280 px leaves headroom for 448 px inputs plus random-resized-crop zoom and for Method B crops.
+- [x] Idempotent: skip if the cached file exists and `index.json` sha1 matches.
+- [x] Multiprocess with `concurrent.futures.ProcessPoolExecutor`.
 - Done when: a full cache build takes under ~5 min on Colab, and the cached image count is 1106.
 
 ### T2.4 Near-duplicate audit (leakage guard)
