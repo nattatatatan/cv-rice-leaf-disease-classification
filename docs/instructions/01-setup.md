@@ -52,7 +52,7 @@ group/
 - [x] `.gitignore`: `.DS_Store`, `.venv/`, `__pycache__/`, `Dhan-Shomadhan/_work/cache/`, `Dhan-Shomadhan/_work/weights/`, `*.pt`, `*.pth`, `.ipynb_checkpoints/`. Keep `Dhan-Shomadhan/_work/{splits,runs,results,figures}` tracked, but with checkpoints excluded, so results are versioned.
 - [x] `git rm --cached` all tracked `.DS_Store` files.
 - [x] Move `dataset.ipynb` -> `notebooks/00_dataset_audit.ipynb`. Delete `dataset.html` from the repo (it can be regenerated).
-- [ ] Update its hardcoded label mapping to the class/domain mapping defined in [02](02-data.md) once T2.1 exists.
+- [x] Update its hardcoded label mapping to the class/domain mapping defined in [02](02-data.md) once T2.1 exists (it now reads `CSV_LABELS` from the generated module).
 
 ### T1.4 Export tool `tools/export_py.py` (stdlib only)
 - [x] Read `notebooks/[0-9][0-9]_*.ipynb` in sorted order, skipping `00_*` and `colab_runner`.
