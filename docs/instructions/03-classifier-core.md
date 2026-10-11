@@ -13,9 +13,9 @@ Prerequisites: 02 complete. Notebooks: `notebooks/20_classifier.ipynb`, registry
 ## Tasks
 
 ### T3.1 Experiment config and registry
-- [ ] `@dataclass ExperimentConfig`: `exp_id, backbone ("resnet50"|"convnext_tiny"|"swin_t"), train_domains ({"white","field"} subset), select_domains (domains whose val images pick the checkpoint), test_subsets, input_mode ("squash"|"pad"|"rect"), use_composites: bool, seg_crop: bool, epochs, lr, batch_size, ...` with defaults from T3.4.
-- [ ] `EXPERIMENTS: dict[str, ExperimentConfig]` holds every row of the README matrix. Rows marked "best of E0/E2" resolve at runtime from `_work/results/choices.json`, which is written by the gates in [04](04-experiments-baseline.md). They fail with a clear message if that file does not exist yet.
-- [ ] `select_domains` rule: equals `train_domains`. For W->F rows, checkpoints are chosen on **white** val only. Picking on field val would leak field information into a "white-only" model.
+- [x] `@dataclass ExperimentConfig`: `exp_id, backbone ("resnet50"|"convnext_tiny"|"swin_t"), train_domains ({"white","field"} subset), select_domains (domains whose val images pick the checkpoint), test_subsets, input_mode ("squash"|"pad"|"rect"), use_composites: bool, seg_crop: bool, epochs, lr, batch_size, ...` with defaults from T3.4.
+- [x] `EXPERIMENTS: dict[str, ExperimentConfig]` holds every row of the README matrix. Rows marked "best of E0/E2" resolve at runtime from `_work/results/choices.json`, which is written by the gates in [04](04-experiments-baseline.md). They fail with a clear message if that file does not exist yet.
+- [x] `select_domains` rule: equals `train_domains`. For W->F rows, checkpoints are chosen on **white** val only. Picking on field val would leak field information into a "white-only" model.
 
 ### T3.2 Dataset and transforms (no PIL; torch tensors + OpenCV)
 - [ ] `LeafDataset(records, split_ids, transform, extra_sources=())` reads from `_work/cache/`. `extra_sources` is the hook for composites (Method A).

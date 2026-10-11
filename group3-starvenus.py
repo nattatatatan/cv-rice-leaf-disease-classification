@@ -1158,7 +1158,94 @@ def run_data_smoke(data_root, n_images: int = 20, workers: int = 2, log=print) -
         log("smoke: OK - tables and figures")
 
 # ---- from 20_classifier.ipynb ----
-# Phase 03 (classifier): datasets, transforms, models and the train/eval loop are added here.
+import gc
+import math
+import platform
+import random
+import re
+import time
+from urllib.parse import urlparse
+
+import torch
+import torch.nn.functional as F
+import torchvision
+from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support
+
+NUM_CLASSES = len(CLASS_NAMES)
+BACKBONES = ("resnet50", "convnext_tiny", "swin_t")
+INPUT_MODES = ("squash", "pad", "rect")
+# (height, width) of the network input at an equal pixel budget (~100k px): E0 compares geometry, not resolution.
+INPUT_SIZES = {"squash": (320, 320), "pad": (320, 320), "rect": (448, 224)}
+SUBSETS = ("white", "field", "mixed")
+KINDS = ("classifier", "segmenter", "analysis")
+
+
+class ExperimentError(Exception):
+    """Base class of errors that the CLI reports as one clean line (no traceback)."""
+
+
+class UnknownExperimentError(ExperimentError):
+    pass
+
+
+class ChoicesError(ExperimentError):
+    """A value that a gate should have written to choices.json is missing."""
+
+
+class NotReadyError(ExperimentError):
+    """The experiment needs a later phase that is not implemented yet."""
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    exp_id: str
+    backbone: str | None  # None: the winning backbone of gate G1 (choices.json "backbone")
+    train_domains: tuple[str, ...]
+    select_domains: tuple[str, ...]  # must equal train_domains
+    test_subsets: tuple[str, ...]  # which test subsets the report uses (all three are always evaluated)
+    input_mode: str | None  # None: the winning input mode of gate G0 (choices.json "input_mode")
+    use_composites: bool = False  # Method A: extra training samples from CompositeSource (phase 05)
+    seg_crop: bool = False  # Method B: input_hook crops to the segmenter box (phase 06)
+    kind: str = "classifier"  # "segmenter" / "analysis" rows exist in the matrix but are not run here
+    alias_of_winner: str = ""  # "E0": this row is the winning E0 row (same run folder, no retraining)
+    # Recipe (section 6.1 of the report). Defaults are the T3.4 table.
+    stage1_epochs: int = 2  # linear probe: backbone frozen, head only
+    stage1_lr: float = 1e-3
+    epochs: int = 30  # stage 2: fine-tune everything
+    lr: float | None = None  # None: choices.json lr[backbone] (split-0 sweep over SWEEP_LRS)
+    weight_decay: float = 0.05
+    warmup_epochs: int = 1
+    label_smoothing: float = 0.1
+    batch_size: int = 32
+    grad_accum: int = 1
+    clip_norm: float = 1.0
+    patience: int = 10  # stage-2 epochs without improvement of the selection metric
+    dropout: float = 0.2
+    pretrained: bool = True
+    size_div: int = 1  # dev/smoke only: divide the input size (448x224 -> 112x56 with 4)
+    note: str = ""
+
+    def __post_init__(self):
+        if self.kind not in KINDS:
+            raise ValueError(f"{self.exp_id}: kind must be one of {KINDS}, got {self.kind!r}")
+        if self.backbone is not None and self.backbone not in BACKBONES and self.kind == "classifier":
+            raise ValueError(f"{self.exp_id}: unknown backbone {self.backbone!r}")
+        if self.input_mode is not None and self.input_mode not in INPUT_MODES:
+            raise ValueError(f"{self.exp_id}: unknown input mode {self.input_mode!r}")
+        for name in ("train_domains", "select_domains"):
+            domains = getattr(self, name)
+            if not domains or not set(domains) <= set(DOMAINS):
+                raise ValueError(f"{self.exp_id}: {name} must be a non-empty subset of {DOMAINS}, got {domains!r}")
+        if set(self.select_domains) != set(self.train_domains):
+            raise ValueError(
+                f"{self.exp_id}: select_domains must equal train_domains (checkpoints are chosen on the domains "
+                f"the model was trained on; anything else leaks information), got {self.select_domains} vs {self.train_domains}"
+            )
+        if not set(self.test_subsets) <= set(SUBSETS):
+            raise ValueError(f"{self.exp_id}: test_subsets must be a subset of {SUBSETS}")
+
+    def is_resolved(self) -> bool:
+        return self.backbone is not None and self.input_mode is not None and self.lr is not None
 
 # ---- from 30_copy_paste.ipynb ----
 # Phase 05 (copy-paste): pseudo-masks and composites are added here.
@@ -1183,6 +1270,211 @@ DEFAULT_SPLITS = (0, 1, 2, 3, 4)
 EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_NOT_IMPLEMENTED = 3
+
+import difflib
+
+CHOICES_FILENAME = "choices.json"
+SWEEP_LRS = (1e-4, 3e-4)  # T3.4: split-0 learning-rate sweep
+# Experiment whose split-0 run is swept for each backbone (04: ResNet50 on rect, the others on their U row).
+SWEEP_EXPERIMENT = {"resnet50": "E0-rect", "convnext_tiny": "E2-cnx-U", "swin_t": "E2-swin-U"}
+# Used by `--fast` when choices.json does not exist yet, so that every experiment ID can be sanity-checked.
+FAST_PLACEHOLDERS = {"input_mode": "rect", "backbone": "resnet50", "lr": 3e-4}
+CHOICE_SOURCES = {
+    "input_mode": 'the winning E0 input mode ("best of E0"), written by gate G0 (phase 04, Batch 1)',
+    "backbone": 'the winning backbone ("best of E2"), written by gate G1 (phase 04, Batch 3)',
+    "lr": "the learning rate of this backbone, written by `choose-lr --backbone NAME` after the split-0 sweep "
+    "(`run --exp <ID> --sweep-lr`)",
+}
+
+
+def choices_path(data_root) -> Path:
+    return results_dir(data_root) / CHOICES_FILENAME
+
+
+@dataclass(frozen=True)
+class Choices:
+    """The contents of choices.json plus its path (for error messages)."""
+
+    path: Path
+    data: dict
+
+    def raw(self, key: str, sub: str | None = None):
+        entry = self.data.get(key)
+        if sub is not None:
+            entry = entry.get(sub) if isinstance(entry, dict) else None
+        if isinstance(entry, dict) and "value" in entry:
+            entry = entry["value"]
+        return entry
+
+    def get(self, key: str, sub: str | None = None):
+        """The validated choice, or ChoicesError that says which step writes it."""
+        value = self.raw(key, sub)
+        label = key if sub is None else f"{key}[{sub}]"
+        if value is None:
+            where = f"{self.path} does not exist" if not self.path.is_file() else f"{self.path} has no such entry"
+            raise ChoicesError(f"{where} (needed: {label}). It holds {CHOICE_SOURCES[key]}. Schema: see 90_cli.ipynb.")
+        valid = {
+            "input_mode": lambda v: v in INPUT_MODES,
+            "backbone": lambda v: v in BACKBONES,
+            "lr": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 1,
+        }[key]
+        if not valid(value):
+            options = {"input_mode": INPUT_MODES, "backbone": BACKBONES, "lr": "a number in (0, 1)"}[key]
+            raise ChoicesError(f"{self.path}: invalid {label} = {value!r} (expected {options})")
+        return float(value) if key == "lr" else value
+
+
+def load_choices(data_root) -> Choices:
+    path = choices_path(data_root)
+    if not path.is_file():
+        return Choices(path, {})
+    try:
+        data = json.loads(read_file_bytes(path).decode("utf-8"))
+    except ValueError as exc:
+        raise ChoicesError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ChoicesError(f"{path}: expected a JSON object at the top level")
+    return Choices(path, data)
+
+
+def write_choice(data_root, key: str, value, evidence=None, *, sub: str | None = None) -> Path:
+    """Set choices[key] (or choices[key][sub]) to {"value": value, "evidence": evidence}, keeping the rest."""
+    choices = load_choices(data_root)
+    data = dict(choices.data)
+    entry = {"value": value, "evidence": evidence if evidence is not None else {}}
+    if sub is None:
+        data[key] = entry
+    else:
+        group = dict(data[key]) if isinstance(data.get(key), dict) else {}
+        group[sub] = entry
+        data[key] = group
+    write_json(choices.path, data, indent=2)
+    return choices.path
+
+
+def _row(exp_id: str, backbone, train, test_subsets, **kwargs) -> ExperimentConfig:
+    train = tuple(train)
+    return ExperimentConfig(
+        exp_id=exp_id,
+        backbone=backbone,
+        train_domains=train,
+        select_domains=train,
+        test_subsets=tuple(test_subsets),
+        input_mode=kwargs.pop("input_mode", None),
+        **kwargs,
+    )
+
+
+_U, _W, _F = DOMAINS, ("white",), ("field",)
+_ALL3 = ("white", "field", "mixed")
+_WF_TEST = ("field", "white")  # field is the main result of a W->F row, white the reference
+
+_ROWS = (
+    # E0: input-size ablation, ResNet50 on white + field, equal pixel budget.
+    _row("E0-squash", "resnet50", _U, _ALL3, input_mode="squash", note="320x320, aspect distorted"),
+    _row("E0-pad", "resnet50", _U, _ALL3, input_mode="pad", note="320x320 letterbox"),
+    _row("E0-rect", "resnet50", _U, _ALL3, input_mode="rect", note="448x224 (HxW)"),
+    # E1: ResNet50 baseline and domain experiments at the winning E0 input mode.
+    _row("E1-U", "resnet50", _U, _ALL3, alias_of_winner="E0", note="alias of the winning E0 row, no retraining"),
+    _row("E1-WW", "resnet50", _W, ("white",), note="train white, test white"),
+    _row("E1-FF", "resnet50", _F, ("field",), note="train field, test field"),
+    _row("E1-WF", "resnet50", _W, _WF_TEST, note="train white, test field (cross-domain)"),
+    # E2: ConvNeXt-T and Swin-T.
+    _row("E2-cnx-U", "convnext_tiny", _U, _ALL3),
+    _row("E2-cnx-WF", "convnext_tiny", _W, _WF_TEST),
+    _row("E2-swin-U", "swin_t", _U, _ALL3),
+    _row("E2-swin-WF", "swin_t", _W, _WF_TEST),
+    # Later phases: runnable only once their hooks exist.
+    _row("E3-A", None, _U, _ALL3, use_composites=True, note="Method A (phase 05): composites as extra training samples"),
+    _row("E3-A-WF", None, _W, _WF_TEST, use_composites=True, note="white + composites; field images are only backgrounds"),
+    _row("S-seg", "lraspp_mobilenet_v3_large", _U, (), kind="segmenter", note="leaf segmenter (phase 06)"),
+    _row("E4-B", None, _U, _ALL3, seg_crop=True, note="Method B (phase 06): segment, crop, classify"),
+    _row("X-domain-WW", None, _W, ("white",), note="best backbone, train white, test white"),
+    _row("X-domain-FF", None, _F, ("field",), note="best backbone, train field, test field"),
+    _row("X-gradcam", None, _U, (), kind="analysis", note="Grad-CAM shortcut analysis (phase 07), see the gradcam command"),
+)
+EXPERIMENTS: dict[str, ExperimentConfig] = {row.exp_id: row for row in _ROWS}
+# `run --exp <GROUP>` runs every member in order.
+EXPERIMENT_GROUPS = {
+    "E0": ("E0-squash", "E0-pad", "E0-rect"),
+    "E1": ("E1-U", "E1-WW", "E1-FF", "E1-WF"),
+    "E2": ("E2-cnx-U", "E2-cnx-WF", "E2-swin-U", "E2-swin-WF"),
+    "X-domain": ("X-domain-WW", "X-domain-FF"),
+}
+NON_CLASSIFIER_MESSAGE = {
+    "segmenter": "is the leaf segmenter, trained by the segmentation pipeline of phase 06 (06-segmentation-method-b.md)",
+    "analysis": "is a Grad-CAM analysis, produced by the `gradcam` command of phase 07 (07-analysis.md)",
+}
+
+
+def expand_experiment_ids(text: str) -> list[str]:
+    """'E0' -> its three rows; 'E1-U,E1-WW' -> two rows. Unknown IDs raise UnknownExperimentError."""
+    ids: list[str] = []
+    for part in (p.strip() for p in text.split(",") if p.strip()):
+        for exp_id in EXPERIMENT_GROUPS.get(part, (part,)):
+            if exp_id not in EXPERIMENTS:
+                close = difflib.get_close_matches(exp_id, [*EXPERIMENTS, *EXPERIMENT_GROUPS], n=3)
+                hint = f" Did you mean: {', '.join(close)}?" if close else ""
+                raise UnknownExperimentError(
+                    f"unknown experiment {exp_id!r}.{hint} Known: {', '.join([*EXPERIMENTS, *EXPERIMENT_GROUPS])}"
+                )
+            if exp_id not in ids:
+                ids.append(exp_id)
+    if not ids:
+        raise UnknownExperimentError("no experiment ID given")
+    return ids
+
+
+@dataclass(frozen=True)
+class ResolvedExperiment:
+    config: ExperimentConfig  # fully concrete: backbone, input_mode and lr are set
+    requested: str  # the ID that was asked for (differs from config.exp_id for the E1-U alias)
+    choices_used: dict  # which values came from choices.json (or FAST placeholders), for config.json
+    notes: tuple[str, ...] = ()
+
+
+def resolve_experiment(
+    exp_id: str, choices: Choices, *, lr: float | None = None, placeholders: bool = False
+) -> ResolvedExperiment:
+    """Turn a registry entry into a concrete config.
+
+    ``lr`` overrides the choices.json learning rate (sweeps, ``--lr``). ``placeholders=True`` (``--fast``)
+    substitutes FAST_PLACEHOLDERS for choices that do not exist yet, and says so in ``notes``.
+    """
+    if exp_id not in EXPERIMENTS:
+        expand_experiment_ids(exp_id)  # raises with a helpful message
+    base = EXPERIMENTS[exp_id]
+    if base.kind != "classifier":
+        raise NotReadyError(f"{exp_id} {NON_CLASSIFIER_MESSAGE[base.kind]}; it cannot be run as a classifier")
+    used: dict = {}
+    notes: list[str] = []
+
+    def pick(key: str, sub: str | None = None):
+        label = key if sub is None else f"{key}[{sub}]"
+        try:
+            value = choices.get(key, sub)
+            used[label] = value
+            return value
+        except ChoicesError as exc:
+            if not placeholders:
+                raise ChoicesError(f"{exp_id}: {exc}") from None
+            value = FAST_PLACEHOLDERS[key]
+            used[label] = value
+            notes.append(f"--fast: no choice for {label}, using the placeholder {value!r}")
+            return value
+
+    if base.alias_of_winner:
+        mode = pick("input_mode")
+        inner = resolve_experiment(f"{base.alias_of_winner}-{mode}", choices, lr=lr, placeholders=placeholders)
+        note = f"{exp_id} is an alias of {inner.config.exp_id} (the winning input mode): same run folder, no retraining"
+        return ResolvedExperiment(inner.config, exp_id, {**inner.choices_used, **used}, (note, *inner.notes, *notes))
+
+    backbone = base.backbone if base.backbone is not None else pick("backbone")
+    mode = base.input_mode if base.input_mode is not None else pick("input_mode")
+    if lr is None:
+        lr = base.lr if base.lr is not None else pick("lr", backbone)
+    config = replace(base, backbone=backbone, input_mode=mode, lr=lr)
+    return ResolvedExperiment(config, exp_id, used, tuple(notes))
 
 def resolve_device(requested: str = "auto") -> str:
     """Map the --device flag to a concrete torch device name; raise if it is unavailable."""
