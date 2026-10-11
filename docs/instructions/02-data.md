@@ -57,15 +57,17 @@ Class index order (fixed, used in every confusion matrix): `0 Brown Spot, 1 Leaf
 ### T2.4 Near-duplicate audit (leakage guard)
 - [x] Compute a 64-bit difference hash (dHash) per cached image: grayscale, resize to 9x8, compare adjacent pixels. Report all pairs with Hamming distance <= 6, within and across domains. (Implemented deviation: the hash is taken while caching and stored in the cache manifest. Because the dHash alone flags 1526 pairs on this dataset, almost all unrelated leaves on a plain wall, every pair also gets a SIFT/RANSAC `feature_inliers` score used only to rank the review order.)
 - [x] Save `_work/results/near_duplicates.csv` (all candidates, in review order) and contact sheets `_work/figures/near_duplicates_<n>.png` (top 48 pairs, 8 per page) for visual confirmation.
-- [ ] Nattan confirms which pairs are true duplicates (same leaf/scene). Confirmed pairs go into `_work/duplicate_groups.json` (committed). Groups are kept in the same split by T2.5.
+- [x] Nattan confirms which pairs are true duplicates (same leaf/scene). The confirmed groups live in `annotations/duplicate_groups.json` (committed) and are **embedded in the generated `.py` as the constant `DUPLICATE_GROUPS`** by `tools/export_py.py`, because the marker only receives the `.py` and the PDF and must get identical splits. Groups are kept in the same split by T2.5. `prepare` validates them against the index (every filename exists, none in two groups, each group inside one class x domain stratum) and fails loudly otherwise.
+- Outcome: dHash found **no true duplicates** (1526 coincidental candidates; reframed consecutive shots defeat a 9x8 hash). A one-off SIFT + RANSAC audit (`tools/dup_audit/`, not exported) found **36 groups covering 77 images**, mostly consecutive field shots of one scene, plus a few white-background leaves shot twice. The grouping is inclusive (a false group costs nothing, a missed duplicate inflates test scores). See decision P6 in [README](README.md).
 - Why: if the same leaf appears twice and lands in train and test, test accuracy is inflated. Small agricultural datasets often contain bursts of near-identical shots.
 
 ### T2.5 Stratified, group-aware splits
 - [x] For seed `k` in `0..4`: within each class x domain stratum, sort units (single images, or duplicate groups as one unit) by filename, shuffle with `np.random.default_rng(k)`, and assign `round(0.15 n)` to test, `round(0.15 n)` to val, rest to train.
-- [x] Write `_work/splits/split_k.json` with `{"seed", "train", "val", "test", "sha256"}`. Commit these files so local and Colab runs are guaranteed identical. (Commit only after Nattan confirms duplicates; see T2.4.)
-- [ ] Every run's `metrics.json` records the split sha256. `summarize` refuses to aggregate runs whose sha differs from the committed split.
-- Tests: train/val/test disjoint and covering all 1106; each stratum within +-1 of target counts; duplicate groups never straddle splits; regenerating gives identical sha256.
-- Expected size per split: train ~774, val ~166, test ~166, of which ~50 are field test images.
+- [x] Write `_work/splits/split_k.json` with `{"seed", "train", "val", "test", "sha256"}`. Committed (final, generated with the embedded duplicate groups) so local and Colab runs are guaranteed identical. A test checks them against a fresh regeneration.
+- [x] Every run's `metrics.json` records the split sha256 (`split_sha256`, phase 03); a run is re-done when the split changed.
+- [ ] `summarize` refuses to aggregate runs whose sha differs from the committed split (phase 07).
+- Tests: train/val/test disjoint and covering all 1106; each stratum within +-1 of target counts (without groups; with groups the target is in units, so images can deviate by a group size); duplicate groups never straddle splits for any seed; regenerating gives identical sha256.
+- Size per split with the duplicate groups (a group counts as one unit, so counts differ by a few images between seeds): train 773-780, val 163-171, test 162-165, of which 47-49 are field test images. Seed 0: 778 / 166 / 162 (test 115 white + 47 field).
 
 ### T2.6 Dataset figures and tables for the report
 - [x] `_work/results/dataset_counts.md`: class x domain table with totals.

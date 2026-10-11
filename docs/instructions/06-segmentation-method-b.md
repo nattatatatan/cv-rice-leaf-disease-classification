@@ -16,7 +16,7 @@ Prerequisites: 05 T5.1-T5.3 done. T6.1 (annotation) is manual and can start on d
   3. Trace only visible parts; exclude leaves crossing in front of it.
   4. If no single leaf is clearly salient, still annotate the best candidate and set the flag `ambiguous: true`.
 - [ ] Convert to a compact JSON: per filename, polygon vertices normalised to [0, 1], simplified with `cv2.approxPolyDP` to <= 60 vertices, plus the `ambiguous` flag. Commit it as `annotations/field_salient_leaf.json`.
-- [ ] Extend `tools/export_py.py` to embed this JSON as a Python constant `FIELD_ANNOTATIONS` in `<group_name>.py`. The submission can only contain the `.py` and `.pdf`, so this is the only way for the marker to reproduce the IoU numbers. (~30 x 60 x 2 numbers, a few KB.)
+- [x] Extend `tools/export_py.py` to embed this JSON as a Python constant `FIELD_ANNOTATIONS` in `<group_name>.py`. (Done with the duplicate groups: the `EMBEDDED_FILES` table in `tools/export_py.py` already lists `annotations/field_salient_leaf.json` as optional and skips it until the file exists; once it is committed the constant appears automatically.) The submission can only contain the `.py` and `.pdf`, so this is the only way for the marker to reproduce the IoU numbers. (~30 x 60 x 2 numbers, a few KB.)
 - [ ] These 30 images are excluded from the composite background pool in every split (T5.2).
 
 ## T6.2 Segmenter
