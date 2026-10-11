@@ -43,3 +43,48 @@ def group_file(export_tool: ModuleType) -> Path:
 def gs(group_file: Path) -> ModuleType:
     """The exported module, importable under the valid name ``group3_starvenus``."""
     return load_module("group3_starvenus", group_file)
+
+
+# ---------------------------------------------------------------------------
+# Synthetic dataset helpers (tests only; PIL is allowed here, not in the exported file)
+# ---------------------------------------------------------------------------
+
+WHITE_DIR = "White Background "  # sic: trailing space, like the real dataset
+FIELD_DIR = "Field Background  "  # sic: two trailing spaces
+
+
+def make_jpeg(path: Path, width: int = 40, height: int = 90, *, orientation: int = 1, seed: int = 0) -> Path:
+    """Write a small random-but-structured JPEG. ``orientation`` is written as the EXIF tag
+    (pixels are NOT rotated, exactly like a camera that stores the sensor orientation in EXIF)."""
+    import numpy as np
+    from PIL import Image
+
+    rng = np.random.default_rng(seed)
+    base = rng.integers(0, 256, size=(height // 10 + 1, width // 10 + 1, 3), dtype=np.uint8)
+    pixels = np.kron(base, np.ones((10, 10, 1), dtype=np.uint8))[:height, :width]  # blocky: survives JPEG
+    image = Image.fromarray(pixels)
+    exif = Image.Exif()
+    if orientation != 1:
+        exif[274] = orientation
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path, "JPEG", quality=95, exif=exif)
+    return path
+
+
+@pytest.fixture
+def tiny_tree(tmp_path: Path) -> Path:
+    """A 3-image-per-class tree in the real layout, with the real folder-name typos."""
+    root = tmp_path / "Dhan-Shomadhan"
+    layout = [
+        (WHITE_DIR, "Brown Spot", ["bs_wb_"]),
+        (WHITE_DIR, "Shath Blight", ["sb_wb_"]),
+        (FIELD_DIR, "Browon Spot", ["bsf_"]),
+        (FIELD_DIR, "Sheath Blight", ["sbf_"]),
+    ]
+    seed = 0
+    for top, folder, prefixes in layout:
+        for prefix in prefixes:
+            for i in range(3):
+                seed += 1
+                make_jpeg(root / top / folder / f"{prefix}{i}.jpg", orientation=[1, 6, 8][i], seed=seed)
+    return root

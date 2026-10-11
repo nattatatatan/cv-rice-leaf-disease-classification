@@ -36,11 +36,11 @@ Class index order (fixed, used in every confusion matrix): `0 Brown Spot, 1 Leaf
 ## Tasks
 
 ### T2.1 Dataset index
-- [ ] `build_index(data_root) -> list[Record]` where `Record` is a dataclass: `filename, rel_path, cls, cls_idx, domain, exif_orientation, sha1`.
-- [ ] Walk `data_root` recursively for `*.jpg` / `*.jpeg` (case-insensitive), skipping `_work/`. Match the prefixes above (check longest prefix first). Raise with the offending path if any file matches no prefix.
-- [ ] If the CSV exists, assert every file's prefix label equals its CSV label. If the CSV is missing, warn and continue.
-- [ ] Assert exactly 1106 records and the per class x domain counts from the audit (keep the expected counts as a constant; a mismatch must fail loudly, not silently train on a different dataset).
-- [ ] Write `_work/index.json`.
+- [x] `build_index(data_root) -> list[Record]` where `Record` is a dataclass: `filename, rel_path, cls, cls_idx, domain, exif_orientation, sha1`.
+- [x] Walk `data_root` recursively for `*.jpg` / `*.jpeg` (case-insensitive), skipping `_work/`. Match the prefixes above (check longest prefix first). Raise with the offending path if any file matches no prefix.
+- [x] If the CSV exists, assert every file's prefix label equals its CSV label. If the CSV is missing, warn and continue.
+- [x] Assert exactly 1106 records and the per class x domain counts from the audit (keep the expected counts as a constant; a mismatch must fail loudly, not silently train on a different dataset).
+- [x] Write `_work/index.json`.
 - Tests: counts per stratum; works when the folder is renamed `Sheath Blight` <-> `Shath Blight` (build a tiny temp tree in the test); unknown prefix raises.
 
 ### T2.2 EXIF-correct image IO

@@ -4,3 +4,4 @@ jupyter
 ipykernel
 pytest
 pandas
+pillow

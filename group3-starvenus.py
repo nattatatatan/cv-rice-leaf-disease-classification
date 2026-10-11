@@ -9,7 +9,322 @@ Run `python group3-starvenus.py --help` to list the commands.
 """
 
 # ---- from 10_data.ipynb ----
-# Phase 02 (data): dataset index, EXIF IO, cache, splits and audits are added here.
+import csv
+import hashlib
+import json
+import multiprocessing
+import os
+import struct
+import sys
+import tempfile
+from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg"})
+WORK_DIRNAME = "_work"  # everything the code generates lives in <data_root>/_work/
+
+# Fixed class order, used in every confusion matrix, table and figure.
+CLASS_NAMES = ("Brown Spot", "Leaf Scald", "Rice Blast", "Rice Tungro", "Sheath Blight")
+DOMAINS = ("white", "field")
+
+# (filename prefix, class, domain, exact string in the CSV `Diseases` column)
+LABEL_TABLE = (
+    ("bs_wb_", "Brown Spot", "white", "Brown Spot(white Background)"),
+    ("ls_wb_", "Leaf Scald", "white", "Leaf Scaled(white Background)"),
+    ("rb_wb_", "Rice Blast", "white", "Rice Blast(white Background)"),
+    ("rt_wb_", "Rice Tungro", "white", "Rice Tungro(white Background)"),
+    ("sb_wb_", "Sheath Blight", "white", "Shath Blight(white Background)"),
+    ("bsf_", "Brown Spot", "field", "Browon Spot(Feild Background)"),
+    ("lsf_", "Leaf Scald", "field", "Leaf Scaled(Feild Background)"),
+    ("rbf_", "Rice Blast", "field", "Rice Blast(Feild Background)"),
+    ("rtf_", "Rice Tungro", "field", "Rice Turgro(Feild Background)"),
+    ("sbf_", "Sheath Blight", "field", "Sheath Blight(Feild Background)"),
+)
+# Longest prefix first, so that a prefix that extends another one always wins.
+PREFIXES_LONGEST_FIRST = tuple(sorted(LABEL_TABLE, key=lambda row: -len(row[0])))
+CSV_LABELS = {csv_label: (cls, domain) for _, cls, domain, csv_label in LABEL_TABLE}
+
+# Image counts per (class, domain) established by the audit. A different dataset must fail loudly.
+EXPECTED_COUNTS = {
+    ("Brown Spot", "white"): 90,
+    ("Leaf Scald", "white"): 143,
+    ("Rice Blast", "white"): 198,
+    ("Rice Tungro", "white"): 119,
+    ("Sheath Blight", "white"): 219,
+    ("Brown Spot", "field"): 49,
+    ("Leaf Scald", "field"): 74,
+    ("Rice Blast", "field"): 74,
+    ("Rice Tungro", "field"): 76,
+    ("Sheath Blight", "field"): 64,
+}
+EXPECTED_TOTAL = sum(EXPECTED_COUNTS.values())  # 1106
+
+CSV_FILENAME = "Dhan-Shomadhan_picture_Information.csv"
+
+
+class DatasetError(Exception):
+    """The dataset on disk is not what the code expects. The message names the offending path."""
+
+
+def warn(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
+
+
+def extended_path(absolute_path: str, windows: bool) -> str:
+    """Windows silently strips trailing spaces from path components (the dataset has folders called
+    'Field Background  '). The extended-length prefix switches that off. No-op elsewhere."""
+    if not windows or absolute_path.startswith("\\\\?\\"):
+        return absolute_path
+    if absolute_path.startswith("\\\\"):  # UNC share: \\server\share -> \\?\UNC\server\share
+        return "\\\\?\\UNC\\" + absolute_path[2:]
+    return "\\\\?\\" + absolute_path
+
+
+def fs_path(path) -> str:
+    """The string to hand to open()/os functions for ``path`` (absolute, Windows-safe)."""
+    return extended_path(os.path.abspath(os.fspath(path)), os.name == "nt")
+
+
+def read_file_bytes(path) -> bytes:
+    with open(fs_path(path), "rb") as handle:
+        return handle.read()
+
+
+def write_bytes_atomic(path: Path, data: bytes) -> None:
+    """Write via a temp file and rename, so an interrupted run never leaves a truncated file."""
+    path = Path(path)
+    os.makedirs(fs_path(path.parent), exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+    with open(fs_path(tmp), "wb") as handle:
+        handle.write(data)
+    os.replace(fs_path(tmp), fs_path(path))
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    write_bytes_atomic(path, text.encode("utf-8"))  # bytes: identical files on every OS (no CRLF)
+
+
+def find_images(data_root: Path) -> list[Path]:
+    """All JPEGs under data_root (recursive, case-insensitive), skipping the generated _work/ folder."""
+    found = []
+    for dirpath, dirnames, filenames in Path(data_root).walk():
+        if dirpath == Path(data_root) and WORK_DIRNAME in dirnames:
+            dirnames.remove(WORK_DIRNAME)
+        for filename in filenames:
+            if Path(filename).suffix.lower() in IMAGE_SUFFIXES:
+                found.append(dirpath / filename)
+    return sorted(found)
+
+
+def classify_filename(filename: str) -> tuple[str, str]:
+    """(class, domain) from the filename prefix; longest prefix wins. Raises DatasetError."""
+    lowered = filename.lower()
+    for prefix, cls, domain, _ in PREFIXES_LONGEST_FIRST:
+        if lowered.startswith(prefix):
+            return cls, domain
+    known = ", ".join(row[0] for row in LABEL_TABLE)
+    raise DatasetError(f"{filename}: filename matches no known prefix ({known})")
+
+def _tiff_orientation(tiff: bytes) -> int:
+    """Orientation (1..8) from the TIFF block of an EXIF segment; 1 if absent."""
+    if len(tiff) < 8 or tiff[:2] not in (b"II", b"MM"):
+        return 1
+    endian = "<" if tiff[:2] == b"II" else ">"
+    if struct.unpack_from(endian + "H", tiff, 2)[0] != 42:
+        return 1
+    offset = struct.unpack_from(endian + "I", tiff, 4)[0]
+    if offset + 2 > len(tiff):
+        return 1
+    (count,) = struct.unpack_from(endian + "H", tiff, offset)
+    for entry in range(count):
+        base = offset + 2 + 12 * entry
+        if base + 12 > len(tiff):
+            break
+        tag, kind, n_values = struct.unpack_from(endian + "HHI", tiff, base)
+        if tag == 0x0112 and kind == 3 and n_values == 1:  # SHORT, one value, stored inline
+            value = struct.unpack_from(endian + "H", tiff, base + 8)[0]
+            return value if 1 <= value <= 8 else 1
+    return 1
+
+
+def parse_exif_orientation(data: bytes) -> int:
+    """EXIF orientation (1..8) of a JPEG given its bytes. 1 means upright (also when there is no tag)."""
+    if data[:2] != b"\xff\xd8":
+        return 1
+    pos, end = 2, len(data)
+    while pos + 4 <= end:
+        if data[pos] != 0xFF:
+            break
+        marker = data[pos + 1]
+        if marker == 0xFF:  # fill byte
+            pos += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:  # markers without a length
+            pos += 2
+            continue
+        if marker in (0xD9, 0xDA):  # end of image / start of scan: no EXIF after this
+            break
+        (length,) = struct.unpack_from(">H", data, pos + 2)
+        if marker == 0xE1 and data[pos + 4 : pos + 10] == b"Exif\x00\x00":
+            return _tiff_orientation(data[pos + 10 : pos + 2 + length])
+        pos += 2 + length
+    return 1
+
+@dataclass(frozen=True)
+class Record:
+    filename: str  # primary key (unique across the dataset)
+    rel_path: str  # path relative to the data root, '/' separated
+    cls: str
+    cls_idx: int
+    domain: str  # "white" or "field"
+    exif_orientation: int  # 1..8; 1 = upright or no tag
+    sha1: str  # of the file bytes; "" when hashing was skipped (smoke only)
+
+    @property
+    def stratum(self) -> tuple[str, str]:
+        return (self.cls, self.domain)
+
+
+def work_dir(data_root) -> Path:
+    return Path(data_root) / WORK_DIRNAME
+
+
+def index_path(data_root) -> Path:
+    return work_dir(data_root) / "index.json"
+
+
+def read_csv_labels(csv_path: Path) -> dict[str, str]:
+    """{picture name: Diseases string}. The CSV has an unnamed index column, then `pictureName` and
+    `Diseases`; it may start with a UTF-8 BOM."""
+    with open(fs_path(csv_path), newline="", encoding="utf-8-sig") as handle:
+        reader = csv.reader(handle)
+        header = [cell.strip().lower() for cell in next(reader, [])]
+        try:
+            name_col, label_col = header.index("picturename"), header.index("diseases")
+        except ValueError:
+            raise DatasetError(f"{csv_path}: expected columns 'pictureName' and 'Diseases', found {header}") from None
+        labels = {}
+        for row in reader:
+            if len(row) <= max(name_col, label_col):
+                continue
+            labels[row[name_col].strip()] = row[label_col].strip()
+    return labels
+
+
+def find_csv(data_root: Path) -> Path | None:
+    path = Path(data_root) / CSV_FILENAME
+    if path.is_file():
+        return path
+    others = sorted(Path(data_root).glob("*.csv"))
+    return others[0] if len(others) == 1 else None
+
+
+def check_against_csv(records: list[Record], csv_path: Path, *, require_complete: bool) -> None:
+    csv_labels = read_csv_labels(csv_path)
+    for record in records:
+        if record.filename not in csv_labels:
+            raise DatasetError(f"{record.rel_path}: not listed in {csv_path.name}")
+        csv_string = csv_labels[record.filename]
+        if csv_string not in CSV_LABELS:
+            raise DatasetError(f"{csv_path.name}: unknown Diseases string {csv_string!r} for {record.filename}")
+        if CSV_LABELS[csv_string] != (record.cls, record.domain):
+            raise DatasetError(
+                f"{record.rel_path}: filename prefix says {(record.cls, record.domain)} "
+                f"but {csv_path.name} says {CSV_LABELS[csv_string]} ({csv_string!r})"
+            )
+    if require_complete:
+        missing = sorted(set(csv_labels) - {r.filename for r in records})
+        if missing:
+            raise DatasetError(f"{csv_path.name} lists {len(missing)} images that are not on disk, e.g. {missing[:3]}")
+
+
+def check_expected_counts(records: list[Record], expected: dict[tuple[str, str], int]) -> None:
+    actual = Counter(r.stratum for r in records)
+    problems = [
+        f"{key[0]} / {key[1]}: expected {expected.get(key, 0)}, found {actual.get(key, 0)}"
+        for key in sorted(set(expected) | set(actual))
+        if expected.get(key, 0) != actual.get(key, 0)
+    ]
+    if len(records) != sum(expected.values()):
+        problems.insert(0, f"total: expected {sum(expected.values())}, found {len(records)}")
+    if problems:
+        raise DatasetError("this is not the expected dataset (counts differ):\n  " + "\n  ".join(problems))
+
+
+EXIF_HEADER_BYTES = 128 * 1024  # the EXIF segment is at the very start of the file
+
+
+def build_index(
+    data_root,
+    *,
+    expected_counts: dict[tuple[str, str], int] | None = EXPECTED_COUNTS,
+    with_sha1: bool = True,
+) -> list[Record]:
+    """Index every JPEG under ``data_root`` (see the section text above), sorted by filename.
+
+    ``expected_counts=None`` skips the count assertion and the CSV completeness check. That is only
+    for tiny synthetic trees in tests and for the smoke check on a partial tree; every real run
+    (`prepare`) uses the default, so a different dataset fails loudly.
+    ``with_sha1=False`` reads only the file headers (fast); records then have ``sha1 == ""``.
+    """
+    data_root = Path(data_root)
+    if not data_root.is_dir():
+        raise DatasetError(f"data root {data_root} is not a directory (see --data-root)")
+    records, seen = [], {}
+    for path in find_images(data_root):
+        cls, domain = classify_filename(path.name)
+        if path.name in seen:
+            raise DatasetError(f"duplicate filename {path.name}: {seen[path.name]} and {path}")
+        seen[path.name] = path
+        with open(fs_path(path), "rb") as handle:
+            data = handle.read() if with_sha1 else handle.read(EXIF_HEADER_BYTES)
+        records.append(
+            Record(
+                filename=path.name,
+                rel_path=path.relative_to(data_root).as_posix(),
+                cls=cls,
+                cls_idx=CLASS_NAMES.index(cls),
+                domain=domain,
+                exif_orientation=parse_exif_orientation(data),
+                sha1=hashlib.sha1(data).hexdigest() if with_sha1 else "",
+            )
+        )
+    records.sort(key=lambda r: r.filename)
+    csv_path = find_csv(data_root)
+    if csv_path is None:
+        warn(f"no label CSV found in {data_root}; labels come from filename prefixes only")
+    else:
+        check_against_csv(records, csv_path, require_complete=expected_counts is not None)
+    if expected_counts is not None:
+        check_expected_counts(records, expected_counts)
+    return records
+
+
+def write_json(path: Path, obj, *, indent: int | None = 1) -> None:
+    write_text_atomic(path, json.dumps(obj, indent=indent, sort_keys=False) + "\n")
+
+
+def write_index(data_root, records: list[Record]) -> Path:
+    path = index_path(data_root)
+    rows = ",\n".join("  " + json.dumps(asdict(r)) for r in records)  # one record per line: readable diffs
+    write_text_atomic(path, '{\n "format": 1,\n "records": [\n' + rows + "\n ]\n}\n")
+    return path
+
+
+def load_index(data_root) -> list[Record]:
+    """The records written by `prepare`, sorted by filename."""
+    path = index_path(data_root)
+    if not path.is_file():
+        raise DatasetError(f"{path} does not exist; run the `prepare` command first")
+    payload = json.loads(read_file_bytes(path).decode("utf-8"))
+    if payload.get("format") != 1:
+        raise DatasetError(f"{path}: unsupported index format {payload.get('format')!r}")
+    return [Record(**row) for row in payload["records"]]
 
 # ---- from 20_classifier.ipynb ----
 # Phase 03 (classifier): datasets, transforms, models and the train/eval loop are added here.
@@ -33,24 +348,10 @@ from typing import Callable
 DEFAULT_DATA_ROOT = "Dhan-Shomadhan"
 DEVICE_CHOICES = ("auto", "cuda", "mps", "cpu")
 DEFAULT_SPLITS = (0, 1, 2, 3, 4)
-IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg"})
-WORK_DIRNAME = "_work"  # everything the code generates lives in <data_root>/_work/
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_NOT_IMPLEMENTED = 3
-
-def find_images(data_root: Path) -> list[Path]:
-    """All JPEGs under data_root (recursive, case-insensitive), skipping the generated _work/ folder."""
-    found = []
-    for dirpath, dirnames, filenames in data_root.walk():
-        if dirpath == data_root and WORK_DIRNAME in dirnames:
-            dirnames.remove(WORK_DIRNAME)
-        for filename in filenames:
-            if Path(filename).suffix.lower() in IMAGE_SUFFIXES:
-                found.append(dirpath / filename)
-    return sorted(found)
-
 
 def resolve_device(requested: str = "auto") -> str:
     """Map the --device flag to a concrete torch device name; raise if it is unavailable."""
