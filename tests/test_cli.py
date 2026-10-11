@@ -1,0 +1,92 @@
+"""CLI skeleton tests (phase 01). Later phases add their own test files."""
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+NOT_IMPLEMENTED = {
+    "download-weights": [],
+    "prepare": [],
+    "run": ["--exp", "E1-U"],
+    "summarize": [],
+    "gradcam": ["--exp", "E1-U", "--split", "0"],
+    "predict": ["--image", "x.jpg"],
+    "reproduce": [],
+}
+
+
+def test_help_exits_zero(gs, capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        gs.run_cli(["--help"])
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    for command in [*NOT_IMPLEMENTED, "smoke"]:
+        assert command in out
+
+
+def test_help_as_subprocess(group_file):
+    result = subprocess.run(
+        [sys.executable, str(group_file), "--help"], capture_output=True, text=True
+    )
+    assert result.returncode == 0
+    assert "--data-root" in result.stdout
+
+
+@pytest.mark.parametrize("command", sorted(NOT_IMPLEMENTED))
+def test_stub_commands_fail_with_clear_message(gs, capsys, command):
+    code = gs.run_cli([command, *NOT_IMPLEMENTED[command]])
+    assert code != 0
+    assert "not implemented yet (phase" in capsys.readouterr().err
+
+
+def test_global_flags_before_and_after_command(gs):
+    parser = gs.build_parser()
+    before = parser.parse_args(["--data-root", "A", "--device", "cpu", "--fast", "smoke"])
+    after = parser.parse_args(["smoke", "--data-root", "A", "--device", "cpu", "--fast"])
+    for args in (before, after):
+        assert args.data_root == Path("A")
+        assert args.device == "cpu"
+        assert args.fast is True
+    defaults = parser.parse_args(["smoke"])
+    assert defaults.data_root == Path("Dhan-Shomadhan")
+    assert defaults.device == "auto"
+    assert defaults.seed_offset == 0
+    assert defaults.fast is False
+
+
+def test_flag_before_command_survives_subparser_defaults(gs):
+    args = gs.build_parser().parse_args(["--seed-offset", "7", "run", "--exp", "E1-U"])
+    assert args.seed_offset == 7
+    assert args.splits == (0, 1, 2, 3, 4)
+
+
+def test_parse_splits(gs):
+    assert gs.parse_splits("0,2,2,1") == (0, 2, 1)
+    with pytest.raises(Exception):
+        gs.parse_splits("a,b")
+    with pytest.raises(Exception):
+        gs.parse_splits("-1")
+
+
+def test_smoke_succeeds_on_data_root_with_images(gs, tmp_path, capsys):
+    (tmp_path / "Field Background  ").mkdir()
+    (tmp_path / "Field Background  " / "bsf_1.jpg").write_bytes(b"not decoded in phase 01")
+    (tmp_path / "_work").mkdir()
+    (tmp_path / "_work" / "ignored.jpg").write_bytes(b"")
+    code = gs.run_cli(["smoke", "--data-root", str(tmp_path), "--device", "cpu"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "found 1 JPEG images" in out
+    assert "smoke: PASSED" in out
+
+
+def test_smoke_fails_without_data_root(gs, tmp_path, capsys):
+    assert gs.run_cli(["smoke", "--data-root", str(tmp_path / "missing")]) != 0
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_smoke_fails_on_empty_data_root(gs, tmp_path, capsys):
+    assert gs.run_cli(["smoke", "--data-root", str(tmp_path)]) != 0
+    assert "no JPEG images" in capsys.readouterr().err
