@@ -37,9 +37,9 @@ group/
 ## Tasks
 
 ### T1.1 Python 3.12 environment
-- [ ] Recreate `.venv` with Python 3.12 (currently 3.14). Example: `python3.12 -m venv .venv` or `uv venv -p 3.12`.
-- [ ] `requirements.txt` (runtime): `torch`, `torchvision`, `numpy`, `matplotlib`, `opencv-python-headless==4.12.0.88`, `scikit-learn`, `scikit-image`. Pin exact versions after the first successful Colab run (copy from `pip freeze` on Colab so local and Colab match).
-- [ ] `requirements-dev.txt`: `-r requirements.txt`, `jupyter`, `ipykernel`, `pytest`, `pandas`.
+- [x] Recreate `.venv` with Python 3.12 (currently 3.14). Example: `python3.12 -m venv .venv` or `uv venv -p 3.12`.
+- [x] `requirements.txt` (runtime): `torch`, `torchvision`, `numpy`, `matplotlib`, `opencv-python-headless==4.12.0.88`, `scikit-learn`, `scikit-image`. Pin exact versions after the first successful Colab run (copy from `pip freeze` on Colab so local and Colab match).
+- [x] `requirements-dev.txt`: `-r requirements.txt`, `jupyter`, `ipykernel`, `pytest`, `pandas`.
 - Done when: `python -c "import torch, torchvision, cv2, sklearn, skimage; print(cv2.__version__)"` prints `4.12.x` on Python 3.12, and `torch.backends.mps.is_available()` is `True` on the M2.
 
 ### T1.2 Restore original dataset structure
@@ -49,9 +49,9 @@ group/
 - Why: the marker runs our code on their copy. If we only test against a cleaned copy, a path bug only shows up during marking.
 
 ### T1.3 Git hygiene
-- [ ] `.gitignore`: `.DS_Store`, `.venv/`, `__pycache__/`, `Dhan-Shomadhan/_work/cache/`, `Dhan-Shomadhan/_work/weights/`, `*.pt`, `*.pth`, `.ipynb_checkpoints/`. Keep `Dhan-Shomadhan/_work/{splits,runs,results,figures}` tracked, but with checkpoints excluded, so results are versioned.
-- [ ] `git rm --cached` all tracked `.DS_Store` files.
-- [ ] Move `dataset.ipynb` -> `notebooks/00_dataset_audit.ipynb`. Delete `dataset.html` from the repo (it can be regenerated).
+- [x] `.gitignore`: `.DS_Store`, `.venv/`, `__pycache__/`, `Dhan-Shomadhan/_work/cache/`, `Dhan-Shomadhan/_work/weights/`, `*.pt`, `*.pth`, `.ipynb_checkpoints/`. Keep `Dhan-Shomadhan/_work/{splits,runs,results,figures}` tracked, but with checkpoints excluded, so results are versioned.
+- [x] `git rm --cached` all tracked `.DS_Store` files.
+- [x] Move `dataset.ipynb` -> `notebooks/00_dataset_audit.ipynb`. Delete `dataset.html` from the repo (it can be regenerated).
 - [ ] Update its hardcoded label mapping to the class/domain mapping defined in [02](02-data.md) once T2.1 exists.
 
 ### T1.4 Export tool `tools/export_py.py` (stdlib only)
