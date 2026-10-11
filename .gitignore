@@ -1,2 +1,19 @@
 Group project.pdf
 Dhan-Shomadhan.zip
+
+# OS / tooling
+.DS_Store
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Model checkpoints (anywhere)
+*.pt
+*.pth
+
+# Generated data that is rebuilt by `prepare` / `download-weights`.
+# Dhan-Shomadhan/_work/{splits,runs,results,figures} stay tracked so results are versioned.
+Dhan-Shomadhan/_work/cache/
+Dhan-Shomadhan/_work/weights/
+Dhan-Shomadhan/_work/masks/
