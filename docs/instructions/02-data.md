@@ -44,8 +44,8 @@ Class index order (fixed, used in every confusion matrix): `0 Brown Spot, 1 Leaf
 - Tests: counts per stratum; works when the folder is renamed `Sheath Blight` <-> `Shath Blight` (build a tiny temp tree in the test); unknown prefix raises.
 
 ### T2.2 EXIF-correct image IO
-- [ ] `read_rgb(path) -> np.ndarray (H,W,3) uint8 RGB` using `cv2.imread(path, cv2.IMREAD_COLOR)`. OpenCV applies EXIF orientation by default for this flag. Convert BGR to RGB.
-- [ ] Rotate landscape images (after EXIF) by 90 degrees clockwise so that **every image is portrait**. Disease labels do not depend on orientation, and a single orientation keeps the rectangular input (E0-rect) meaningful. Record this in the method section.
+- [x] `read_rgb(path) -> np.ndarray (H,W,3) uint8 RGB` via `cv2.imdecode` on the file bytes (Windows/non-ASCII safe). Verified: OpenCV 4.12 does honour EXIF by default (imread and imdecode, orientations 3/6/8, pixel-identical to PIL); the code still applies the tag explicitly (`IMREAD_IGNORE_ORIENTATION` + numpy) so it cannot depend on build defaults. Convert BGR to RGB.
+- [x] Rotate landscape images (after EXIF) by 90 degrees clockwise so that **every image is portrait**. Disease labels do not depend on orientation, and a single orientation keeps the rectangular input (E0-rect) meaningful. Record this in the method section.
 - Tests: `sbf_30.jpg` (EXIF 6) and one EXIF-8 image come out portrait with the same pixels as `PIL.ImageOps.exif_transpose` (PIL only inside the test, which is fine because tests are not submitted). If OpenCV does not honour EXIF in the pinned version, implement the transpose manually from the orientation tag and keep the test.
 
 ### T2.3 Resolution cache

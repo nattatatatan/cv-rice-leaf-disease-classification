@@ -326,6 +326,47 @@ def load_index(data_root) -> list[Record]:
         raise DatasetError(f"{path}: unsupported index format {payload.get('format')!r}")
     return [Record(**row) for row in payload["records"]]
 
+def apply_orientation(rgb: np.ndarray, orientation: int) -> np.ndarray:
+    """Undo an EXIF orientation tag (same conventions as PIL.ImageOps.exif_transpose)."""
+    if orientation == 2:
+        return rgb[:, ::-1]
+    if orientation == 3:
+        return np.rot90(rgb, 2)
+    if orientation == 4:
+        return rgb[::-1]
+    if orientation == 5:  # transpose
+        return rgb.transpose(1, 0, 2)
+    if orientation == 6:  # stored rotated 90 degrees counter-clockwise: rotate clockwise
+        return np.rot90(rgb, -1)
+    if orientation == 7:  # transverse
+        return np.rot90(rgb.transpose(1, 0, 2), 2)
+    if orientation == 8:
+        return np.rot90(rgb, 1)
+    return rgb
+
+
+def to_portrait(rgb: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Rotate a landscape image 90 degrees clockwise. Returns (image, was_rotated)."""
+    if rgb.shape[1] > rgb.shape[0]:
+        return np.rot90(rgb, -1), True
+    return rgb, False
+
+
+def decode_oriented(data: bytes, source: str = "<bytes>") -> np.ndarray:
+    """JPEG bytes -> (H, W, 3) uint8 RGB with the EXIF orientation applied (not yet portrait)."""
+    bgr = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
+    if bgr is None:
+        raise DatasetError(f"{source}: cannot decode image")
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    return apply_orientation(rgb, parse_exif_orientation(data))
+
+
+def read_rgb(path) -> np.ndarray:
+    """(H, W, 3) uint8 RGB, EXIF applied, always portrait (H >= W). Works for paths that OpenCV's own
+    file reader struggles with (non-ASCII, Windows trailing-space folders) because we read the bytes."""
+    rgb, _ = to_portrait(decode_oriented(read_file_bytes(path), str(path)))
+    return np.ascontiguousarray(rgb)
+
 # ---- from 20_classifier.ipynb ----
 # Phase 03 (classifier): datasets, transforms, models and the train/eval loop are added here.
 
