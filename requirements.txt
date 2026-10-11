@@ -1,8 +1,9 @@
-jupyter
-notebook
-ipykernel
-
+# Runtime dependencies (what the marker installs). Python 3.12.
+# Versions are intentionally unpinned for now; pin them from `pip freeze` after the first successful Colab run.
+torch
+torchvision
 numpy
-pandas
-Pillow
 matplotlib
+opencv-python-headless==4.12.0.88
+scikit-learn
+scikit-image

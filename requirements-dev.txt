@@ -1,0 +1,6 @@
+# Development only (notebooks, tests, exploration). Not needed by the exported script.
+-r requirements.txt
+jupyter
+ipykernel
+pytest
+pandas
