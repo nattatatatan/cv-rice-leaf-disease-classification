@@ -1051,7 +1051,7 @@ def prepare_data(
         f"{stats['within_domain']} within domain, {stats['across_domains']} across; by distance {by_distance}"
     )
     out(
-        f"              best feature-match score {stats['max_feature_inliers']} (a real duplicate shares hundreds); "
+        f"              best feature-match score {stats['max_feature_inliers']} (ranking only; see tools/dup_audit); "
         f"{len(sheets)} contact sheets in {figures_dir(data_root)} ({time.time() - t:.0f} s)"
     )
     source = "embedded" if groups is None else "given"
