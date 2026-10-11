@@ -493,15 +493,18 @@ def build_cache(
     mp_context=None,
     long_side: int = CACHE_LONG_SIDE,
     quality: int = CACHE_JPEG_QUALITY,
+    output_root=None,
     log=None,
 ) -> CacheStats:
     """Cache every record (see section text). Idempotent. ``records`` need their sha1 (not the
-    ``with_sha1=False`` kind)."""
+    ``with_sha1=False`` kind). Images are read from ``data_root``; the cache is written under
+    ``<output_root>/_work/cache`` (default: the same data root; the smoke check uses a temp folder)."""
     if any(not r.sha1 for r in records):
         raise DatasetError("build_cache needs records with sha1 (build_index(..., with_sha1=True))")
     data_root = Path(data_root)
-    root = cache_dir(data_root)
-    manifest = load_manifest(data_root)
+    output_root = Path(output_root) if output_root is not None else data_root
+    root = cache_dir(output_root)
+    manifest = load_manifest(output_root)
 
     def current(record: Record) -> bool:
         entry = manifest.get(record.filename)
@@ -524,7 +527,7 @@ def build_cache(
                 log(f"cache: {done}/{len(tasks)}")
     finally:
         if done:
-            write_manifest(data_root, manifest)  # also after an interrupted run: finished images are kept
+            write_manifest(output_root, manifest)  # also after an interrupted run: finished images are kept
     rotated = sum(bool(manifest[r.filename]["rotated_landscape"]) for r in records)
     return CacheStats(total=len(records), built=len(todo), reused=len(records) - len(todo), rotated_landscape=rotated)
 
@@ -980,6 +983,180 @@ def save_class_domain_counts(data_root, records: list[Record], path: Path | None
         plt.close(fig)
     return path
 
+def exif_summary(records: list[Record]) -> str:
+    tagged = Counter(r.exif_orientation for r in records if r.exif_orientation != 1)
+    detail = ", ".join(f"orientation {o}: {n}" for o, n in sorted(tagged.items()))
+    return f"{sum(tagged.values())} images carry an EXIF rotation tag ({detail or 'none'}); all applied"
+
+
+def prepare_data(data_root, *, expected_counts=EXPECTED_COUNTS, workers: int | None = None, out=print) -> dict:
+    """index -> cache -> near-duplicate audit -> splits -> tables and figures. Returns a summary dict
+    (also printed through ``out``). Raises DatasetError on any dataset problem."""
+    import time
+
+    start = time.time()
+    data_root = Path(data_root)
+    out(f"prepare: data root {data_root.resolve()}")
+    records = build_index(data_root, expected_counts=expected_counts)
+    write_index(data_root, records)
+    counts = Counter(r.domain for r in records)
+    out(f"  index       {len(records)} images: white {counts['white']}, field {counts['field']}; {len(CLASS_NAMES)} classes")
+    out(f"  exif        {exif_summary(records)}")
+
+    t = time.time()
+    cache = build_cache(data_root, records, workers=workers, log=out)
+    out(
+        f"  portrait    {cache.rotated_landscape} images were landscape after EXIF and were turned 90 degrees clockwise"
+    )
+    out(
+        f"  cache       {cache.total} images, long side {CACHE_LONG_SIDE} px, JPEG q{CACHE_JPEG_QUALITY}: "
+        f"built {cache.built}, already up to date {cache.reused} ({time.time() - t:.0f} s)"
+    )
+
+    t = time.time()
+    pairs = duplicate_pairs(data_root, records, load_dhashes(data_root, records))
+    stats = duplicate_stats(pairs)
+    write_duplicate_report(data_root, pairs)
+    sheets = save_duplicate_sheets(data_root, pairs)
+    by_distance = " ".join(f"{d}:{n}" for d, n in stats["by_distance"].items())
+    out(
+        f"  duplicates  {stats['total']} dHash candidate pairs (distance <= {NEAR_DUPLICATE_MAX_DISTANCE}): "
+        f"{stats['within_domain']} within domain, {stats['across_domains']} across; by distance {by_distance}"
+    )
+    out(
+        f"              best feature-match score {stats['max_feature_inliers']} (a real duplicate shares hundreds); "
+        f"{len(sheets)} contact sheets in {figures_dir(data_root)} ({time.time() - t:.0f} s)"
+    )
+    groups = load_duplicate_groups(data_root, [r.filename for r in records])
+    if groups is None:
+        out(f"  WARNING     duplicates are UNCONFIRMED: no {duplicate_groups_path(data_root).name} in {work_dir(data_root)}.")
+        out("              Every image is treated as its own unit in the splits. Review the contact sheets and the")
+        out("              CSV, then write the confirmed groups (list of lists of filenames) to that file and re-run.")
+    else:
+        out(f"  duplicates  {len(groups)} confirmed groups ({sum(len(g) for g in groups)} images) are kept together in the splits")
+
+    status = write_splits(data_root, records, groups)
+    first = load_split(data_root, SPLIT_SEEDS[0])
+    sizes = split_counts(first, records)
+    out(
+        f"  splits      seeds {SPLIT_SEEDS[0]}-{SPLIT_SEEDS[-1]}: train/val/test = "
+        f"{sizes['train']['all']}/{sizes['val']['all']}/{sizes['test']['all']} "
+        f"(test: {sizes['test']['white']} white, {sizes['test']['field']} field); "
+        + ", ".join(f"{seed}: {state}" for seed, state in status.items())
+    )
+    if "CHANGED" in status.values():
+        out("  WARNING     an existing split file differs from the regenerated one and was overwritten")
+        out("              (expected after the duplicate groups changed; otherwise investigate before training)")
+    out("              sha256 " + " ".join(load_split(data_root, s)["sha256"][:10] for s in SPLIT_SEEDS))
+
+    write_dataset_counts(data_root, records)
+    save_dataset_grid(data_root, records)
+    save_class_domain_counts(data_root, records)
+    out(f"  report      dataset_counts.md, dataset_grid.png, class_domain_counts.png in {work_dir(data_root)}")
+    elapsed = time.time() - start
+    out(f"prepare: done in {elapsed:.0f} s")
+    return {
+        "records": len(records),
+        "cache": cache,
+        "duplicates": stats,
+        "duplicate_groups": groups,
+        "splits": status,
+        "seconds": elapsed,
+    }
+
+
+def synthetic_records(per_stratum: int = 20) -> list[Record]:
+    """Fake index entries (no files) covering every class x domain stratum; for smoke checks and tests."""
+    prefix = {(cls, domain): p for p, cls, domain, _ in LABEL_TABLE}
+    return [
+        Record(f"{prefix[(cls, domain)]}{i}.jpg", f"x/{prefix[(cls, domain)]}{i}.jpg", cls, CLASS_NAMES.index(cls), domain, 1, "")
+        for cls in CLASS_NAMES
+        for domain in DOMAINS
+        for i in range(per_stratum)
+    ]
+
+
+def pick_smoke_records(records: list[Record], n: int = 20) -> list[Record]:
+    """Up to ``n`` records: first one of each EXIF orientation 3/6/8 present, then round-robin over strata."""
+    chosen: list[Record] = []
+    for orientation in (3, 6, 8):
+        match = next((r for r in records if r.exif_orientation == orientation), None)
+        if match:
+            chosen.append(match)
+    queues = {}
+    for r in records:
+        queues.setdefault(r.stratum, []).append(r)
+    order = sorted(queues, key=stratum_order)
+    while len(chosen) < min(n, len(records)):
+        progressed = False
+        for stratum in order:
+            while queues[stratum] and queues[stratum][0] in chosen:
+                queues[stratum].pop(0)
+            if queues[stratum] and len(chosen) < n:
+                chosen.append(queues[stratum].pop(0))
+                progressed = True
+        if not progressed:
+            break
+    return chosen
+
+
+def smoke_require(condition: bool, message: str) -> None:
+    if not condition:
+        raise DatasetError(f"data smoke check failed: {message}")
+
+
+def run_data_smoke(data_root, n_images: int = 20, workers: int = 2, log=print) -> None:
+    """Cheap end-to-end check of the data path on ~20 real images. Writes only to a temp folder."""
+    data_root = Path(data_root)
+    records = build_index(data_root, expected_counts=None, with_sha1=False)
+    log(f"smoke: OK - index of {len(records)} images, labels match filename prefixes (and the CSV if present)")
+    groups = load_duplicate_groups(data_root, [r.filename for r in records])
+    log("smoke: OK - duplicate groups: " + ("not confirmed yet (no file)" if groups is None else f"{len(groups)} confirmed groups"))
+    selected = [
+        replace(r, sha1=hashlib.sha1(read_file_bytes(data_root / r.rel_path)).hexdigest())
+        for r in pick_smoke_records(records, n_images)
+    ]
+    with tempfile.TemporaryDirectory(prefix="csci935-smoke-") as tmp:
+        tmp_root = Path(tmp)
+        stats = build_cache(data_root, selected, workers=workers, output_root=tmp_root)
+        smoke_require(stats.built == len(selected), f"expected {len(selected)} cached images, built {stats.built}")
+        for record in selected:
+            rgb = read_cached_rgb(tmp_root, record.filename)
+            smoke_require(rgb.ndim == 3 and rgb.shape[2] == 3 and rgb.dtype == np.uint8, f"{record.filename}: bad array")
+            smoke_require(rgb.shape[0] >= rgb.shape[1], f"{record.filename}: cached image is not portrait")
+            smoke_require(max(rgb.shape[:2]) <= CACHE_LONG_SIDE, f"{record.filename}: cached image too large")
+        for record in [r for r in selected if r.exif_orientation != 1][:3]:
+            full = read_rgb(data_root / record.rel_path)
+            cached = read_cached_rgb(tmp_root, record.filename)
+            smoke_require(full.shape[0] >= full.shape[1], f"{record.filename}: EXIF-corrected image is not portrait")
+            smoke_require(abs(full.shape[1] / full.shape[0] - cached.shape[1] / cached.shape[0]) < 0.01, f"{record.filename}: aspect changed")
+        again = build_cache(data_root, selected, workers=workers, output_root=tmp_root)
+        smoke_require(again.built == 0, "second cache run is not idempotent")
+        log(f"smoke: OK - read and cached {len(selected)} images (EXIF orientations {sorted({r.exif_orientation for r in selected})}), idempotent")
+
+        bits = load_dhashes(tmp_root, selected)
+        smoke_require(bits.shape == (len(selected), 64), "dHash matrix has the wrong shape")
+        smoke_require(int(np.trace(hamming_matrix(bits))) == 0, "dHash distance to itself is not 0")
+        log("smoke: OK - dHash computed")
+
+        fake = synthetic_records()
+        names = {r.filename for r in fake}
+        for seed in SPLIT_SEEDS:
+            split = make_split(fake, None, seed)
+            parts = [set(split[k]) for k in ("train", "val", "test")]
+            smoke_require(sum(len(p) for p in parts) == len(names) and set.union(*parts) == names, "split does not partition")
+            smoke_require(split == make_split(fake, None, seed), "split is not deterministic")
+        log("smoke: OK - splits are deterministic partitions")
+
+        write_dataset_counts(tmp_root, selected)
+        save_class_domain_counts(tmp_root, selected)
+        save_dataset_grid(tmp_root, selected)
+        smoke_require(
+            all((figures_dir(tmp_root) / f).stat().st_size > 1000 for f in ("class_domain_counts.png", "dataset_grid.png")),
+            "figures were not written",
+        )
+        log("smoke: OK - tables and figures")
+
 # ---- from 20_classifier.ipynb ----
 # Phase 03 (classifier): datasets, transforms, models and the train/eval loop are added here.
 
@@ -1022,10 +1199,21 @@ def resolve_device(requested: str = "auto") -> str:
         raise RuntimeError(f"device {requested!r} was requested but is not available here")
     return requested
 
-def cmd_smoke(args: argparse.Namespace) -> int:
-    """Phase 01 smoke check: data root, image discovery, library imports, device.
+def cmd_prepare(args: argparse.Namespace) -> int:
+    """Index, cache, near-duplicate audit, splits, tables and figures (phase 02). Idempotent."""
+    try:
+        prepare_data(Path(args.data_root), workers=args.workers)
+    except DatasetError as exc:
+        print(f"prepare: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
 
-    Later phases extend this into the full tiny end-to-end run (20 images, 1 epoch, CPU).
+
+def cmd_smoke(args: argparse.Namespace) -> int:
+    """Tiny end-to-end check: data root, image discovery, library imports, device, and the data path
+    (index, EXIF read, cache, dHash, splits, figures on ~20 images in a temp folder).
+
+    Later phases extend this into the full tiny run (20 images, 1 epoch, CPU).
     """
     data_root = Path(args.data_root)
     print(f"smoke: data root = {data_root.resolve()}")
@@ -1051,6 +1239,11 @@ def cmd_smoke(args: argparse.Namespace) -> int:
         print(f"smoke: {module.__name__} {module.__version__}")
     device = resolve_device(args.device)
     print(f"smoke: OK - device = {device} (requested: {args.device}), fast = {args.fast}")
+    try:
+        run_data_smoke(data_root)
+    except DatasetError as exc:
+        print(f"smoke: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
     print("smoke: PASSED")
     return EXIT_OK
 
@@ -1109,6 +1302,16 @@ def add_global_flags(parser: argparse.ArgumentParser, *, is_subcommand: bool) ->
     )
 
 
+def _configure_prepare(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="worker processes for image caching (default: number of CPU cores, at most 8)",
+    )
+
+
 def _configure_run(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exp", required=True, metavar="ID", help="experiment ID, e.g. E1-U")
     parser.add_argument(
@@ -1147,8 +1350,9 @@ COMMANDS = (
     ),
     Command(
         "prepare",
-        "index, cache, splits, audits, pseudo-masks (idempotent)",
-        not_implemented("prepare", "02"),
+        "index, cache, near-duplicate audit, splits, tables and figures (idempotent)",
+        cmd_prepare,
+        _configure_prepare,
     ),
     Command("run", "train and evaluate one experiment over the given splits", not_implemented("run", "03"), _configure_run),
     Command(
@@ -1158,7 +1362,7 @@ COMMANDS = (
     ),
     Command("gradcam", "Grad-CAM figures for one experiment and split", not_implemented("gradcam", "07"), _configure_gradcam),
     Command("predict", "classify a single image and print class probabilities", not_implemented("predict", "03"), _configure_predict),
-    Command("smoke", "tiny end-to-end check (currently: data root, imports, device)", cmd_smoke),
+    Command("smoke", "tiny end-to-end check (currently: data root, imports, device, data path)", cmd_smoke),
     Command(
         "reproduce",
         "download-weights, prepare, every reported experiment, summarize",

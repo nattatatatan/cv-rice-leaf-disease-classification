@@ -73,9 +73,9 @@ Class index order (fixed, used in every confusion matrix): `0 Brown Spot, 1 Leaf
 - [x] `_work/figures/class_domain_counts.png`: grouped bar chart.
 
 ### T2.7 `prepare` command
-- [ ] Wires T2.1-T2.6 (and later the pseudo-masks of T5.1) behind `python <group_name>.py prepare`.
-- [ ] Prints a one-screen summary: counts, EXIF fixes applied, duplicates found, split sizes.
+- [x] Wires T2.1-T2.6 (and later the pseudo-masks of T5.1) behind `python <group_name>.py prepare`.
+- [x] Prints a one-screen summary: counts, EXIF fixes applied, duplicates found, split sizes.
 
 ## Phase acceptance
 - [ ] `prepare` succeeds on the original Mendeley tree on Colab and locally, and produces identical `split_*.json` sha256 in both places.
-- [ ] All T2 tests pass against the exported module.
+- [x] All T2 tests pass against the exported module.

@@ -8,7 +8,6 @@ import pytest
 
 NOT_IMPLEMENTED = {
     "download-weights": [],
-    "prepare": [],
     "run": ["--exp", "E1-U"],
     "summarize": [],
     "gradcam": ["--exp", "E1-U", "--split", "0"],
@@ -70,16 +69,49 @@ def test_parse_splits(gs):
         gs.parse_splits("-1")
 
 
-def test_smoke_succeeds_on_data_root_with_images(gs, tmp_path, capsys):
-    (tmp_path / "Field Background  ").mkdir()
-    (tmp_path / "Field Background  " / "bsf_1.jpg").write_bytes(b"not decoded in phase 01")
-    (tmp_path / "_work").mkdir()
-    (tmp_path / "_work" / "ignored.jpg").write_bytes(b"")
-    code = gs.run_cli(["smoke", "--data-root", str(tmp_path), "--device", "cpu"])
+def test_smoke_succeeds_on_data_root_with_images(gs, tiny_tree, capsys):
+    (tiny_tree / "_work").mkdir()
+    (tiny_tree / "_work" / "ignored.jpg").write_bytes(b"")
+    before = sorted(p.relative_to(tiny_tree) for p in tiny_tree.rglob("*"))
+    code = gs.run_cli(["smoke", "--data-root", str(tiny_tree), "--device", "cpu"])
     out = capsys.readouterr().out
     assert code == 0
-    assert "found 1 JPEG images" in out
+    assert "found 12 JPEG images" in out
+    assert "read and cached 12 images" in out and "idempotent" in out
     assert "smoke: PASSED" in out
+    assert sorted(p.relative_to(tiny_tree) for p in tiny_tree.rglob("*")) == before, "smoke must not write into the data root"
+
+
+def test_smoke_as_script_uses_the_process_pool(group_file, tiny_tree):
+    """Run the exported file as a script, so that spawned workers can re-import it (macOS/Windows)."""
+    result = subprocess.run(
+        [sys.executable, str(group_file), "smoke", "--data-root", str(tiny_tree), "--device", "cpu"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "smoke: PASSED" in result.stdout
+
+
+def test_smoke_fails_on_unlabelled_image(gs, tiny_tree, capsys):
+    from conftest import make_jpeg
+
+    make_jpeg(tiny_tree / "oops_1.jpg")
+    assert gs.run_cli(["smoke", "--data-root", str(tiny_tree), "--device", "cpu"]) == 1
+    assert "oops_1.jpg" in capsys.readouterr().err
+
+
+def test_prepare_fails_cleanly_on_the_wrong_dataset(gs, tiny_tree, capsys):
+    assert gs.run_cli(["prepare", "--data-root", str(tiny_tree)]) == 1
+    err = capsys.readouterr().err
+    assert "prepare: FAIL" in err and "not the expected dataset" in err
+    assert not (tiny_tree / "_work" / "index.json").exists()
+
+
+def test_prepare_has_a_workers_flag(gs):
+    assert gs.build_parser().parse_args(["prepare", "--workers", "3"]).workers == 3
+    assert gs.build_parser().parse_args(["prepare"]).workers is None
 
 
 def test_smoke_fails_without_data_root(gs, tmp_path, capsys):
