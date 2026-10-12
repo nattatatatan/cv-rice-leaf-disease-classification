@@ -5,3 +5,4 @@ ipykernel
 pytest
 pandas
 pillow
+labelme  # T6.1 annotation (docs/instructions/annotation-guide.md); adds PySide6 and does not change any pinned package

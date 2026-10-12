@@ -2252,7 +2252,208 @@ def predict_image(run_dir, image, device: str, data_root=None, out=print) -> np.
 # Phase 05 (copy-paste): pseudo-masks and composites are added here.
 
 # ---- from 40_segmentation.ipynb ----
-# Phase 06 (segmentation): the segmenter and the crop pipeline are added here.
+ANNOTATION_SEED = 2026
+ANNOTATIONS_PER_CLASS = 6
+ANNOTATION_DEV_PER_CLASS = 2
+ANNOTATION_FORMAT = 1
+
+
+def annotations_dir(data_root) -> Path:
+    return work_dir(data_root) / "annotations"
+
+
+def annotation_images_dir(data_root) -> Path:
+    return annotations_dir(data_root) / "images"
+
+
+def selection_path(data_root) -> Path:
+    return annotations_dir(data_root) / "selection.json"
+
+
+def annotation_selection(index: list[Record]) -> list[dict]:
+    """The 30 field images to annotate (T6.1): ``ANNOTATIONS_PER_CLASS`` per class, as a list of
+    ``{"filename", "cls", "set": "dev" | "eval"}`` in CLASS_NAMES order, then dev before eval, then filename.
+
+    Deterministic: the candidates of a class (field images, sorted by filename) are permuted by one
+    ``default_rng(2026)`` stream shared by the classes in CLASS_NAMES order, and ``ANNOTATION_DEV_PER_CLASS`` of the
+    chosen images become dev through a second stream, ``default_rng([2026, 1])``."""
+    rng = np.random.default_rng(ANNOTATION_SEED)
+    dev_rng = np.random.default_rng([ANNOTATION_SEED, 1])
+    entries = []
+    for cls in CLASS_NAMES:
+        candidates = sorted(r.filename for r in index if r.cls == cls and r.domain == "field")
+        if len(candidates) < ANNOTATIONS_PER_CLASS:
+            raise DatasetError(f"{cls}: {len(candidates)} field images, need {ANNOTATIONS_PER_CLASS} to annotate")
+        picked = sorted(candidates[i] for i in rng.permutation(len(candidates))[:ANNOTATIONS_PER_CLASS])
+        dev = {picked[i] for i in dev_rng.permutation(ANNOTATIONS_PER_CLASS)[:ANNOTATION_DEV_PER_CLASS]}
+        rows = [{"filename": name, "cls": cls, "set": "dev" if name in dev else "eval"} for name in picked]
+        entries.extend(sorted(rows, key=lambda row: (row["set"] != "dev", row["filename"])))
+    return entries
+
+
+def annotation_exclusions(selection: list[dict], groups) -> set[str]:
+    """Filenames that must never be a composite background: the annotated images and every member of their
+    near-duplicate groups (a duplicate would show the annotated scene to the segmenter with the wrong target)."""
+    chosen = {row["filename"] for row in selection}
+    excluded = set(chosen)
+    for group in groups:
+        if chosen & set(group):
+            excluded.update(group)
+    return excluded
+
+
+def selection_document(data_root, index: list[Record]) -> dict:
+    """The content of selection.json: the images with their cached path (relative to the data root) and size."""
+    manifest = load_manifest(data_root)
+    images = []
+    for row in annotation_selection(index):
+        entry = dict(row, image=f"{WORK_DIRNAME}/cache/{row['filename']}")
+        size = manifest.get(row["filename"], {})
+        if "width" in size:
+            entry.update(width=size["width"], height=size["height"])
+        images.append(entry)
+    return {
+        "format": ANNOTATION_FORMAT, "seed": ANNOTATION_SEED, "per_class": ANNOTATIONS_PER_CLASS,
+        "dev_per_class": ANNOTATION_DEV_PER_CLASS, "images": images,
+    }
+
+
+def load_selection(data_root) -> list[dict]:
+    path = selection_path(data_root)
+    if not path.is_file():
+        raise DatasetError(f"{path} does not exist; run the `prepare` command first")
+    return json.loads(read_file_bytes(path).decode("utf-8"))["images"]
+
+
+def write_annotation_selection(data_root, index: list[Record]) -> Path:
+    """Write ``_work/annotations/selection.json`` (one image per line, so that the committed file diffs well)."""
+    doc = selection_document(data_root, index)
+    header = ",\n".join(f" {json.dumps(key)}: {json.dumps(value)}" for key, value in doc.items() if key != "images")
+    images = ",\n".join("  " + json.dumps(entry) for entry in doc["images"])
+    path = selection_path(data_root)
+    write_text_atomic(path, "{\n" + header + ',\n "images": [\n' + images + "\n ]\n}\n")
+    return path
+
+
+def copy_annotation_images(data_root, selection: list[dict]) -> int:
+    """Copy the cached images to ``_work/annotations/images/`` (annotate those, not the originals). Returns how many
+    were copied; files that already match (same size) are left alone, so the step is idempotent."""
+    target = annotation_images_dir(data_root)
+    target.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for row in selection:
+        source, destination = cache_dir(data_root) / row["filename"], target / row["filename"]
+        if not source.is_file():
+            raise DatasetError(f"{source} is missing; run `prepare` to build the cache")
+        if not destination.is_file() or destination.stat().st_size != source.stat().st_size:
+            write_bytes_atomic(destination, read_file_bytes(source))
+            copied += 1
+    return copied
+
+MAX_POLYGON_VERTICES = 60
+ANNOTATION_OUTLINE = OKABE_ITO["yellow"]
+
+
+def embedded_field_annotations():
+    """The embedded ``FIELD_ANNOTATIONS`` constant, or None while annotations/field_salient_leaf.json does not exist."""
+    return globals().get("FIELD_ANNOTATIONS")
+
+
+def polygon_area(polygon) -> float:
+    points = np.asarray(polygon, dtype=np.float64)
+    x, y = points[:, 0], points[:, 1]
+    return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0)
+
+
+def validate_field_annotations(annotations, selection: list[dict]) -> dict:
+    """The annotations, checked against the selection: exactly the selected images, each with a polygon of 3 to
+    ``MAX_POLYGON_VERTICES`` vertices inside [0, 1] x [0, 1] and positive area. Raises DatasetError."""
+    wanted = [row["filename"] for row in selection]
+    missing = sorted(set(wanted) - set(annotations))
+    extra = sorted(set(annotations) - set(wanted))
+    if missing or extra:
+        raise DatasetError(f"annotations do not match the selection: missing {missing or 'none'}, unexpected {extra or 'none'}")
+    for name in wanted:
+        entry = annotations[name]
+        polygon = entry.get("polygon") if isinstance(entry, dict) else None
+        if not isinstance(polygon, (list, tuple)) or not 3 <= len(polygon) <= MAX_POLYGON_VERTICES:
+            raise DatasetError(f"{name}: expected a polygon of 3 to {MAX_POLYGON_VERTICES} vertices")
+        points = np.asarray(polygon, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != 2 or points.min() < 0.0 or points.max() > 1.0:
+            raise DatasetError(f"{name}: polygon vertices must be [x, y] pairs normalised to [0, 1]")
+        if polygon_area(points) <= 0.0:
+            raise DatasetError(f"{name}: polygon has no area")
+        if not isinstance(entry.get("ambiguous"), bool):
+            raise DatasetError(f"{name}: 'ambiguous' must be true or false")
+    return annotations
+
+
+def save_annotation_overview(data_root, selection: list[dict], annotations: dict, path: Path | None = None) -> Path:
+    """`annotations_overview.png`: the annotated images, a row per class (2 dev, then 4 eval), outlines on top."""
+    plt = pyplot()
+    path = path or figures_dir(data_root) / "annotations_overview.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = {cls: [r for r in selection if r["cls"] == cls] for cls in CLASS_NAMES}
+    columns = max(len(v) for v in rows.values())
+    with plt.rc_context({"font.size": 7}):
+        fig = plt.figure(figsize=(5.8, 1.78 * len(CLASS_NAMES) + 0.25))
+        grid = fig.add_gridspec(len(CLASS_NAMES), columns, left=0.055, right=0.998, top=0.965, bottom=0.014, wspace=0.04, hspace=0.12)
+        for r, cls in enumerate(CLASS_NAMES):
+            for c in range(columns):
+                ax = fig.add_subplot(grid[r, c])
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+                if c >= len(rows[cls]):
+                    continue
+                row = rows[cls][c]
+                rgb = read_cached_rgb(data_root, row["filename"])
+                height, width = rgb.shape[:2]
+                ax.imshow(rgb)
+                entry = annotations.get(row["filename"])
+                if entry is not None:
+                    points = np.asarray(entry["polygon"], dtype=np.float64) * (width, height)
+                    closed = np.vstack([points, points[:1]])
+                    ax.plot(closed[:, 0], closed[:, 1], color="black", linewidth=1.5, solid_joinstyle="round")
+                    ax.plot(closed[:, 0], closed[:, 1], color=ANNOTATION_OUTLINE, linewidth=0.7, solid_joinstyle="round")
+                    if entry.get("ambiguous"):
+                        ax.text(0.04, 0.97, "?", transform=ax.transAxes, ha="left", va="top", fontsize=9, fontweight="bold",
+                                color="white", bbox={"boxstyle": "round,pad=0.15", "fc": OKABE_ITO["vermilion"], "ec": "none"})
+                ax.set_xlim(0, width)
+                ax.set_ylim(height, 0)
+                ax.set_xlabel(f"{row['filename']}", fontsize=5.5, labelpad=1.5)
+                if r == 0:
+                    ax.set_title(row["set"], fontsize=7, fontweight="bold", pad=2,
+                                 color=OKABE_ITO["blue"] if row["set"] == "dev" else "black")
+                if c == 0:
+                    ax.set_ylabel(cls, fontsize=7.5, fontweight="bold", labelpad=3)
+        fig.savefig(path, dpi=FIGURE_DPI)
+        plt.close(fig)
+    return path
+
+
+def prepare_annotations(data_root, records: list[Record], out=print) -> dict:
+    """T6.1 part of `prepare`: selection.json, the images to annotate, and (once annotated) the checked overview
+    figure. Skipped with a message when a class has fewer than 6 field images (tiny test trees)."""
+    field_counts = Counter(r.cls for r in records if r.domain == "field")
+    if any(field_counts[c] < ANNOTATIONS_PER_CLASS for c in CLASS_NAMES):
+        out(f"  annotate    skipped: fewer than {ANNOTATIONS_PER_CLASS} field images in some class")
+        return {"selected": 0}
+    write_annotation_selection(data_root, records)
+    selection = load_selection(data_root)
+    copied = copy_annotation_images(data_root, selection)
+    dev = sum(row["set"] == "dev" for row in selection)
+    out(f"  annotate    {len(selection)} field images selected ({dev} dev, {len(selection) - dev} eval), {copied} copied to {annotation_images_dir(data_root)}")
+    annotations = embedded_field_annotations()
+    figure = None
+    if annotations is None:
+        out("              no FIELD_ANNOTATIONS yet (annotations/field_salient_leaf.json); see docs/instructions/annotation-guide.md")
+    else:
+        validate_field_annotations(annotations, selection)
+        figure = save_annotation_overview(data_root, selection, annotations)
+        out(f"              {sum(a['ambiguous'] for a in annotations.values())} ambiguous; overview figure {figure.name}")
+    return {"selected": len(selection), "copied": copied, "figure": figure}
 
 # ---- from 50_analysis.ipynb ----
 import re
@@ -3254,9 +3455,12 @@ def resolve_device(requested: str = "auto") -> str:
     return requested
 
 def cmd_prepare(args: argparse.Namespace) -> int:
-    """Index, cache, near-duplicate audit, splits, tables and figures (phase 02). Idempotent."""
+    """Index, cache, near-duplicate audit, splits, tables and figures (phase 02), then the annotation selection (T6.1).
+    Idempotent."""
     try:
-        prepare_data(Path(args.data_root), workers=args.workers)
+        data_root = Path(args.data_root)
+        prepare_data(data_root, workers=args.workers)
+        prepare_annotations(data_root, load_index(data_root))
     except DatasetError as exc:
         print(f"prepare: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE

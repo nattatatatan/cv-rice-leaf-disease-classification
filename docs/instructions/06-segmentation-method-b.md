@@ -6,16 +6,16 @@ Prerequisites: 05 T5.1-T5.3 done. T6.1 (annotation) is manual and can start on d
 
 ## T6.1 Hand annotation of 30 field images (Nattan, ~1.5 h, time-boxed)
 
-- [ ] Selection: 6 field images per class, sampled with `np.random.default_rng(2026)` from all field images. The exported code writes the list to `_work/annotations/selection.json`, so the selection is reproducible.
-- [ ] Split the 30 into **dev** (2 per class = 10) and **eval** (4 per class = 20), also seeded. Dev may be used to tune composite realism and segmenter settings. Eval is looked at only once per final segmenter, for the reported IoU. *Tuning on the images you report on is the same leakage as tuning on test.*
-- [ ] Annotate on the **cached** images (`_work/cache/`, portrait, 1280 px long side), so the coordinates match what the code sees.
-- [ ] Tool: `labelme` (dev-only install) or CVAT. One polygon per image, label `leaf`.
+- [x] Selection: 6 field images per class, sampled with `np.random.default_rng(2026)` from all field images. The exported code writes the list to `_work/annotations/selection.json`, so the selection is reproducible.
+- [x] Split the 30 into **dev** (2 per class = 10) and **eval** (4 per class = 20), also seeded. Dev may be used to tune composite realism and segmenter settings. Eval is looked at only once per final segmenter, for the reported IoU. *Tuning on the images you report on is the same leakage as tuning on test.*
+- [ ] Annotate on the **cached** images (`prepare` copies them to `_work/annotations/images/`) (`_work/cache/`, portrait, 1280 px long side), so the coordinates match what the code sees.
+- [ ] Tool: `labelme` (dev-only install; see [annotation-guide.md](annotation-guide.md)) or CVAT. One polygon per image, label `leaf`.
 - [ ] **Protocol for "salient leaf"** (put this verbatim in the report appendix or method section):
   1. The leaf that is in focus, shows disease symptoms, and is closest to the image centre.
   2. If several qualify, the one with the largest visible area.
   3. Trace only visible parts; exclude leaves crossing in front of it.
   4. If no single leaf is clearly salient, still annotate the best candidate and set the flag `ambiguous: true`.
-- [ ] Convert to a compact JSON: per filename, polygon vertices normalised to [0, 1], simplified with `cv2.approxPolyDP` to <= 60 vertices, plus the `ambiguous` flag. Commit it as `annotations/field_salient_leaf.json`.
+- [ ] (converter `tools/labelme_to_annotations.py` is done) Convert to a compact JSON: per filename, polygon vertices normalised to [0, 1], simplified with `cv2.approxPolyDP` to <= 60 vertices, plus the `ambiguous` flag. Commit it as `annotations/field_salient_leaf.json`.
 - [x] Extend `tools/export_py.py` to embed this JSON as a Python constant `FIELD_ANNOTATIONS` in `<group_name>.py`. (Done with the duplicate groups: the `EMBEDDED_FILES` table in `tools/export_py.py` already lists `annotations/field_salient_leaf.json` as optional and skips it until the file exists; once it is committed the constant appears automatically.) The submission can only contain the `.py` and `.pdf`, so this is the only way for the marker to reproduce the IoU numbers. (~30 x 60 x 2 numbers, a few KB.)
 - [ ] These 30 images are excluded from the composite background pool in every split (T5.2).
 
