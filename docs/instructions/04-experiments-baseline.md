@@ -4,7 +4,7 @@ Goal: produce the spec-required results (3 scenarios, 5 splits, mean +- std) wit
 
 Prerequisites: 03 complete; the `E0-rect` split-0 sanity run has passed.
 
-All runs happen on Colab via `python <group_name>.py run --exp <ID>`. Agents prepare the registry entries, smoke-test each ID locally with `--fast`, and hand Nattan the batch commands.
+All GPU runs happen on Colab or Kaggle via `python <group_name>.py run --exp <ID>`, driven by `notebooks/runner.ipynb` (`BATCHES_TO_RUN`, see [kaggle-guide.md](kaggle-guide.md)); Batch 2 may run on the local M2. Agents prepare the registry entries, smoke-test each ID locally with `--fast`, and hand Nattan the batch commands.
 
 ## Batch 1 - E0 input-size ablation (ResNet50, unified)
 

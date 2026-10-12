@@ -4,7 +4,7 @@ This folder is the single source of truth for completing the CSCI935 group proje
 
 | File | Phase | Priority tier |
 |---|---|---|
-| [01-setup.md](01-setup.md) | Environment, repo layout, notebook-to-`.py` export, Colab runner | Required |
+| [01-setup.md](01-setup.md) | Environment, repo layout, notebook-to-`.py` export, Colab/Kaggle runner | Required |
 | [02-data.md](02-data.md) | Dataset index, EXIF handling, cache, splits, audits | Required |
 | [03-classifier-core.md](03-classifier-core.md) | Shared training/evaluation engine | Required |
 | [04-experiments-baseline.md](04-experiments-baseline.md) | E0-E2: input size, baseline, domain-wise, cross-domain, architectures | Required |
@@ -49,7 +49,7 @@ These were decided with Nattan on 2026-10-11. Do not reopen them without asking.
 | D8 | Segmenter quality measured on **~30 hand-annotated field images** (6 per class), polygons embedded in the `.py`. | Without real field masks there is no honest evidence the segmenter works; embedding polygons keeps IoU reproducible. |
 | D9 | Method B classifier input = **crop to leaf bbox with margin, keep context** (no background painting). | More forgiving of imperfect masks than whitening the background. |
 | D10 | Develop in **notebooks, export to a single `.py`**, with an automated export tool and a smoke test from day one. | Fast iteration; the export gate keeps the submitted file always working. |
-| D11 | Training runs on **Colab/Kaggle GPU**; agents develop and smoke-test locally on the M2. | Full matrix is ~70 classification runs + 5 segmenter runs. |
+| D11 | Training runs on **Colab/Kaggle GPU** through one platform-aware notebook (`notebooks/runner.ipynb`, guide: [kaggle-guide.md](kaggle-guide.md)); agents develop and smoke-test locally on the M2. | Full matrix is ~70 classification runs + 5 segmenter runs. |
 | D12 | Report written in **Word / Google Docs**; code emits CSV + Markdown tables and 300 dpi PNG figures. | Team preference. |
 | D13 | Related work: Nattan finds 2+ additional IEEE Xplore papers (post-2021) using the criteria in [08](08-report-and-submission.md). | Only 2 of the 5 diary papers are IEEE Xplore. |
 
@@ -142,7 +142,7 @@ Every row runs on all 5 splits. "Test sets" lists which test subsets are reporte
 
 Aliases (one training, several names, no retraining): `E1-U` is the winning E0 row; `E1-WW` is `E1-WF` (both train on white and select the checkpoint on white val, so they are the same model, and the E1-WF metrics already hold the white test); `X-domain-WW` is the W->F row of the winning backbone. `summarize` still reports an `E1-WW` row. Also, `choose-lr` copies the winning sweep run to split 0 of the real run folder, because it is the same training (identical config fingerprint and split).
 
-Rough budget on a T4: ResNet50 ~3 min/run, ConvNeXt-T / Swin-T ~6 min/run, segmenter ~10 min/run. Required tier is ~55 runs (~4 h). Everything is ~80 runs (~7-8 h GPU). Run in batches by experiment ID so a Colab disconnect loses at most one batch.
+Rough budget on a T4: ResNet50 ~3 min/run, ConvNeXt-T / Swin-T ~6 min/run, segmenter ~10 min/run. Required tier is ~55 runs (~4 h). Everything is ~80 runs (~7-8 h GPU). Run in batches by experiment ID so a Colab disconnect or a dead Kaggle session loses at most one batch.
 
 ---
 
@@ -151,7 +151,7 @@ Rough budget on a T4: ResNet50 ~3 min/run, ConvNeXt-T / Swin-T ~6 min/run, segme
 1. Pick the next unchecked task in the lowest-numbered phase file whose prerequisites are met.
 2. Implement in the phase's notebook, inside cells marked `#| export` for anything the final `.py` needs (see [01](01-setup.md)).
 3. Run `python tools/export_py.py && python -m pytest -q && python <group_name>.py smoke` locally. All three must pass before a task is done.
-4. For GPU work, hand Nattan the exact Colab command (`python <group_name>.py run --exp <ID>`). Do not mark an experiment done until its `metrics.json` files for all 5 splits are back in `Dhan-Shomadhan/_work/runs/`.
+4. For GPU work, hand Nattan the exact command (`python <group_name>.py run --exp <ID>`) and the `BATCHES_TO_RUN` entry of `notebooks/runner.ipynb` that runs it (Colab or Kaggle, see [kaggle-guide.md](kaggle-guide.md)). Do not mark an experiment done until its `metrics.json` files for all 5 splits are back in `Dhan-Shomadhan/_work/runs/`.
 5. Commit per task with a message naming the task ID (e.g. `T2.3 stratified splits`). No co-author lines.
 6. Update the checkbox in the phase file and, if a decision changed, the decision log above.
 

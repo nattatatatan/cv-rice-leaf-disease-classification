@@ -85,14 +85,23 @@ Global flags: `--data-root` (default `Dhan-Shomadhan`), `--device {auto,cuda,mps
 - [x] One trivial test now (`--help` exits 0). Later phases add their own tests.
 - Done when: `python tools/export_py.py && python -m pytest -q && python <group_name>.py smoke` passes.
 
-### T1.7 Colab runner (`notebooks/runner.ipynb`)
+### T1.7 Platform-aware runner (`notebooks/runner.ipynb`: Colab, Kaggle, local)
 - [x] Cells: mount Drive; `pip install -r requirements.txt` (record `pip freeze` to Drive the first time); unzip `MyDrive/csci935/Dhan-Shomadhan.zip` to `/content/`; copy the latest `<group_name>.py` from `MyDrive/csci935/`; set `--data-root /content/Dhan-Shomadhan`.
 - [x] Restore `_work/cache` and `_work/weights` from Drive if present (saves ~5 min per session); otherwise run `download-weights` and `prepare`, then save them to Drive.
 - [x] One cell per experiment batch: `!python <group_name>.py run --exp E1-U`.
 - [x] After each batch, rsync `_work/runs/<ID>/` (excluding `*.pt` unless needed for Grad-CAM/predict) back to `MyDrive/csci935/_work/runs/`.
-- [x] Assert `torch.cuda.is_available()` at the top and print GPU name, Python, torch and OpenCV versions into a `env.json` saved with runs.
-- Handoff: Nattan downloads `MyDrive/csci935/_work/runs/` into the local `Dhan-Shomadhan/_work/runs/` (or syncs via Google Drive desktop) and commits.
+- [x] Assert a GPU at the top and print GPU name, Python, torch and OpenCV versions into a `env.json` saved with runs.
+- [x] Kaggle (the Colab GPU quota ran out; step-by-step in [kaggle-guide.md](kaggle-guide.md)). The first cells detect the platform (Kaggle first: `KAGGLE_KERNEL_RUN_TYPE` set or `/kaggle/input` exists, because Kaggle images ship `google.colab`; colab: `/var/colab/hostname` or `COLAB_RELEASE_TAG` / `COLAB_GPU`; else local; never by importability) and everything after is shared:
+  - inputs are two private Datasets found by globbing `/kaggle/input` (`csci935-dhan-shomadhan`: the zip or Kaggle's extracted tree, 1106 JPEGs asserted, top-level names printed with `repr()`; `csci935-code`: script, `requirements.txt`, `choices.json`, optional `runs.zip`);
+  - the data root, caches and weights live in `/kaggle/tmp`, not in `/kaggle/working`; results go to `/kaggle/working/out/` (runs without `*.pt`, `choices.json`, `env.json`, `pip_freeze.txt`, log) and `/kaggle/working/out.zip` is rebuilt after every completed split and every batch;
+  - GPU check fails early on no GPU or a P100 (the pinned torch 2.11 builds have no sm_60 kernels; select GPU T4 x2); the pinned torch is kept if the preinstalled one matches, otherwise installed for the driver (CUDA 13.0, else 12.8, else 12.6) with a loud warning and `env.json` record if the pin cannot be honoured; exactly one OpenCV 4.12;
+  - `run_parallel([a, b])` runs two experiments at once, one per GPU (`CUDA_VISIBLE_DEVICES`, `--num-workers 2`), output prefixed per experiment, sync after every split; sweeps run in parallel, then `choose-lr` one backbone after the other (only `choose-lr` and the gates write `choices.json`);
+  - before training, a warning if finished splits of the experiment ran on a different GPU model (reads their `env.json`);
+  - `BATCHES_TO_RUN` (first code cell) selects which batch cells execute under "Save & Run All"; no interactive input anywhere; a failing batch still syncs and zips before it stops the run.
+- [x] Testability: the helpers are plain functions in notebook cells tagged `#| lib` (no side effects at import); `tests/test_runner.py` loads exactly those cells and exercises them on fake `/kaggle` trees, mocked subprocess calls and a stand-in script, and runs the whole notebook in `local` mode (`RUNNER_PLATFORM=local`) against the real dataset.
+- Handoff: Colab: download `MyDrive/csci935/_work/runs/` into the local `Dhan-Shomadhan/_work/runs/`. Kaggle: download `out.zip` and unpack it (kaggle-guide.md section 8). Commit.
 
 ## Phase acceptance
 - [x] Local: export + pytest + smoke pass on Python 3.12.
 - [ ] Colab: runner reaches the `smoke` command against the original Mendeley structure and prints a GPU name.
+- [ ] Kaggle: first session reaches `smoke` and the first epochs of the sweeps (checklist in [kaggle-guide.md](kaggle-guide.md)); confirm `env.json` shows `torch_pin_honoured` and the dataset layout Kaggle produced.
