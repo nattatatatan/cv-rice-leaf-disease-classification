@@ -1,0 +1,53 @@
+{
+ "format": 1,
+ "requested_exp_id": "E1-FF",
+ "experiment": {
+  "exp_id": "E1-FF",
+  "backbone": "resnet50",
+  "train_domains": [
+   "field"
+  ],
+  "select_domains": [
+   "field"
+  ],
+  "test_subsets": [
+   "field"
+  ],
+  "input_mode": "rect",
+  "use_composites": false,
+  "seg_crop": false,
+  "kind": "classifier",
+  "alias_of_winner": "",
+  "stage1_epochs": 2,
+  "stage1_lr": 0.001,
+  "epochs": 30,
+  "lr": 0.0001,
+  "weight_decay": 0.05,
+  "warmup_epochs": 1,
+  "label_smoothing": 0.1,
+  "batch_size": 32,
+  "grad_accum": 1,
+  "clip_norm": 1.0,
+  "patience": 10,
+  "dropout": 0.2,
+  "pretrained": true,
+  "size_div": 1,
+  "note": "train field, test field"
+ },
+ "split": 2,
+ "seed": 2,
+ "seed_offset": 0,
+ "limit": null,
+ "choices_used": {
+  "input_mode": "rect",
+  "lr[resnet50]": 0.0001
+ },
+ "notes": [],
+ "overrides": {},
+ "weights": "ResNet50_Weights.IMAGENET1K_V2",
+ "input_size": [
+  448,
+  224
+ ],
+ "config_fingerprint": "dcc03eb7a5ea856dc444bcf41f4a8678501a975982f4d6b6eb2e6330451cf8da"
+}
