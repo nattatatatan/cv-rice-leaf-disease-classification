@@ -2743,6 +2743,7 @@ def summarize(data_root, out=print) -> None:
 
 # ---- from 90_cli.ipynb ----
 import argparse
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -2886,6 +2887,15 @@ EXPERIMENT_GROUPS = {
     "E2": ("E2-cnx-U", "E2-cnx-WF", "E2-swin-U", "E2-swin-WF"),
     "X-domain": ("X-domain-WW", "X-domain-FF"),
 }
+# Rows that are the same training as another row (same data, selection domains, backbone, input mode, lr and
+# switches; they differ only in which test subset the report highlights). They have no run folder of their own:
+# like E1-U they resolve to the target's config and folder, so nothing is trained twice. Aliases do not change
+# any ExperimentConfig, so no existing fingerprint moves.
+#   E1-WW: train white, select on white, same as E1-WF (whose metrics also hold the white test as reference).
+FIXED_ALIASES = {"E1-WW": "E1-WF"}
+#   X-domain-WW (best backbone, train white): the W->F row of the winning backbone is the same training.
+#   X-domain-FF has no counterpart for ConvNeXt-T / Swin-T (there is no E2 F->F row), so it is not aliased.
+BACKBONE_ALIASES = {"X-domain-WW": {"resnet50": "E1-WF", "convnext_tiny": "E2-cnx-WF", "swin_t": "E2-swin-WF"}}
 NON_CLASSIFIER_MESSAGE = {
     "segmenter": "is the leaf segmenter, trained by the segmentation pipeline of phase 06 (06-segmentation-method-b.md)",
     "analysis": "is a Grad-CAM analysis, produced by the `gradcam` command of phase 07 (07-analysis.md)",
@@ -2896,6 +2906,10 @@ def run_folder_name(exp_id: str, choices: Choices) -> str:
     """Folder (under runs/) that holds the results of an experiment ID: itself, except for the E1-U alias."""
     if exp_id not in EXPERIMENTS:
         expand_experiment_ids(exp_id)  # raises with suggestions
+    if exp_id in FIXED_ALIASES:
+        return run_folder_name(FIXED_ALIASES[exp_id], choices)
+    if exp_id in BACKBONE_ALIASES:
+        return run_folder_name(BACKBONE_ALIASES[exp_id][choices.get("backbone")], choices)
     base = EXPERIMENTS[exp_id]
     return f"{base.alias_of_winner}-{choices.get('input_mode')}" if base.alias_of_winner else exp_id
 
@@ -2955,6 +2969,12 @@ def resolve_experiment(
             used[label] = value
             notes.append(f"--fast: no choice for {label}, using the placeholder {value!r}")
             return value
+
+    if exp_id in FIXED_ALIASES or exp_id in BACKBONE_ALIASES:
+        target = FIXED_ALIASES[exp_id] if exp_id in FIXED_ALIASES else BACKBONE_ALIASES[exp_id][pick("backbone")]
+        inner = resolve_experiment(target, choices, lr=lr, placeholders=placeholders)
+        note = f"{exp_id} is an alias of {inner.config.exp_id} (identical training): same run folder, no retraining"
+        return ResolvedExperiment(inner.config, exp_id, {**inner.choices_used, **used}, (note, *inner.notes, *notes))
 
     if base.alias_of_winner:
         mode = pick("input_mode")
@@ -3110,7 +3130,65 @@ def choose_lr(data_root, backbone: str, out=print) -> dict:
     path = write_choice(data_root, "lr", best, evidence, sub=backbone)
     out(f"choose-lr: {backbone}: " + ", ".join(f"lr {lr_tag(lr)} -> val mixed F1 {fmt3(scores[lr])}" for lr in SWEEP_LRS)
         + f"  =>  lr {lr_tag(best)}  (written to {path})")
-    return {"lr": best, "evidence": evidence}
+    try:
+        reuse = reuse_sweep_run(data_root, backbone, best)
+        message = {
+            "copied": f"the sweep run at lr {lr_tag(best)} was copied to split 0 of {run_folder_name(exp_id, load_choices(data_root))} "
+            "(same training; the real run will skip split 0)",
+            "exists": "the real split 0 already exists and was left untouched",
+        }[reuse]
+    except (ExperimentError, DatasetError) as exc:
+        reuse, message = "not reused", f"sweep run not reused for split 0 ({exc}); the real run will train it"
+    out(f"choose-lr: {message}")
+    return {"lr": best, "evidence": evidence, "split_0": reuse}
+
+
+PROVENANCE_FILENAME = "provenance.json"
+
+
+def reuse_sweep_run(data_root, backbone: str, lr: float) -> str:
+    """Copy the sweep run at ``lr`` to split 0 of the real run folder of the backbone's sweep experiment.
+
+    Returns "copied" or "exists" (a real split 0 is already there and is left untouched). Raises ExperimentError
+    when the sweep run is not the same training as the real run: different config fingerprint (including a changed
+    lr in choices.json), different split sha256, or a --fast / dev-override run."""
+    data_root = Path(data_root)
+    exp_id = SWEEP_EXPERIMENT[backbone]
+    choices = load_choices(data_root)
+    sweep_split = split_dir(sweep_dir(data_root) / sweep_run_name(exp_id, lr), 0)
+    metrics = read_metrics(sweep_split)
+    if metrics is None:
+        raise ExperimentError(f"no sweep result at {sweep_split / 'metrics.json'}")
+    if metrics.get("fast") or metrics.get("overrides"):
+        raise ExperimentError(f"{sweep_split} is a --fast / dev-override run")
+    resolved = resolve_experiment(exp_id, choices)  # the config a real run would use, with the lr now in choices.json
+    expected = config_fingerprint(resolved.config, {"seed_offset": 0, "limit": None})
+    if metrics.get("config_fingerprint") != expected:
+        raise ExperimentError(
+            f"the sweep run's config fingerprint differs from the real {resolved.config.exp_id} run "
+            f"(lr in choices.json is {resolved.config.lr:g}, the sweep run used {metrics.get('lr')}, or the recipe changed)"
+        )
+    if metrics.get("split_sha256") != load_split(data_root, 0)["sha256"]:
+        raise ExperimentError("the sweep run's split sha256 differs from the committed split_0")
+    real_root = runs_dir(data_root) / run_folder_name(exp_id, choices)
+    destination = split_dir(real_root, 0)
+    if destination.exists() and any(destination.iterdir()):
+        return "exists"
+    provenance = {
+        "copied_from": "/".join(sweep_split.relative_to(runs_dir(data_root)).parts),
+        "reason": "choose-lr: the sweep run at the chosen lr is the same training as split 0 of this run "
+        "(identical config fingerprint and split sha256), so it was copied instead of retrained",
+        "config_fingerprint": expected, "split_sha256": metrics["split_sha256"], "lr": lr,
+    }
+    staging = destination.with_name(destination.name + f".tmp{os.getpid()}")
+    if staging.exists():
+        shutil.rmtree(staging)
+    shutil.copytree(sweep_split, staging)
+    write_json(staging / PROVENANCE_FILENAME, provenance, indent=2)
+    if destination.exists():  # empty leftover folder
+        destination.rmdir()
+    os.replace(staging, destination)
+    return "copied"
 
 
 def cmd_choose_lr(args: argparse.Namespace) -> int:

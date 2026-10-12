@@ -109,14 +109,14 @@ def run_cli(gs, root, *args):
 
 
 def test_fast_run_works_for_any_experiment_id_and_writes_to_scratch(gs, prepared, capsys):
-    assert run_cli(gs, prepared, "--exp", "E1-WW", "--splits", "0", "--fast") == 0
+    assert run_cli(gs, prepared, "--exp", "E1-FF", "--splits", "0", "--fast") == 0
     out = capsys.readouterr().out
     assert "placeholder" in out and "never a result" in out
-    scratch = prepared / "_work" / "runs" / "scratch" / "E1-WW_fast" / "split_0"
+    scratch = prepared / "_work" / "runs" / "scratch" / "E1-FF_fast" / "split_0"
     assert (scratch / "metrics.json").is_file()
-    assert not (prepared / "_work" / "runs" / "E1-WW").exists()
+    assert not (prepared / "_work" / "runs" / "E1-FF").exists()
     assert json.loads((scratch / "metrics.json").read_text())["fast"] is True
-    assert run_cli(gs, prepared, "--exp", "E1-WW", "--splits", "0", "--fast") == 0
+    assert run_cli(gs, prepared, "--exp", "E1-FF", "--splits", "0", "--fast") == 0
     assert "skipped" in capsys.readouterr().out
 
 
@@ -226,4 +226,4 @@ def test_alias_resolves_to_the_winning_e0_run_folder(gs, tmp_path):
     root = tmp_path / "r"
     gs.write_choice(root, "input_mode", "pad")
     choices = gs.load_choices(root)
-    assert gs.run_folder_name("E1-U", choices) == "E0-pad" and gs.run_folder_name("E1-WW", choices) == "E1-WW"
+    assert gs.run_folder_name("E1-U", choices) == "E0-pad" and gs.run_folder_name("E1-WW", choices) == "E1-WF"

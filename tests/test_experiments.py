@@ -78,16 +78,16 @@ def test_fixed_rows_resolve_with_only_the_learning_rate(gs, choices_in):
 def test_missing_choices_file_gives_a_clear_error(gs, choices_in):
     choices = choices_in(None)
     with pytest.raises(gs.ChoicesError) as excinfo:
-        gs.resolve_experiment("E1-WW", choices)
+        gs.resolve_experiment("E1-FF", choices)
     message = str(excinfo.value)
-    assert "E1-WW" in message and "choices.json does not exist" in message and "input_mode" in message
+    assert "E1-FF" in message and "choices.json does not exist" in message and "input_mode" in message
     assert "gate G0" in message
 
 
 def test_missing_lr_names_the_command_that_writes_it(gs, choices_in):
     choices = choices_in({"input_mode": "rect"})
     with pytest.raises(gs.ChoicesError, match=r"lr\[resnet50\].*choose-lr"):
-        gs.resolve_experiment("E1-WW", choices)
+        gs.resolve_experiment("E1-FF", choices)
 
 
 def test_best_of_rows_read_the_winners(gs, choices_in):
@@ -106,7 +106,7 @@ def test_best_of_rows_read_the_winners(gs, choices_in):
 
 def test_invalid_choice_values_are_rejected(gs, choices_in):
     with pytest.raises(gs.ChoicesError, match="invalid input_mode"):
-        gs.resolve_experiment("E1-WW", choices_in({"input_mode": "round", "lr": {"resnet50": 3e-4}}))
+        gs.resolve_experiment("E1-FF", choices_in({"input_mode": "round", "lr": {"resnet50": 3e-4}}))
     with pytest.raises(gs.ChoicesError, match="invalid lr"):
         gs.resolve_experiment("E0-rect", choices_in({"lr": {"resnet50": 5}}))
 
@@ -120,7 +120,7 @@ def test_e1_u_is_an_alias_of_the_winning_e0_row(gs, choices_in):
 
 
 def test_fast_placeholders_stand_in_for_missing_choices_and_say_so(gs, choices_in):
-    resolved = gs.resolve_experiment("E1-WW", choices_in(None), placeholders=True)
+    resolved = gs.resolve_experiment("E1-FF", choices_in(None), placeholders=True)
     assert resolved.config.input_mode == "rect" and resolved.config.lr == 3e-4
     assert len(resolved.notes) == 2 and all("--fast" in note for note in resolved.notes)
 

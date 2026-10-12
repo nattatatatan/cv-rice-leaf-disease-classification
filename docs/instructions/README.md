@@ -126,7 +126,7 @@ Every row runs on all 5 splits. "Test sets" lists which test subsets are reporte
 | E0-pad | ResNet50 | U | 320x320 letterbox | W, F, mixed | Req | Input-size ablation |
 | E0-rect | ResNet50 | U | 448x224 (HxW) | W, F, mixed | Req | Input-size ablation |
 | E1-U | ResNet50 | U | best of E0 | W, F, mixed | Req | Baseline (same run as winning E0 row) |
-| E1-WW | ResNet50 | W | best of E0 | W | Req | Domain-specific white |
+| E1-WW | ResNet50 | W | best of E0 | W | Req | Domain-specific white (alias of the E1-WF run, see below) |
 | E1-FF | ResNet50 | F | best of E0 | F | Req | Domain-specific field |
 | E1-WF | ResNet50 | W | best of E0 | F (and W) | Req | Cross-domain gap |
 | E2-cnx-U | ConvNeXt-T | U | best of E0 | W, F, mixed | Req | Stronger CNN |
@@ -137,8 +137,10 @@ Every row runs on all 5 splits. "Test sets" lists which test subsets are reporte
 | E3-A-WF | best of E2 | W + composites | best of E0 | F (and W) | Tier 4 | Does synthesis close the W->F gap? (uses field images as backgrounds, so state it is not pure W->F) |
 | S-seg | LRASPP-MobileNetV3 | composites + white pseudo-masks | 512x256 | IoU: white val, 30 annotated field | Tier 3 | Leaf segmenter |
 | E4-B | best of E2 | U, cropped by S-seg | best of E0 | W, F, mixed | Tier 3 | Method B |
-| X-domain | best of E2 | W / F | best of E0 | W / F | Tier 4 | Domain-specific models with best backbone |
+| X-domain | best of E2 | W / F | best of E0 | W / F | Tier 4 | Domain-specific models with best backbone (the W row is an alias of the winner's W->F run) |
 | X-gradcam | recommended | - | - | annotated field + samples | Tier 4 | Shortcut analysis |
+
+Aliases (one training, several names, no retraining): `E1-U` is the winning E0 row; `E1-WW` is `E1-WF` (both train on white and select the checkpoint on white val, so they are the same model, and the E1-WF metrics already hold the white test); `X-domain-WW` is the W->F row of the winning backbone. `summarize` still reports an `E1-WW` row. Also, `choose-lr` copies the winning sweep run to split 0 of the real run folder, because it is the same training (identical config fingerprint and split).
 
 Rough budget on a T4: ResNet50 ~3 min/run, ConvNeXt-T / Swin-T ~6 min/run, segmenter ~10 min/run. Required tier is ~55 runs (~4 h). Everything is ~80 runs (~7-8 h GPU). Run in batches by experiment ID so a Colab disconnect loses at most one batch.
 

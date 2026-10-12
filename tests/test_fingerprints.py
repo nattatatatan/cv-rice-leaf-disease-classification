@@ -63,7 +63,9 @@ def test_committed_sweep_runs_keep_their_fingerprints(gs):
 # If a deliberate change to the recipe or the registry alters these, update them knowing that every Colab run of
 # the affected rows must be redone.
 GOLDEN = {
-    "E1-WW": "7c673c5a2f3387787042151c4929a771790c6e115a4f59b7256257192c421233",
+    # E1-WW is an alias of E1-WF (identical training), so it resolves to E1-WF's config and fingerprint. This is the
+    # only pin that changed when the alias was introduced; E1-WW had never been run.
+    "E1-WW": "e0e8fa18dd6850f30f10db39e171eb3a2c8fc62c9e7a1ee54f05a177b37e09c5",
     "E1-FF": "dcc03eb7a5ea856dc444bcf41f4a8678501a975982f4d6b6eb2e6330451cf8da",
     "E1-WF": "e0e8fa18dd6850f30f10db39e171eb3a2c8fc62c9e7a1ee54f05a177b37e09c5",
     "E2-cnx-U": "7b328a708c2d9e7b15ff63e7088b996d9cee0f44d3cbaff03280ed28512b283e",
