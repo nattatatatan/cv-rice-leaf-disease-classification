@@ -8,10 +8,11 @@ All runs happen on Colab via `python <group_name>.py run --exp <ID>`. Agents pre
 
 ## Batch 1 - E0 input-size ablation (ResNet50, unified)
 
-- [ ] LR sweep for ResNet50 on split 0 with `rect` mode (T3.4 rule). Record the result in `choices.json`.
-- [ ] Run `E0-squash`, `E0-pad`, `E0-rect` on all 5 splits.
-- [ ] **Gate G0**: choose the input mode with the highest **mean val mixed macro-F1**. If the top two are within one std of each other, prefer `rect`: it preserves leaf geometry at no extra cost, and that rationale is easy to defend. Write `{"input_mode": ...}` to `choices.json`.
+- [x] LR sweep for ResNet50 on split 0 with `rect` mode (T3.4 rule). Record the result in `choices.json`.
+- [x] Run `E0-squash`, `E0-pad`, `E0-rect` on all 5 splits.
+- [x] **Gate G0**: choose the input mode with the highest **mean val mixed macro-F1**. If the top two are within one std of each other, prefer `rect`: it preserves leaf geometry at no extra cost, and that rationale is easy to defend. Write `{"input_mode": ...}` to `choices.json`.
 - Report use: a small table in 6.2, plus one sentence in 5 justifying the input size.
+- Implemented as `gate g0` (and `gate g1` for Batch 3): it recomputes the decision from the run folders and writes the entry with its evidence to `choices.json`. "Within one std" means the gap between the two means is at most the larger of their two stds. Result: squash led rect by 0.013 (less than one std), so the rule chose `rect`; the paired val difference favouring squash on field macro-F1 (+0.025 +- 0.021, 5 of 5 splits) is recorded in `findings.md`.
 
 ## Batch 2 - E1 ResNet50 baseline and domain experiments
 

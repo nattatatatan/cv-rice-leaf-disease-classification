@@ -2255,7 +2255,491 @@ def predict_image(run_dir, image, device: str, data_root=None, out=print) -> np.
 # Phase 06 (segmentation): the segmenter and the crop pipeline are added here.
 
 # ---- from 50_analysis.ipynb ----
-# Phase 07 (analysis): aggregation, tables, figures and Grad-CAM are added here.
+import re
+from typing import NamedTuple
+
+ANALYSIS_SPLITS = (0, 1, 2, 3, 4)  # every reported number is a mean +- std over these five splits
+IGNORED_RUN_FOLDERS = ("sweep", "scratch")  # under runs/: learning-rate sweeps and dev runs, never results
+SCORE_SUBSETS = ("white", "field", "mixed", "domain_balanced")
+SCORE_METRICS = ("macro_f1", "accuracy")
+PARTS = ("val", "test")
+SUBSET_LABELS = {"white": "White", "field": "Field", "mixed": "Mixed", "domain_balanced": "Domain-balanced"}
+METRIC_LABELS = {"macro_f1": "macro-F1", "accuracy": "accuracy (%)"}
+# Rows of the required tier that the tables cover (the later phases add their own rows).
+ANALYSIS_EXPERIMENTS = (
+    "E0-squash", "E0-pad", "E0-rect", "E1-U", "E1-WW", "E1-FF", "E1-WF",
+    "E2-cnx-U", "E2-cnx-WF", "E2-swin-U", "E2-swin-WF",
+)
+
+
+@dataclass(frozen=True)
+class ExperimentResults:
+    """The complete, validated metrics of one experiment over the five splits."""
+
+    exp_id: str  # the requested ID (E1-U for the alias)
+    run_name: str  # folder under runs/ (E0-rect for E1-U)
+    config: ExperimentConfig  # the registry's resolved config; its fingerprint matched every split
+    metrics: dict  # split seed -> metrics.json content
+
+    @property
+    def splits(self) -> tuple:
+        return tuple(sorted(self.metrics))
+
+
+def expected_fingerprint(config: ExperimentConfig) -> str:
+    """The fingerprint a plain `run` of this config writes (no seed offset, not --fast)."""
+    return config_fingerprint(config, {"seed_offset": 0, "limit": None})
+
+
+def load_experiment(data_root, exp_id: str, choices) -> tuple:
+    """(ExperimentResults, []) for a complete experiment whose runs match the committed splits and the registry,
+    otherwise (None, [reasons]). Never raises for an experiment that is merely not run yet."""
+    try:
+        resolved = resolve_experiment(exp_id, choices)
+        run_name = run_folder_name(exp_id, choices)
+    except ExperimentError as exc:
+        needed = re.search(r"needed: ([^)]*)\)", str(exc))
+        return None, [f"not ready, choices.json has no {needed.group(1)} yet" if needed else f"not ready ({exc})"]
+    run_root = runs_dir(data_root) / run_name
+    if not run_root.is_dir():
+        return None, [f"pending, no runs yet ({run_root} does not exist)"]
+    expected = expected_fingerprint(resolved.config)
+    problems, found = [], {}
+    for split_seed in ANALYSIS_SPLITS:
+        metrics = read_metrics(split_dir(run_root, split_seed))
+        if metrics is None:
+            problems.append(f"split {split_seed}: no metrics.json (run incomplete)")
+            continue
+        try:
+            committed_sha = load_split(data_root, split_seed)["sha256"]
+        except DatasetError as exc:
+            problems.append(f"split {split_seed}: {exc}")
+            continue
+        if metrics.get("split_sha256") != committed_sha:
+            problems.append(f"split {split_seed}: split sha256 differs from the committed split (stale run)")
+        elif metrics.get("config_fingerprint") != expected:
+            problems.append(f"split {split_seed}: config fingerprint differs from the registry (the experiment definition changed)")
+        elif metrics.get("fast") or metrics.get("overrides"):
+            problems.append(f"split {split_seed}: this is a --fast / dev-override run, not a result")
+        else:
+            found[split_seed] = metrics
+    if problems:
+        return None, problems
+    return ExperimentResults(exp_id, run_name, resolved.config, found), []
+
+
+def load_experiments(data_root, exp_ids, choices) -> dict:
+    """{exp_id: ExperimentResults} for the complete experiments. Every other one is skipped with a printed warning."""
+    results = {}
+    for exp_id in exp_ids:
+        found, problems = load_experiment(data_root, exp_id, choices)
+        if found is None:
+            warn(f"{exp_id}: skipped - " + "; ".join(problems))
+        else:
+            results[exp_id] = found
+    known = set()
+    for exp_id in EXPERIMENTS:
+        try:
+            known.add(run_folder_name(exp_id, choices))
+        except ExperimentError:
+            known.add(exp_id)
+    runs_root = runs_dir(data_root)
+    for folder in sorted(runs_root.iterdir()) if runs_root.is_dir() else ():
+        if folder.is_dir() and folder.name not in IGNORED_RUN_FOLDERS and folder.name not in known:
+            warn(f"{folder}: not a run folder of any registry experiment, ignored")
+    return results
+
+
+def mean_std(values) -> tuple:
+    """(mean, sample std with ddof=1). NaN when a value is missing or there are fewer than two values."""
+    if len(values) == 0 or any(v is None for v in values):
+        return float("nan"), float("nan")
+    array = np.asarray(values, dtype=np.float64)
+    std = float(np.std(array, ddof=1)) if len(array) > 1 else float("nan")
+    return float(np.mean(array)), std
+
+
+class Aggregate(NamedTuple):
+    mean: float
+    std: float  # ddof=1 (sample std over the splits)
+    values: list  # per-split values, in split order
+
+
+class PairedDifference(NamedTuple):
+    mean: float
+    std: float
+    values: list  # a - b for each split
+    ahead: int  # number of splits in which a is strictly ahead of b
+
+
+def split_values(exp: ExperimentResults, subset: str, metric: str, part: str) -> list:
+    if subset not in SCORE_SUBSETS or metric not in SCORE_METRICS or part not in PARTS:
+        raise ValueError(f"unknown subset/metric/part: {subset!r}, {metric!r}, {part!r}")
+    return [exp.metrics[k][part][subset][metric] for k in exp.splits]
+
+
+def aggregate(exp: ExperimentResults, subset: str, metric: str, part: str = "test") -> Aggregate:
+    """Mean, std (ddof=1) and per-split list of one metric of one experiment."""
+    values = split_values(exp, subset, metric, part)
+    mean, std = mean_std(values)
+    return Aggregate(mean, std, values)
+
+
+def paired_difference(a: ExperimentResults, b: ExperimentResults, subset: str, metric: str, part: str = "test") -> PairedDifference:
+    """Per-split difference a - b (all experiments share the same five splits), as mean +- std."""
+    if a.splits != b.splits:
+        raise ValueError(f"{a.exp_id} and {b.exp_id} do not share the same splits: {a.splits} vs {b.splits}")
+    diffs = [x - y for x, y in zip(split_values(a, subset, metric, part), split_values(b, subset, metric, part))]
+    mean, std = mean_std(diffs)
+    return PairedDifference(mean, std, diffs, sum(d > 0 for d in diffs))
+
+
+def format_mean_std(stat, metric: str, *, signed: bool = False) -> str:
+    """'0.912 +- 0.014' for F1 (3 decimals), '91.2 +- 1.4' for accuracy (percent, 1 decimal); signed for differences."""
+    if stat.mean != stat.mean or stat.std != stat.std:
+        return "n/a"
+    scale, decimals = (100.0, 1) if metric == "accuracy" else (1.0, 3)
+    sign = "+" if signed else ""
+    return f"{stat.mean * scale:{sign}.{decimals}f} +- {stat.std * scale:.{decimals}f}"
+
+@dataclass(frozen=True)
+class Table:
+    """A results table, written as <name>.csv (for Word) and <name>.md (for review in the repo)."""
+
+    name: str
+    title: str
+    header: tuple
+    rows: list
+    note: str = ""
+
+    def to_csv(self) -> str:
+        return csv_text(list(self.header), self.rows)
+
+    def to_markdown(self) -> str:
+        lines = [f"# {self.title}", ""]
+        if self.note:
+            lines += [self.note, ""]
+        lines.append("| " + " | ".join(self.header) + " |")
+        lines.append("|" + "|".join(" --- " for _ in self.header) + "|")
+        lines += ["| " + " | ".join(str(cell) for cell in row) + " |" for row in self.rows]
+        return "\n".join(lines) + "\n"
+
+
+def write_table(data_root, table: Table) -> list:
+    paths = []
+    for suffix, text in ((".csv", table.to_csv()), (".md", table.to_markdown())):
+        path = results_dir(data_root) / (table.name + suffix)
+        write_text_atomic(path, text)
+        paths.append(path)
+    return paths
+
+
+PENDING = "pending"
+SCORE_HEADER = tuple(f"{SUBSET_LABELS[s]} {METRIC_LABELS[m]}" for s in SCORE_SUBSETS for m in SCORE_METRICS)
+
+
+def score_cells(exp, part: str, subsets=SCORE_SUBSETS) -> list:
+    """White / field / mixed / domain-balanced, each as macro-F1 and accuracy (mean +- std). '-' for subsets a row
+    does not report, 'pending' for an experiment that is not complete yet."""
+    if exp is None:
+        return [PENDING] * len(SCORE_HEADER)
+    return [
+        format_mean_std(aggregate(exp, s, m, part), m) if s in subsets else "-"
+        for s in SCORE_SUBSETS
+        for m in SCORE_METRICS
+    ]
+
+
+def difference_cells(a, b, part: str) -> list:
+    if a is None or b is None:
+        return [PENDING] * len(SCORE_HEADER)
+    return [format_mean_std(paired_difference(a, b, s, m, part), m, signed=True) for s in SCORE_SUBSETS for m in SCORE_METRICS]
+
+
+def table_input_mode(results: dict) -> Table:
+    """E0 (G0 evidence): ResNet50 on white + field at three input sizes, val and test, and the paired
+    differences to rect."""
+    rows = []
+    for part in PARTS:
+        for mode in INPUT_MODES:
+            height, width = INPUT_SIZES[mode]
+            rows.append([part, mode, f"{height}x{width}", *score_cells(results.get(f"E0-{mode}"), part)])
+        for mode in INPUT_MODES:
+            if mode != "rect":
+                rows.append([part, f"{mode} - rect (paired)", "-", *difference_cells(results.get(f"E0-{mode}"), results.get("E0-rect"), part)])
+    return Table(
+        "table_input_mode",
+        "Input mode ablation (E0, ResNet50, white + field training)",
+        ("Part", "Input mode", "Input HxW", *SCORE_HEADER),
+        rows,
+        "Mean +- std over the 5 splits (std with ddof=1; macro-F1 with 3 decimals, accuracy in % with 1 decimal). "
+        "Gate G0 used only the val rows. The paired rows are the per-split difference of the first mode minus rect. "
+        "Mixed is the full split (about 70% white); domain-balanced is the mean of white and field.",
+    )
+
+
+def table_required(results: dict) -> Table:
+    """The unified models on the test split (spec scenarios a, b, c plus the domain-balanced mean)."""
+    rows = []
+    for exp_id in ("E1-U", "E2-cnx-U", "E2-swin-U"):
+        backbone = EXPERIMENTS[exp_id].backbone
+        rows.append([exp_id, backbone, *score_cells(results.get(exp_id), "test")])
+    return Table(
+        "table_required",
+        "Required results: unified models, test split (E1-U, E2-cnx-U, E2-swin-U)",
+        ("Experiment", "Backbone", *SCORE_HEADER),
+        rows,
+        "Mean +- std over the 5 splits (std with ddof=1). White, field and mixed are the three spec scenarios; "
+        "domain-balanced is the mean of white and field. Rows that are not complete yet read 'pending'.",
+    )
+
+
+def table_domains(results: dict) -> Table:
+    """Domain-wise and cross-domain experiments on the test split (only the subsets each row is about)."""
+    rows = []
+    for exp_id in ("E1-WW", "E1-FF", "E1-WF", "E1-U", "E2-cnx-WF", "E2-swin-WF"):
+        base = EXPERIMENTS[exp_id]
+        subsets = set(base.test_subsets) | ({"domain_balanced"} if "mixed" in base.test_subsets else set())
+        rows.append([exp_id, base.backbone, " + ".join(base.train_domains), *score_cells(results.get(exp_id), "test", subsets)])
+    return Table(
+        "table_domains",
+        "Domain-wise and cross-domain experiments, test split",
+        ("Experiment", "Backbone", "Train on", *SCORE_HEADER),
+        rows,
+        "W->W is E1-WW, F->F is E1-FF, W->F is E1-WF (field is its main result, white the reference), U is E1-U. "
+        "'-' marks subsets that a row is not about. Mean +- std over the 5 splits. Rows that are not complete yet read 'pending'.",
+    )
+
+GATE_METRIC = "validation mixed macro-F1 (mean over the 5 splits; std with ddof=1)"
+TIE_RULE = "The top two are 'within one std' when their gap in mean is at most the larger of their two stds."
+G0_RULE = (
+    f"G0 (phase 04): choose the input mode with the highest {GATE_METRIC}. If the top two are within one std "
+    "of each other, prefer rect (it preserves leaf geometry at no extra cost). " + TIE_RULE
+)
+G1_RULE = (
+    f"G1 (phase 04): choose the backbone with the highest {GATE_METRIC}, among ResNet50 (E1-U), ConvNeXt-T and "
+    "Swin-T. If the top two are within one std of each other, prefer the one with the higher mean validation "
+    "field macro-F1 (field is the harder, more valuable domain). " + TIE_RULE
+)
+G1_CANDIDATES = {"resnet50": "E1-U", "convnext_tiny": "E2-cnx-U", "swin_t": "E2-swin-U"}
+
+
+def rank_candidates(mixed: dict) -> list:
+    """Candidate names by decreasing mean (a tie keeps the order of ``mixed``)."""
+    return sorted(mixed, key=lambda name: -mixed[name].mean)
+
+
+def top_two_gap(mixed: dict, ranked: list) -> tuple:
+    """(gap between the top two means, tolerance of one std, whether the gap is within it)."""
+    first, second = mixed[ranked[0]], mixed[ranked[1]]
+    gap = first.mean - second.mean
+    tolerance = max(first.std, second.std)
+    return gap, tolerance, gap <= tolerance
+
+
+def decide_g0(mixed: dict) -> dict:
+    """Gate G0. ``mixed`` maps input mode -> Aggregate of val mixed macro-F1. Returns the winner and the clause."""
+    ranked = rank_candidates(mixed)
+    gap, tolerance, tied = top_two_gap(mixed, ranked)
+    if tied and ranked[0] != "rect" and "rect" in ranked[:2]:
+        value, clause = "rect", "within one std -> rect"
+    elif tied and "rect" not in ranked[:2]:
+        value, clause = ranked[0], "highest mean (the top two are within one std but rect is not one of them)"
+    else:
+        value, clause = ranked[0], "highest mean"
+    return {"value": value, "decided_by": clause, "ranking": ranked, "top_two_gap": gap, "tolerance": tolerance}
+
+
+def decide_g1(mixed: dict, field: dict) -> dict:
+    """Gate G1. ``mixed`` / ``field`` map backbone -> Aggregate of val mixed / val field macro-F1."""
+    ranked = rank_candidates(mixed)
+    gap, tolerance, tied = top_two_gap(mixed, ranked)
+    if tied:
+        value = max(ranked[:2], key=lambda name: (field[name].mean, -ranked.index(name)))
+        clause = "within one std -> higher val field macro-F1"
+    else:
+        value, clause = ranked[0], "highest mean"
+    return {"value": value, "decided_by": clause, "ranking": ranked, "top_two_gap": gap, "tolerance": tolerance}
+
+
+def stat_record(stat) -> dict:
+    record = {"mean": float(stat.mean), "std": float(stat.std), "per_split": [float(v) for v in stat.values]}
+    if isinstance(stat, PairedDifference):
+        record["splits_ahead"] = int(stat.ahead)
+    return record
+
+
+def require_complete(data_root, exp_id: str, choices, gate: str) -> ExperimentResults:
+    found, problems = load_experiment(data_root, exp_id, choices)
+    if found is None:
+        raise ExperimentError(f"gate {gate}: {exp_id} cannot be used - " + "; ".join(problems))
+    return found
+
+
+def candidate_evidence(exps: dict) -> dict:
+    out = {}
+    for name, exp in exps.items():
+        out[name] = {
+            "experiment": exp.exp_id, "run_folder": exp.run_name,
+            "config_fingerprint": exp.metrics[exp.splits[0]]["config_fingerprint"],
+            "split_sha256": [exp.metrics[k]["split_sha256"] for k in exp.splits],
+            "val_mixed_macro_f1": stat_record(aggregate(exp, "mixed", "macro_f1", "val")),
+            "val_field_macro_f1": stat_record(aggregate(exp, "field", "macro_f1", "val")),
+        }
+    return out
+
+
+def paired_evidence(exps: dict, pairs) -> dict:
+    return {
+        f"{a}_minus_{b}": {
+            "val_mixed_macro_f1": stat_record(paired_difference(exps[a], exps[b], "mixed", "macro_f1", "val")),
+            "val_field_macro_f1": stat_record(paired_difference(exps[a], exps[b], "field", "macro_f1", "val")),
+        }
+        for a, b in pairs
+    }
+
+
+def gate_evidence(rule: str, decision: dict, exps: dict, pairs, **extra) -> dict:
+    return {
+        "rule": rule, "metric": GATE_METRIC, "decided_by": decision["decided_by"], "ranking": decision["ranking"],
+        "top_two_gap": float(decision["top_two_gap"]), "tolerance_one_std": float(decision["tolerance"]), **extra,
+        "candidates": candidate_evidence(exps), "paired_differences": paired_evidence(exps, pairs),
+    }
+
+
+def evaluate_g0(exps: dict) -> dict:
+    """{"value", "evidence"} of gate G0 from the three complete E0 experiments (keyed by input mode)."""
+    decision = decide_g0({mode: aggregate(exps[mode], "mixed", "macro_f1", "val") for mode in INPUT_MODES})
+    pairs = [(mode, "rect") for mode in INPUT_MODES if mode != "rect"]
+    return {"value": decision["value"], "evidence": gate_evidence(G0_RULE, decision, exps, pairs)}
+
+
+def evaluate_g1(exps: dict, lrs: dict) -> dict:
+    """{"value", "evidence"} of gate G1 from the three complete unified experiments (keyed by backbone);
+    ``lrs`` maps backbone -> its learning rate from choices.json."""
+    mixed = {name: aggregate(exps[name], "mixed", "macro_f1", "val") for name in G1_CANDIDATES}
+    field = {name: aggregate(exps[name], "field", "macro_f1", "val") for name in G1_CANDIDATES}
+    decision = decide_g1(mixed, field)
+    pairs = [("convnext_tiny", "resnet50"), ("swin_t", "resnet50"), ("swin_t", "convnext_tiny")]
+    winner = decision["value"]
+    lr = {"backbone": winner, "value": lrs[winner], "source": "choices.json lr[backbone], chosen by the split-0 sweep"}
+    return {"value": winner, "evidence": gate_evidence(G1_RULE, decision, exps, pairs, lr=lr)}
+
+
+def describe_gate(gate: str, result: dict) -> str:
+    ev = result["evidence"]
+
+    def cell(record: dict) -> str:
+        return f"{record['mean']:.3f} +- {record['std']:.3f}"
+
+    lines = [f"gate {gate}: {ev['metric']}", f"  {'candidate':<15}{'val mixed F1':>16}{'val field F1':>16}"]
+    for name in ev["ranking"]:
+        c = ev["candidates"][name]
+        lines.append(f"  {name:<15}{cell(c['val_mixed_macro_f1']):>16}{cell(c['val_field_macro_f1']):>16}")
+    first, second = ev["ranking"][:2]
+    within = "within" if ev["top_two_gap"] <= ev["tolerance_one_std"] else "outside"
+    lines.append(f"  top two: {first} leads {second} by {ev['top_two_gap']:.3f}; one std = {ev['tolerance_one_std']:.3f} ({within} one std)")
+    lines.append(f"  decision: {result['value']}  ({ev['decided_by']})")
+    return "\n".join(lines)
+
+
+def run_gate(data_root, gate: str, out=print) -> dict:
+    """Recompute gate ``g0`` or ``g1`` from the run folders and write its entry to choices.json (other keys stay)."""
+    data_root = Path(data_root)
+    choices = load_choices(data_root)
+    if gate == "g0":
+        exps = {mode: require_complete(data_root, f"E0-{mode}", choices, gate) for mode in INPUT_MODES}
+        result, key = evaluate_g0(exps), "input_mode"
+    elif gate == "g1":
+        exps = {name: require_complete(data_root, exp_id, choices, gate) for name, exp_id in G1_CANDIDATES.items()}
+        result, key = evaluate_g1(exps, {name: choices.get("lr", name) for name in G1_CANDIDATES}), "backbone"
+    else:
+        raise ExperimentError(f"unknown gate {gate!r}, expected g0 or g1")
+    path = write_choice(data_root, key, result["value"], result["evidence"])
+    out(describe_gate(gate, result))
+    out(f"  written to {path}: {key} = {result['value']!r}" + (f", lr = {result['evidence']['lr']['value']:g}" if gate == "g1" else ""))
+    return result
+
+FINDINGS_TITLE = (
+    "# Findings\n\n"
+    "Sections between `<!-- auto:NAME:begin -->` and `<!-- auto:NAME:end -->` markers are regenerated by "
+    "`summarize` from the run folders. Anything outside the markers is yours and is never touched.\n"
+)
+
+
+def auto_block(name: str, heading: str, body: str) -> str:
+    return f"<!-- auto:{name}:begin -->\n## {heading}\n\n{body.strip()}\n<!-- auto:{name}:end -->"
+
+
+def update_findings_text(existing: str | None, blocks: dict) -> str:
+    """Replace each auto block in ``existing`` (append the ones that are not there yet); keep everything else."""
+    text = existing if existing else FINDINGS_TITLE
+    for name, block in blocks.items():
+        pattern = re.compile(rf"<!-- auto:{re.escape(name)}:begin -->.*?<!-- auto:{re.escape(name)}:end -->", re.DOTALL)
+        if pattern.search(text):
+            text = pattern.sub(lambda _match: block, text, count=1)
+        else:
+            text = text.rstrip("\n") + "\n\n" + block + "\n"
+    return text
+
+
+def g0_findings(result: dict) -> str:
+    """The G0 section of findings.md in plain English, with every number taken from the gate evidence."""
+    ev, value = result["evidence"], result["value"]
+
+    def f1(mode: str) -> str:
+        record = ev["candidates"][mode]["val_mixed_macro_f1"]
+        return f"{record['mean']:.3f} +- {record['std']:.3f}"
+
+    height, width = INPUT_SIZES[value]
+    order = ev["ranking"]
+    sentences = [
+        f"Gate G0 picked the {value} input ({height}x{width}) with the rule fixed in phase 04: highest mean validation mixed "
+        "macro-F1, and if the top two are within one std, prefer rect.",
+        "Validation mixed macro-F1 (mean +- std over 5 splits) was " + ", ".join(f"{m} {f1(m)}" for m in order[:-1])
+        + f" and {order[-1]} {f1(order[-1])}.",
+    ]
+    leader = order[0]
+    if ev["decided_by"].startswith("within one std") and leader != value:
+        sentences.append(
+            f"{leader.capitalize()} leads {value} by {ev['top_two_gap']:.3f}, less than one std ({ev['tolerance_one_std']:.3f}), so {value} was "
+            "preferred because it keeps the leaf geometry at no extra cost."
+        )
+        paired = ev["paired_differences"][f"{leader}_minus_{value}"]
+        mixed, field = paired["val_mixed_macro_f1"], paired["val_field_macro_f1"]
+        sentences.append(
+            f"The paired {leader}-minus-{value} validation difference is {mixed['mean']:+.3f} +- {mixed['std']:.3f} on mixed and "
+            f"{field['mean']:+.3f} +- {field['std']:.3f} on field macro-F1, with {leader} ahead on field in "
+            f"{field['splits_ahead']} of {len(field['per_split'])} splits; this is recorded as a finding, not as a reason to revisit the choice."
+        )
+    else:
+        sentences.append(f"{value} has the highest mean, so the tie-break clause was not needed.")
+    return " ".join(sentences)
+
+
+def summarize(data_root, out=print) -> None:
+    """Regenerate every table and findings section that the runs available so far support. Experiments that are
+    incomplete or do not match the registry are skipped with a warning."""
+    data_root = Path(data_root)
+    choices = load_choices(data_root)
+    results = load_experiments(data_root, ANALYSIS_EXPERIMENTS, choices)
+    for table in (table_input_mode(results), table_required(results), table_domains(results)):
+        for path in write_table(data_root, table):
+            out(f"summarize: wrote {path}")
+    blocks = {}
+    e0 = {mode: results.get(f"E0-{mode}") for mode in INPUT_MODES}
+    if all(e0.values()):
+        g0 = evaluate_g0(e0)
+        recorded = choices.raw("input_mode")
+        if recorded != g0["value"]:
+            warn(f"choices.json has input_mode = {recorded!r} but the E0 runs decide {g0['value']!r}; run `gate g0`")
+        blocks["g0"] = auto_block("g0", "G0 input mode", g0_findings(g0))
+    else:
+        warn("findings.md: G0 section skipped, the three E0 experiments are not all complete")
+    path = results_dir(data_root) / "findings.md"
+    existing = read_file_bytes(path).decode("utf-8") if path.is_file() else None
+    write_text_atomic(path, update_findings_text(existing, blocks))
+    out(f"summarize: wrote {path}")
 
 # ---- from 90_cli.ipynb ----
 import argparse
@@ -2659,6 +3143,23 @@ def cmd_predict(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     return EXIT_OK
 
+def cmd_gate(args: argparse.Namespace) -> int:
+    try:
+        run_gate(Path(args.data_root), args.gate)
+    except (ExperimentError, DatasetError) as exc:
+        print(f"gate {args.gate}: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
+
+
+def cmd_summarize(args: argparse.Namespace) -> int:
+    try:
+        summarize(Path(args.data_root))
+    except (ExperimentError, DatasetError) as exc:
+        print(f"summarize: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
+
 def resolve_device(requested: str = "auto") -> str:
     """Map the --device flag to a concrete torch device name; raise if it is unavailable."""
     import torch
@@ -2864,6 +3365,10 @@ def _configure_choose_lr(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--backbone", required=True, choices=BACKBONES, help="backbone whose split-0 sweep to evaluate")
 
 
+def _configure_gate(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("gate", choices=("g0", "g1"), help="g0: input mode (after E0), g1: backbone (after E1-U, E2-cnx-U, E2-swin-U)")
+
+
 def _configure_gradcam(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exp", required=True, metavar="ID", help="experiment ID")
     parser.add_argument("--split", type=int, required=True, metavar="K", help="split seed")
@@ -2904,10 +3409,12 @@ COMMANDS = (
         _configure_choose_lr,
     ),
     Command(
-        "summarize",
-        "aggregate all runs into tables and figures",
-        not_implemented("summarize", "07"),
+        "gate",
+        "recompute decision gate g0 (input mode) or g1 (backbone) from the runs and record it in choices.json",
+        cmd_gate,
+        _configure_gate,
     ),
+    Command("summarize", "aggregate all runs into tables and findings (figures follow in phase 07)", cmd_summarize),
     Command("gradcam", "Grad-CAM figures for one experiment and split", not_implemented("gradcam", "07"), _configure_gradcam),
     Command("predict", "classify a single image and print class probabilities", cmd_predict, _configure_predict),
     Command("smoke", "tiny end-to-end check: imports, device, data path, one tiny experiment and predict", cmd_smoke),

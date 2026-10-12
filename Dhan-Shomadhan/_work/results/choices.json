@@ -13,5 +13,178 @@
         "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr"
       }
     }
+  },
+  "input_mode": {
+    "value": "rect",
+    "evidence": {
+      "rule": "G0 (phase 04): choose the input mode with the highest validation mixed macro-F1 (mean over the 5 splits; std with ddof=1). If the top two are within one std of each other, prefer rect (it preserves leaf geometry at no extra cost). The top two are 'within one std' when their gap in mean is at most the larger of their two stds.",
+      "metric": "validation mixed macro-F1 (mean over the 5 splits; std with ddof=1)",
+      "decided_by": "within one std -> rect",
+      "ranking": [
+        "squash",
+        "rect",
+        "pad"
+      ],
+      "top_two_gap": 0.012879497065186984,
+      "tolerance_one_std": 0.021076003698026393,
+      "candidates": {
+        "squash": {
+          "experiment": "E0-squash",
+          "run_folder": "E0-squash",
+          "config_fingerprint": "5c75631cb0ea8561f8b19b6fa8cb84328c0208be94cd0174398068c8d7a77fd7",
+          "split_sha256": [
+            "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+            "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+            "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+            "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+            "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa"
+          ],
+          "val_mixed_macro_f1": {
+            "mean": 0.7800706371657464,
+            "std": 0.017246224460146262,
+            "per_split": [
+              0.7665816671496184,
+              0.80619918699187,
+              0.7673445758279576,
+              0.7710828417845961,
+              0.7891449140746893
+            ]
+          },
+          "val_field_macro_f1": {
+            "mean": 0.7079890791876211,
+            "std": 0.018474652218310145,
+            "per_split": [
+              0.6905847953216374,
+              0.7222832722832723,
+              0.7239139515455305,
+              0.6854214413037942,
+              0.717741935483871
+            ]
+          }
+        },
+        "pad": {
+          "experiment": "E0-pad",
+          "run_folder": "E0-pad",
+          "config_fingerprint": "4130de75e0059cf9ab00e6eca0d037064b9a2268f3a39a38cedd33cdfbe5f3e5",
+          "split_sha256": [
+            "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+            "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+            "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+            "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+            "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa"
+          ],
+          "val_mixed_macro_f1": {
+            "mean": 0.7413815394846204,
+            "std": 0.02703910022270109,
+            "per_split": [
+              0.7078938839374411,
+              0.7487886697867214,
+              0.7731264106637585,
+              0.7195180258338153,
+              0.7575807072013659
+            ]
+          },
+          "val_field_macro_f1": {
+            "mean": 0.6566379338693243,
+            "std": 0.05983285253508311,
+            "per_split": [
+              0.6138892686261108,
+              0.6883116883116884,
+              0.7444257703081233,
+              0.5977867746288799,
+              0.6387761674718198
+            ]
+          }
+        },
+        "rect": {
+          "experiment": "E0-rect",
+          "run_folder": "E0-rect",
+          "config_fingerprint": "63380991647ac0b5568bf5453af99f9362f5271e435c70e5f50123290c1198b3",
+          "split_sha256": [
+            "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+            "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+            "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+            "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+            "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa"
+          ],
+          "val_mixed_macro_f1": {
+            "mean": 0.7671911401005594,
+            "std": 0.021076003698026393,
+            "per_split": [
+              0.7735882221227048,
+              0.7785819664155389,
+              0.7602640429212437,
+              0.7343823227694519,
+              0.7891391462738577
+            ]
+          },
+          "val_field_macro_f1": {
+            "mean": 0.6832687259988781,
+            "std": 0.02720323945342519,
+            "per_split": [
+              0.682562091503268,
+              0.7042252484357748,
+              0.6708805668016194,
+              0.645161701044054,
+              0.7135140222096743
+            ]
+          }
+        }
+      },
+      "paired_differences": {
+        "squash_minus_rect": {
+          "val_mixed_macro_f1": {
+            "mean": 0.012879497065186851,
+            "std": 0.0185705246101407,
+            "per_split": [
+              -0.007006554973086443,
+              0.027617220576331092,
+              0.007080532906713843,
+              0.03670051901514415,
+              5.767800831613101e-06
+            ],
+            "splits_ahead": 4
+          },
+          "val_field_macro_f1": {
+            "mean": 0.024720353188742973,
+            "std": 0.021131957592617077,
+            "per_split": [
+              0.008022703818369448,
+              0.01805802384749744,
+              0.05303338474391106,
+              0.04025974025974022,
+              0.004227913274196693
+            ],
+            "splits_ahead": 5
+          }
+        },
+        "pad_minus_rect": {
+          "val_mixed_macro_f1": {
+            "mean": -0.025809600615938955,
+            "std": 0.028526444213517743,
+            "per_split": [
+              -0.06569433818526371,
+              -0.029793296628817467,
+              0.012862367742514813,
+              -0.014864296935636623,
+              -0.031558439072491784
+            ],
+            "splits_ahead": 1
+          },
+          "val_field_macro_f1": {
+            "mean": -0.02663079212955368,
+            "std": 0.060543847938861015,
+            "per_split": [
+              -0.06867282287715715,
+              -0.0159135601240864,
+              0.07354520350650384,
+              -0.04737492641517416,
+              -0.07473785473785455
+            ],
+            "splits_ahead": 1
+          }
+        }
+      }
+    }
   }
 }

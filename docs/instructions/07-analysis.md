@@ -12,9 +12,9 @@ Prerequisites: runs exist (this phase grows incrementally; build `summarize` rig
 ## Tasks
 
 ### T7.1 Aggregation core
-- [ ] Load every `_work/runs/<EXP>/split_*/metrics.json`. Validate: 5 splits present, split sha256 matches the committed splits, config matches the registry. Skip with a warning (never silently) when incomplete.
-- [ ] `aggregate(exp, subset, metric, part="test")` returns mean, std and the per-split list. std uses `ddof=1`; state this in 6.1.
-- [ ] Paired difference helper for any two experiments (per-split diff mean +- std).
+- [x] Load every `_work/runs/<EXP>/split_*/metrics.json`. Validate: 5 splits present, split sha256 matches the committed splits, config matches the registry. Skip with a warning (never silently) when incomplete.
+- [x] `aggregate(exp, subset, metric, part="test")` returns mean, std and the per-split list. std uses `ddof=1`; state this in 6.1.
+- [x] Paired difference helper for any two experiments (per-split diff mean +- std).
 
 ### T7.2 Tables (`_work/results/`)
 | File | Content | Report section |

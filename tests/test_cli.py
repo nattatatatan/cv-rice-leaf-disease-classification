@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 NOT_IMPLEMENTED = {
-    "summarize": [],
     "gradcam": ["--exp", "E1-U", "--split", "0"],
     "reproduce": [],
 }
