@@ -302,8 +302,13 @@ def test_gate_command_exit_codes(gs, root, capsys):
     assert json.loads(gs.choices_path(root).read_text())["input_mode"]["value"] == "rect"
     assert gs.run_cli(["--data-root", str(root), "gate", "g1"]) == 1  # no E2 runs yet
     assert "gate g1: FAIL" in capsys.readouterr().err
+    assert gs.run_cli(["--data-root", str(root), "gate", "g2"]) == 1  # no backbone chosen yet
+    err = capsys.readouterr().err
+    assert "gate g2: FAIL" in err and "backbone" in err
+    assert gs.run_cli(["--data-root", str(root), "gate", "g0", "--cut", "A"]) == 1
+    assert "belong to gate g2" in capsys.readouterr().err
     with pytest.raises(SystemExit):
-        gs.run_cli(["--data-root", str(root), "gate", "g2"])
+        gs.run_cli(["--data-root", str(root), "gate", "g3"])
 
 
 # ---------------------------------------------------------------------------- summarize
@@ -429,10 +434,181 @@ def test_committed_results_files_are_current(gs, committed, tmp_path):
     scratch = tmp_path / "Dhan-Shomadhan"
     shutil.copytree(root / "_work" / "runs", scratch / "_work" / "runs", ignore=shutil.ignore_patterns("scratch"))
     shutil.copytree(root / "_work" / "splits", scratch / "_work" / "splits")
+    (scratch / "_work" / "annotations").mkdir()
+    shutil.copy(root / "_work" / "annotations" / "selection.json", scratch / "_work" / "annotations" / "selection.json")
     (scratch / "_work" / "results").mkdir()
     shutil.copy(root / "_work" / "results" / "choices.json", scratch / "_work" / "results" / "choices.json")
     shutil.copy(root / "_work" / "results" / "findings.md", scratch / "_work" / "results" / "findings.md")
     gs.summarize(scratch, out=lambda text: None)
     for name in ("table_input_mode.csv", "table_input_mode.md", "table_required.csv", "table_required.md",
-                 "table_domains.csv", "table_domains.md", "findings.md"):
+                 "table_domains.csv", "table_domains.md", "table_methods.csv", "table_methods.md", "table_segmenter.csv",
+                 "table_segmenter.md", "findings.md"):
         assert (scratch / "_work" / "results" / name).read_text() == (root / "_work" / "results" / name).read_text(), name
+
+
+# ---------------------------------------------------------------------------- gate G2 and the phase 06 tables (synthetic)
+
+
+@pytest.fixture
+def g2_root(gs, root):
+    """``root`` after gate G1 chose ResNet50, so the plain G2 candidate is E1-U (the E0-rect folder)."""
+    data = json.loads(gs.choices_path(root).read_text())
+    data["backbone"] = {"value": "resnet50", "evidence": {}}
+    gs.write_json(gs.choices_path(root), data, indent=2)
+    return root
+
+
+def add_method_b(gs, root, mixed, field=None):
+    """Synthetic E4-B runs plus the S-seg boxes.json they cropped by (the same file in every split)."""
+    for seed in range(5):
+        path = gs.boxes_path(root, seed)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"images": {}}\n')
+    return add_run(gs, root, "E4-B", mixed, field, seg_boxes_sha256=gs.file_sha256(gs.boxes_path(root, 0)))
+
+
+def aggregates(gs, **means):
+    return {name: gs.Aggregate(mean, std, []) for name, (mean, std) in means.items()}
+
+
+def test_g2_rule_mixed_then_field_then_simpler(gs):
+    clear = gs.decide_g2(aggregates(gs, plain=(0.80, 0.01), A=(0.85, 0.01), B=(0.82, 0.01)),
+                         aggregates(gs, plain=(0.7, 0.01), A=(0.6, 0.01), B=(0.9, 0.01)))
+    assert clear["value"] == "A" and clear["decided_by"] == "highest mean" and clear["ranking"] == ["A", "B", "plain"]
+    by_field = gs.decide_g2(aggregates(gs, plain=(0.80, 0.02), A=(0.81, 0.02), B=(0.79, 0.02)),
+                            aggregates(gs, plain=(0.70, 0.01), A=(0.60, 0.01), B=(0.95, 0.01)))
+    assert by_field["value"] == "plain" and by_field["decided_by"] == "within one std -> higher val field macro-F1", "only the top two count"
+    simpler = gs.decide_g2(aggregates(gs, plain=(0.80, 0.02), A=(0.79, 0.02), B=(0.81, 0.02)),
+                           aggregates(gs, plain=(0.70, 0.03), A=(0.60, 0.01), B=(0.72, 0.03)))
+    assert simpler["value"] == "plain" and simpler["decided_by"] == "within one std on mixed and on field -> simpler method"
+    assert simpler["ranking"][:2] == ["B", "plain"] and simpler["field_gap"] == pytest.approx(0.02)
+    a_over_b = gs.decide_g2(aggregates(gs, A=(0.80, 0.02), B=(0.81, 0.02), plain=(0.5, 0.01)),
+                            aggregates(gs, A=(0.70, 0.03), B=(0.71, 0.03), plain=(0.5, 0.01)))
+    assert a_over_b["value"] == "A"
+    tie = gs.decide_g2(aggregates(gs, B=(0.8, 0.0), plain=(0.8, 0.0)), aggregates(gs, B=(0.7, 0.0), plain=(0.7, 0.0)))
+    assert tie["ranking"] == ["plain", "B"] and tie["value"] == "plain"
+    alone = gs.decide_g2(aggregates(gs, plain=(0.8, 0.01)), aggregates(gs, plain=(0.7, 0.01)))
+    assert alone["value"] == "plain" and alone["top_two_gap"] is None
+
+
+def test_gate_g2_writes_the_recommended_experiment_with_evidence(gs, g2_root):
+    root = g2_root
+    add_run(gs, root, "E0-rect", 0.78)
+    add_run(gs, root, "E3-A", 0.84, 0.76)
+    add_method_b(gs, root, 0.80, 0.70)
+    lines = []
+    result = gs.run_gate(root, "g2", out=lines.append)
+    data = json.loads(gs.choices_path(root).read_text())
+    assert data["recommended"]["value"] == "E3-A" == result["value"] and data["backbone"]["value"] == "resnet50"
+    assert gs.load_choices(root).get("recommended") == "E3-A"
+    ev = data["recommended"]["evidence"]
+    assert ev["method"] == "A" and ev["decided_by"] == "highest mean" and ev["ranking"] == ["A", "B", "plain"] and ev["cut"] == []
+    assert ev["candidates"]["plain"]["experiment"] == "E1-U" and ev["candidates"]["plain"]["run_folder"] == "E0-rect"
+    assert ev["candidates"]["B"]["val_mixed_macro_f1"]["mean"] == pytest.approx(0.80)
+    assert set(ev["paired_differences"]) == {"A_minus_plain", "B_minus_plain", "B_minus_A"}
+    assert ev["paired_differences"]["A_minus_plain"]["val_mixed_macro_f1"]["mean"] == pytest.approx(0.06)
+    assert "simpler method (plain < A < B)" in ev["rule"]
+    text = "\n".join(lines)
+    assert "decision: E3-A = Method A (composites)" in text
+    first = gs.choices_path(root).read_bytes()
+    gs.run_gate(root, "g2", out=lambda _: None)
+    assert gs.choices_path(root).read_bytes() == first, "deterministic"
+
+
+def test_gate_g2_refuses_incomplete_candidates_unless_cut(gs, g2_root):
+    root = g2_root
+    add_run(gs, root, "E0-rect", 0.78)
+    add_run(gs, root, "E3-A", 0.84)
+    before = gs.choices_path(root).read_bytes()
+    with pytest.raises(gs.ExperimentError, match="E4-B cannot be used"):
+        gs.run_gate(root, "g2", out=lambda _: None)
+    assert gs.choices_path(root).read_bytes() == before
+    result = gs.run_gate(root, "g2", out=lambda _: None, cut=("B",))
+    assert result["value"] == "E3-A" and result["evidence"]["cut"] == ["B"] and set(result["evidence"]["candidates"]) == {"plain", "A"}
+    with pytest.raises(gs.ExperimentError, match="only Method A or B can be cut"):
+        gs.run_gate(root, "g2", out=lambda _: None, cut=("plain",))
+
+
+def test_gate_g2_refuses_a_stale_method_b_run(gs, g2_root):
+    root = g2_root
+    add_run(gs, root, "E0-rect", 0.78)
+    add_run(gs, root, "E3-A", 0.84)
+    add_method_b(gs, root, 0.80)
+    gs.boxes_path(root, 2).write_text('{"images": {"changed": 1}}\n')
+    with pytest.raises(gs.ExperimentError, match="split 2: the S-seg boxes changed"):
+        gs.run_gate(root, "g2", out=lambda _: None)
+
+
+def test_gate_g2_is_frozen_once_written(gs, g2_root, capsys):
+    root = g2_root
+    add_run(gs, root, "E0-rect", 0.78)
+    add_run(gs, root, "E3-A", 0.84)
+    assert gs.run_cli(["--data-root", str(root), "gate", "g2", "--cut", "B"]) == 0
+    add_run(gs, root, "E3-A", 0.70)  # the runs change and would now pick plain
+    frozen = gs.choices_path(root).read_bytes()
+    assert gs.run_cli(["--data-root", str(root), "gate", "g2", "--cut", "B"]) == 1
+    assert "frozen" in capsys.readouterr().err and gs.choices_path(root).read_bytes() == frozen
+    assert gs.run_cli(["--data-root", str(root), "gate", "g2", "--cut", "B", "--force"]) == 0
+    assert gs.load_choices(root).raw("recommended") == "E1-U"
+
+
+def test_table_methods_shows_test_numbers_only_after_g2(gs, g2_root):
+    root = g2_root
+    add_run(gs, root, "E0-rect", 0.78)
+    add_run(gs, root, "E3-A", 0.84)
+    gs.summarize(root, out=lambda _: None)
+    md = read_results(gs, root, "table_methods.md")
+    assert "| val | plain unified model | E1-U | 0.830 +- 0.016 |" in md  # white = mixed + 0.05
+    assert "| val | Method B (segment, crop) | E4-B | pending |" in md
+    assert "| val | A - plain (paired) | E3-A - E1-U | +0.060 +- 0.000 |" in md
+    test_rows = [line for line in md.splitlines() if line.startswith("| test")]
+    assert len(test_rows) == 5 and all("hidden until gate g2" in row and "0." not in row for row in test_rows)
+    assert "auto:g2" not in read_results(gs, root, "findings.md")
+    gs.run_gate(root, "g2", out=lambda _: None, cut=("B",))
+    gs.summarize(root, out=lambda _: None)
+    md = read_results(gs, root, "table_methods.md")
+    assert "| test | Method A (composites) (recommended) | E3-A | 0.860 +- 0.016 |" in md and "hidden" not in md
+    findings = read_results(gs, root, "findings.md")
+    assert "## G2 recommended method" in findings and "Gate G2 recommends Method A (composites) (E3-A)" in findings
+    assert "Left out because of a cut line: Method B." in findings
+
+
+def add_segmenter(gs, root, *, eval_sections=True, stale_split=None):
+    """Synthetic S-seg runs (metrics.json as `run_seg_split` writes it) and, optionally, their eval sections."""
+    config = gs.EXPERIMENTS["S-seg"]
+    for seed in range(5):
+        run = gs.split_dir(gs.runs_dir(root) / "S-seg", seed)
+        metrics = {
+            "split": seed, "kind": "segmenter", "split_sha256": gs.load_split(root, seed)["sha256"],
+            "config_fingerprint": gs.expected_fingerprint(config, None, root), "fast": False, "overrides": {},
+            "val_iou_white": 0.90 + 0.01 * seed, "val_iou_composite": 0.70, "n_val_white": 116, "n_val_composites": 200,
+            "boxes_sha256": f"{seed}" * 64,
+            "fallbacks": {"white": {"n": 769, "fallback": 0, "rate": 0.0}, "field": {"n": 337, "fallback": seed, "rate": seed / 337}},
+        }
+        gs.write_json(run / "metrics.json", metrics)
+        if eval_sections:
+            summary = {"all": {"n": 20, "iou": 0.5 + 0.01 * seed, "dice": 0.6, "hit_rate": 0.8, "box_area": 0.3},
+                       "excluding_ambiguous": {"n": 15, "iou": 0.55, "dice": 0.65, "hit_rate": 0.9, "box_area": 0.3}, "fallbacks": 1}
+            sha = "x" * 64 if seed == stale_split else metrics["boxes_sha256"]
+            gs.write_json(run / "seg_metrics.json", {"eval": {"boxes_sha256": sha, "summary": summary}})
+
+
+def test_table_segmenter_reads_the_eval_sections_and_marks_what_is_missing(gs, root):
+    gs.summarize(root, out=lambda _: None)
+    md = read_results(gs, root, "table_segmenter.md")
+    assert "| IoU, eval annotations | - | pending | pending |" in md
+    add_segmenter(gs, root, eval_sections=False)
+    gs.summarize(root, out=lambda _: None)
+    md = read_results(gs, root, "table_segmenter.md")
+    assert "| IoU, eval annotations | - | pending (seg-eval --set eval --final) | pending |" in md
+    assert "| IoU, white val pseudo-masks (checkpoint data) | 116 | 0.920 +- 0.016 | 0.900; 0.910; 0.920; 0.930; 0.940 |" in md
+    assert "| Fallbacks, all cached field images (%) | 337 | 0.6 +- 0.5 |" in md
+    add_segmenter(gs, root, stale_split=3)
+    gs.summarize(root, out=lambda _: None)
+    assert "pending (seg-eval --set eval --final)" in read_results(gs, root, "table_segmenter.md"), "an eval of other boxes is stale"
+    add_segmenter(gs, root)
+    gs.summarize(root, out=lambda _: None)
+    md = read_results(gs, root, "table_segmenter.md")
+    assert "| IoU, eval annotations | 20 | 0.520 +- 0.016 | 0.500; 0.510; 0.520; 0.530; 0.540 |" in md
+    assert "| Salient-leaf hit rate (%), eval annotations without the ambiguous ones | 15 | 90.0 +- 0.0 |" in md
+    assert "| Fallbacks on the eval annotations (%) | 20 | 5.0 +- 0.0 |" in md

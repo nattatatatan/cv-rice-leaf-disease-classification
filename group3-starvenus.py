@@ -1570,6 +1570,8 @@ class ExperimentConfig:
             raise ValueError(f"{self.exp_id}: kind must be one of {KINDS}, got {self.kind!r}")
         if self.backbone is not None and self.backbone not in BACKBONES and self.kind == "classifier":
             raise ValueError(f"{self.exp_id}: unknown backbone {self.backbone!r}")
+        if self.kind == "segmenter" and self.backbone not in SEG_ARCHITECTURES:  # SEG_ARCHITECTURES: 40_segmentation.ipynb
+            raise ValueError(f"{self.exp_id}: unknown segmenter {self.backbone!r}, expected one of {tuple(SEG_ARCHITECTURES)}")
         if self.input_mode is not None and self.input_mode not in INPUT_MODES:
             raise ValueError(f"{self.exp_id}: unknown input mode {self.input_mode!r}")
         for name in ("train_domains", "select_domains"):
@@ -1777,7 +1779,10 @@ class LeafDataset:
             record = self.records[index]
             rgb = read_cached_rgb(self.data_root, record.filename)
             if self.input_hook is not None:
-                rgb = self.input_hook(rgb, record)
+                if getattr(self.input_hook, "stochastic", False):  # Method B's jittered crop: a stream of its own per sample
+                    rgb = self.input_hook(rgb, record, np.random.default_rng([self.seed, int(epoch), int(index), 2]))
+                else:
+                    rgb = self.input_hook(rgb, record)
             return rgb, record.cls_idx, record.filename
         extra = index - len(self.records)
         which = int(np.searchsorted(self._extra_offsets, extra, side="right") - 1)
@@ -2373,15 +2378,14 @@ def make_extra_sources(cfg: ExperimentConfig, data_root, split_seed: int, seed: 
     return (build_composite_source(data_root, split_seed, seed, n_factor=n_factor, limit=limit),)
 
 
-def make_input_hook(cfg: ExperimentConfig, data_root, split_seed: int):
-    """``hook(image, record) -> image`` applied before the transforms. PHASE 06 REPLACES THIS BODY: return the
-    segmentation-crop hook when ``cfg.seg_crop``. ``record`` is None for ad-hoc images (the predict command)."""
-    if cfg.seg_crop:
-        raise NotReadyError(
-            f"{cfg.exp_id} crops to the segmented leaf (Method B), which needs phase 06 "
-            "(docs/instructions/06-segmentation-method-b.md)"
-        )
-    return None
+def make_input_hook(cfg: ExperimentConfig, data_root, split_seed: int, *, train: bool = False, seg_dir=None):
+    """``hook(image, record) -> image`` applied before the transforms: ``None``, or for Method B (``cfg.seg_crop``) the
+    `SegCropHook` that crops to the stored box of the split-``k`` segmenter (``_work/runs/S-seg/split_<k>/boxes.json`` unless
+    ``seg_dir`` names another S-seg runs folder), jittered by +-5% when ``train`` and exact otherwise. Raises ExperimentError
+    when the boxes do not exist. ``record`` is None for ad-hoc images (the predict command, which uses `LiveCropHook`)."""
+    if not cfg.seg_crop:
+        return None
+    return SegCropHook(load_boxes(data_root, split_seed, seg_dir), classifier_aspect(cfg.input_mode, cfg.size_div), SEG_JITTER if train else 0.0)
 
 
 def check_cache_complete(data_root, records: list[Record]) -> None:
@@ -2401,6 +2405,7 @@ class RunOptions:
     overrides: tuple = ()  # (name, value) pairs applied on top of the registry, recorded in config.json
     weights_root: Path | None = None  # where the pretrained weights live (default: the data root)
     mp_context: str | None = None  # tests only: force the worker start method
+    seg_dir: Path | None = None  # Method B: the S-seg runs folder to read boxes.json from (default: _work/runs/S-seg)
 
 
 def train_with_fallback(cfg, train_ds, val_set, options: RunOptions, seed: int, log):
@@ -2434,8 +2439,14 @@ def run_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out
     cfg = resolved.config
     split = load_split(data_root, split_seed)  # verifies the sha256
     fingerprint = config_fingerprint(cfg, {"seed_offset": options.seed_offset, "limit": options.limit,
-                                           **composite_fingerprint_extra(cfg, resolved.composite_factor)})
+                                           **composite_fingerprint_extra(cfg, resolved.composite_factor), **seg_fingerprint_extra(cfg)})
+    boxes_sha = None
+    if cfg.seg_crop:  # Method B: fail clearly, before anything is skipped or trained, if the segmenter's boxes are missing
+        load_boxes(data_root, split_seed, options.seg_dir)
+        boxes_sha = file_sha256(boxes_path(data_root, split_seed, options.seg_dir))
     state, reason = result_state(out_dir, split["sha256"], fingerprint)
+    if state == "fresh" and boxes_sha is not None and read_metrics(out_dir).get("seg_boxes_sha256") != boxes_sha:
+        state, reason = "stale", "the S-seg boxes of this split changed since this run (boxes.json sha256 differs)"
     if state == "fresh" and not options.force:
         log(f"[{resolved.requested} split {split_seed}] skipped: {out_dir / 'metrics.json'} exists and is current (--force to retrain)")
         return {"status": "skipped", "metrics": read_metrics(out_dir), "out_dir": out_dir}
@@ -2455,10 +2466,11 @@ def run_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out
 
     extra_sources = make_extra_sources(cfg, data_root, split_seed, seed, n_factor=resolved.composite_factor or 1.0,
                                        limit=options.limit)
-    input_hook = make_input_hook(cfg, data_root, split_seed)
+    input_hook = make_input_hook(cfg, data_root, split_seed, seg_dir=options.seg_dir)
+    train_hook = make_input_hook(cfg, data_root, split_seed, train=True, seg_dir=options.seg_dir)
     train_tf = ImageTransform(cfg.input_mode, train=True, size_div=cfg.size_div)
     eval_tf = ImageTransform(cfg.input_mode, train=False, size_div=cfg.size_div)
-    train_ds = LeafDataset(data_root, train_recs, train_tf, seed=seed, extra_sources=extra_sources, input_hook=input_hook)
+    train_ds = LeafDataset(data_root, train_recs, train_tf, seed=seed, extra_sources=extra_sources, input_hook=train_hook)
     workers = default_num_workers() if options.num_workers is None else options.num_workers
     val_set = materialize(LeafDataset(data_root, val_recs, eval_tf, input_hook=input_hook), num_workers=workers)
 
@@ -2469,6 +2481,7 @@ def run_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out
         "format": RUN_FORMAT, "requested_exp_id": resolved.requested, "experiment": asdict(cfg),
         "split": split_seed, "seed": seed, "seed_offset": options.seed_offset, "limit": options.limit,
         "choices_used": resolved.choices_used, "notes": list(resolved.notes), "overrides": dict(options.overrides),
+        "seg_boxes_sha256": boxes_sha,
         "weights": BACKBONE_SPECS[cfg.backbone].weights if cfg.pretrained else None,
         "input_size": list(input_size(cfg.input_mode, cfg.size_div)), "config_fingerprint": fingerprint,
     })
@@ -2508,6 +2521,8 @@ def run_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out
     if cfg.use_composites:
         metrics["composites"] = {"n_factor": resolved.composite_factor or 1.0, "n_per_epoch": len(extra_sources[0]),
                                  "recipe": COMPOSITE_RECIPE, "scale": extra_sources[0].scale}
+    if cfg.seg_crop:
+        metrics["seg_boxes_sha256"] = boxes_sha
     write_json(out_dir / "metrics.json", metrics, indent=1)  # last: its presence marks the run as complete
     log(f"[{resolved.requested} split {split_seed}] done in {metrics['wall_time_s']:.0f}s  best epoch {outcome.best_epoch}  "
         f"val mixed F1 {fmt3(val_metrics['mixed']['macro_f1'])}  test F1 mixed {fmt3(test_metrics['mixed']['macro_f1'])} "
@@ -2549,12 +2564,25 @@ def format_prediction(image, probs: np.ndarray, label: str) -> str:
     return "\n".join(lines)
 
 
-def predict_image(run_dir, image, device: str, data_root=None, out=print) -> np.ndarray:
+def live_crop_hook(run_dir, cfg: ExperimentConfig, split_seed: int, device: str, seg_dir=None) -> "LiveCropHook":
+    """Method B for a new image: the hook that runs the split-``k`` segmenter (its ``best.pt`` in the S-seg folder next to the
+    experiment's folder, or ``seg_dir``) and crops to its box."""
+    seg_run = split_dir(Path(seg_dir) if seg_dir is not None else Path(run_dir).parent.parent / "S-seg", split_seed)
+    model, checkpoint = load_seg_run_model(seg_run, device)
+    return LiveCropHook(model, device, classifier_aspect(cfg.input_mode, cfg.size_div), checkpoint.get("size_div", 1))
+
+
+def predict_image(run_dir, image, device: str, data_root=None, out=print, seg_dir=None) -> np.ndarray:
+    """Class probabilities of one image. For a Method B experiment (``seg_crop``) the image is first segmented by the
+    split's segmenter and cropped to the leaf box, then classified."""
     model, checkpoint = load_run_model(run_dir, device)
     cfg = ExperimentConfig(**checkpoint["config"])
-    hook = make_input_hook(cfg, data_root, checkpoint["split"]) if cfg.seg_crop else None
+    hook = live_crop_hook(run_dir, cfg, checkpoint["split"], device, seg_dir) if cfg.seg_crop else None
     probs = classify_rgb(model, checkpoint, read_image_like_the_cache(image), device, hook)
     out(format_prediction(image, probs, f"{checkpoint['exp_id']} split {checkpoint['split']} ({Path(run_dir) / 'best.pt'})"))
+    if hook is not None and hook.last is not None:
+        x0, y0, x1, y1 = hook.last["crop"]
+        out(f"segmenter   crop box x {x0}-{x1}, y {y0}-{y1}" + ("  (no leaf found: whole image)" if hook.last["fallback"] else f"  (leaf covers {100 * hook.last['area']:.0f}% of the image)"))
     return probs
 
 # ---- from 30_copy_paste.ipynb ----
@@ -3045,13 +3073,16 @@ class CompositePool:
     a background of their class available) and backgrounds from the field **train** part (same class as the leaf, not
     annotated). Every name is checked against the split, here and again at every sample."""
 
-    def __init__(self, data_root, split_seed: int, records: list[Record] | None = None, rejects=None, exclusions=None):
+    def __init__(self, data_root, split_seed: int, records: list[Record] | None = None, rejects=None, exclusions=None,
+                 part: str = "train"):
         self.data_root = Path(data_root)
         records = load_index(data_root) if records is None else records
         split = load_split(data_root, split_seed)
-        self.split_seed = split_seed
-        self.train = frozenset(split["train"])
-        self.held_out = frozenset(split["val"]) | frozenset(split["test"])
+        if part not in ("train", "val"):
+            raise ValueError(f"part must be 'train' or 'val', got {part!r}")
+        self.split_seed, self.part = split_seed, part
+        self.train = frozenset(split[part])  # the part the sources come from ("train" for training, "val" for the segmenter's checkpoint selection)
+        self.held_out = frozenset(name for other in ("train", "val", "test") if other != part for name in split[other])
         self.rejects = frozenset(load_white_rejects(data_root, records) if rejects is None else rejects)
         self.exclusions = frozenset(annotation_exclusion_set(records) if exclusions is None else exclusions)
         self.white_train = [r for r in records if r.domain == "white" and r.filename in self.train]
@@ -3065,8 +3096,8 @@ class CompositePool:
 
     def check_name(self, record: Record) -> None:
         if record.filename in self.held_out or record.filename not in self.train:
-            raise CompositeLeakError(f"{record.filename} is not in the training part of split {self.split_seed}: "
-                                     "no validation or test image may enter a composite")
+            raise CompositeLeakError(f"{record.filename} is not in the {self.part} part of split {self.split_seed}: "
+                                     "a composite only uses images of that part (no validation or test image may enter training)")
 
     def check_pair(self, leaf: Record, background: Record) -> None:
         self.check_name(leaf)
@@ -3191,14 +3222,19 @@ class CompositeSource:
             hit = self._remember(self._bg_cache, record.filename, rgb, rgb.nbytes)
         return hit
 
-    def load(self, index: int, epoch: int = 0) -> tuple[np.ndarray, int, str]:
+    def load_with_mask(self, index: int, epoch: int = 0) -> tuple[np.ndarray, np.ndarray, int, str]:
+        """``(uint8 RGB, mask uint8 0/255 of the pasted leaf, class index, name)``; the mask is what the segmenter learns."""
         if not 0 <= index < self.n_per_epoch:
             raise IndexError(index)
         leaf, background = self.pair(index, epoch)
         rng = np.random.default_rng([self.epoch_seed(epoch), index])
         leaf_rgb, leaf_mask = self._leaf(leaf)
-        image, _ = composite_arrays(leaf_rgb, leaf_mask, self._background(background), rng, scale=self.scale)
-        return image, background.cls_idx, f"composite:{leaf.filename}+{background.filename}"
+        image, mask = composite_arrays(leaf_rgb, leaf_mask, self._background(background), rng, scale=self.scale)
+        return image, mask, background.cls_idx, f"composite:{leaf.filename}+{background.filename}"
+
+    def load(self, index: int, epoch: int = 0) -> tuple[np.ndarray, int, str]:
+        image, _, label, name = self.load_with_mask(index, epoch)
+        return image, label, name
 
     def __getitem__(self, index: int):
         return self.load(index)
@@ -3598,6 +3634,777 @@ def prepare_annotations(data_root, records: list[Record], out=print, *, annotati
         out(f"              {sum(a['ambiguous'] for a in annotations.values())} ambiguous; overview figure {figure.name}")
     return {"selected": len(selection), "copied": copied, "figure": figure}
 
+SEG_ARCHITECTURES = {
+    "lraspp_mobilenet_v3_large": SEGMENTER_WEIGHTS,
+    "deeplabv3_mobilenet_v3_large": "DeepLabV3_MobileNet_V3_Large_Weights.COCO_WITH_VOC_LABELS_V1",
+}
+SEG_INPUT_SIZE = (512, 256)  # (height, width) of the segmenter input
+SEG_SAMPLES_PER_EPOCH = 1000
+SEG_COMPOSITE_SHARE = 0.5  # share of composites among the training samples of an epoch
+SEG_EPOCHS, SEG_BATCH_SIZE, SEG_LR, SEG_WEIGHT_DECAY = 40, 16, 3e-4, 1e-4
+SEG_VAL_COMPOSITES = 200  # validation composites for the checkpoint choice
+SEG_VAL_SEED = 2027  # fixed seed of the validation composites
+SEG_THRESHOLD = 0.5  # sigmoid threshold of the mask
+SEG_MIN_AREA = 0.02  # a component must cover at least this fraction of the image
+SEG_MARGIN = 0.15  # the crop box is the mask's bounding box plus this fraction of its side on every side
+SEG_JITTER = 0.05  # Method B training: scale and shift of the crop box by +-5%
+# White training samples are augmented at the resolution the composites are made at (half the cache): the two kinds of
+# sample then look alike in sharpness, and the augmentation costs a quarter (the network input is 512x256 anyway).
+SEG_WHITE_SCALE = COMPOSITE_TRAIN_SCALE
+SEG_CONSTANTS = {
+    "input": SEG_INPUT_SIZE, "samples": SEG_SAMPLES_PER_EPOCH, "composite_share": SEG_COMPOSITE_SHARE,
+    "val_composites": SEG_VAL_COMPOSITES, "val_seed": SEG_VAL_SEED, "threshold": SEG_THRESHOLD, "white_scale": SEG_WHITE_SCALE,
+    "version": 1,
+}
+SEG_RECIPE = hashlib.sha1(json.dumps(SEG_CONSTANTS, sort_keys=True).encode()).hexdigest()[:12]
+BOX_CONSTANTS = {"threshold": SEG_THRESHOLD, "min_area": SEG_MIN_AREA, "margin": SEG_MARGIN, "jitter": SEG_JITTER, "version": 1}
+BOX_RECIPE = hashlib.sha1(json.dumps(BOX_CONSTANTS, sort_keys=True).encode()).hexdigest()[:12]
+SEG_HISTORY_COLUMNS = ["epoch", "lr", "train_loss", "val_iou_composite", "val_iou_white", "val_score", "best", "seconds"]
+
+
+def seg_size(size_div: int = 1) -> tuple[int, int]:
+    """(height, width) of the segmenter input; ``size_div`` > 1 is for smoke tests only."""
+    return max(32, SEG_INPUT_SIZE[0] // size_div), max(16, SEG_INPUT_SIZE[1] // size_div)
+
+
+def build_segmenter(arch: str = "lraspp_mobilenet_v3_large", *, pretrained: bool = True, data_root=None) -> nn.Module:
+    """The leaf segmenter: a torchvision segmentation model whose classifier has ONE output channel (the leaf logit).
+    ``pretrained=True`` starts from the COCO_WITH_VOC_LABELS_V1 weights (read from, and downloaded to,
+    ``<data_root>/_work/weights``) and replaces the 21-class heads; ``False`` builds the same architecture with random
+    weights (tests, predict, which load a checkpoint)."""
+    if arch not in SEG_ARCHITECTURES:
+        raise ValueError(f"unknown segmenter {arch!r}, expected one of {tuple(SEG_ARCHITECTURES)}")
+    if data_root is not None and pretrained:
+        set_torch_home(data_root)
+    builder = getattr(torchvision.models.segmentation, arch)
+    if not pretrained:
+        return builder(weights=None, weights_backbone=None, num_classes=1)
+    model = builder(weights=torchvision.models.get_weight(SEG_ARCHITECTURES[arch]))
+    if arch.startswith("lraspp"):
+        head = model.classifier
+        head.low_classifier = nn.Conv2d(head.low_classifier.in_channels, 1, 1)
+        head.high_classifier = nn.Conv2d(head.high_classifier.in_channels, 1, 1)
+    else:
+        model.classifier[-1] = nn.Conv2d(model.classifier[-1].in_channels, 1, 1)
+        model.aux_classifier = None
+    return model
+
+
+def seg_logits(model: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Leaf logits [N, H, W] for a normalised batch [N, 3, H, W]."""
+    return model(x)["out"][:, 0]
+
+
+def seg_augment(rgb: np.ndarray, mask: np.ndarray, rng: np.random.Generator, size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+    """The T3.2 training augmentation applied to an image and its mask together: both are stacked into one 4-channel
+    array, so crop, flips, rotation and resize act identically; colour jitter acts on the image only. Returns the image
+    (uint8 [H, W, 3]) and the mask (uint8 0/1 [H, W]) at ``size``."""
+    stacked = np.dstack([rgb, mask])
+    stacked = random_rotation(random_flips(random_crop(stacked, rng), rng), rng)
+    stacked = resize_exact(np.ascontiguousarray(stacked), *size)
+    return color_jitter(np.ascontiguousarray(stacked[..., :3]), rng), (stacked[..., 3] >= 128).astype(np.uint8)
+
+
+def seg_eval_arrays(rgb: np.ndarray, mask: np.ndarray, size: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+    """The evaluation transform: resize only. Returns (uint8 image, uint8 0/1 mask)."""
+    return resize_exact(rgb, *size), (resize_exact(mask, *size) >= 128).astype(np.uint8)
+
+
+class SegmenterDataset:
+    """The training samples of one segmenter epoch: ``n_samples`` of them, ``composite_share`` composites (from
+    ``composites``, a `CompositeSource`) and the rest white train images with accepted pseudo-masks, in this order
+    (indices 0..n_composites-1 are composites). ``dataset[(i, epoch)]`` returns ``(uint8 CHW image, uint8 1HW mask, i)``;
+    the white image used for slot ``j`` of an epoch and every random draw are functions of ``(seed, epoch, i)`` only."""
+
+    def __init__(self, data_root, whites: list[Record], composites, *, size, n_samples=SEG_SAMPLES_PER_EPOCH, seed=0,
+                 composite_share=SEG_COMPOSITE_SHARE):
+        self.data_root, self.whites, self.composites = Path(data_root), list(whites), composites
+        self.size, self.seed, self.epoch = tuple(size), _sample_seed(seed), 0
+        n_composites = 0 if composites is None else n_samples if not self.whites else round(n_samples * composite_share)
+        self.n_composites = n_composites if composites is None else min(n_composites, len(composites))
+        self.n_samples = self.n_composites + (n_samples - self.n_composites if self.whites else 0)
+        if self.n_samples == 0:
+            raise ExperimentError("the segmenter has no training data (no white train image with a mask, no composites)")
+
+    def __len__(self) -> int:
+        return self.n_samples
+
+    def __getitem__(self, key):
+        index, epoch = key if isinstance(key, tuple) else (key, self.epoch)
+        if not 0 <= index < self.n_samples:
+            raise IndexError(index)
+        if index < self.n_composites:
+            rgb, mask, _, _ = self.composites.load_with_mask(index, epoch)
+        else:
+            order = np.random.default_rng([self.seed, int(epoch), 91]).permutation(len(self.whites))
+            record = self.whites[int(order[(index - self.n_composites) % len(order)])]
+            rgb, mask = load_leaf(self.data_root, record, SEG_WHITE_SCALE)
+        rng = np.random.default_rng([self.seed, int(epoch), int(index)])
+        image, target = seg_augment(rgb, mask, rng, self.size)
+        return torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1))), torch.from_numpy(target[None]), index
+
+
+@dataclass
+class SegEvalSet:
+    """Fixed validation images with their masks, already at network size."""
+
+    images: torch.Tensor  # [N, 3, H, W] uint8
+    masks: torch.Tensor  # [N, H, W] bool
+    names: list[str]
+
+    def __len__(self) -> int:
+        return len(self.names)
+
+
+def seg_eval_set(items: list[tuple]) -> SegEvalSet:
+    """``items`` = [(name, uint8 RGB at network size, uint8 0/1 mask at network size)]."""
+    if not items:
+        return SegEvalSet(torch.empty(0, 3, 0, 0, dtype=torch.uint8), torch.empty(0, 0, 0, dtype=torch.bool), [])
+    images = torch.from_numpy(np.stack([i.transpose(2, 0, 1) for _, i, _ in items]))
+    masks = torch.from_numpy(np.stack([m for _, _, m in items]).astype(bool))
+    return SegEvalSet(images, masks, [n for n, _, _ in items])
+
+
+def white_mask_records(data_root, records: list[Record], filenames, rejects=None) -> list[Record]:
+    """White images among ``filenames`` (a split part) that have an accepted pseudo-mask (not in white_rejects.txt), in split order."""
+    rejects = load_white_rejects(data_root, records) if rejects is None else rejects
+    return [r for r in select_records(records, filenames, ("white",)) if r.filename not in rejects]
+
+
+def build_seg_val_sets(data_root, split_seed: int, records: list[Record], size, *, n_composites: int = SEG_VAL_COMPOSITES,
+                       limit: int | None = None) -> tuple[SegEvalSet, SegEvalSet]:
+    """(validation composites, white validation images) of a split, at network ``size``. The composites put white **val**
+    leaves on field **val** backgrounds of the same class (classes in turn, fixed seed `SEG_VAL_SEED`); none exist when the
+    split has no such pair. ``limit`` (--fast) caps both sets."""
+    split = load_split(data_root, split_seed)
+    white = white_mask_records(data_root, records, split["val"])
+    build_white_masks(data_root, white)
+    if limit:
+        white = subsample_records(white, limit)
+    white_items = [(r.filename, *seg_eval_arrays(read_cached_rgb(data_root, r.filename), read_white_mask(data_root, r.filename), size)) for r in white]
+    pool = CompositePool(data_root, split_seed, records, part="val")
+    classes = sorted({r.cls_idx for r in pool.leaves})
+    composite_items = []
+    rng = np.random.default_rng(SEG_VAL_SEED)
+    for i in range((min(n_composites, limit) if limit else n_composites) if classes else 0):
+        leaf, background = pool.sample(rng, classes[i % len(classes)])
+        image, mask, _ = make_composite(leaf, background, rng, data_root=data_root, scale=COMPOSITE_TRAIN_SCALE)
+        composite_items.append((f"composite:{leaf.filename}+{background.filename}", *seg_eval_arrays(image, mask, size)))
+    return seg_eval_set(composite_items), seg_eval_set(white_items)
+
+def seg_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """BCE on the logits plus soft Dice per image (averaged). ``logits`` [N, H, W], ``target`` [N, H, W] in {0, 1}."""
+    logits, target = logits.float(), target.float()
+    bce = F.binary_cross_entropy_with_logits(logits, target)
+    probs = torch.sigmoid(logits)
+    inter = (probs * target).sum(dim=(1, 2))
+    dice = 1.0 - (2.0 * inter + 1.0) / (probs.sum(dim=(1, 2)) + target.sum(dim=(1, 2)) + 1.0)
+    return bce + dice.mean()
+
+
+def mask_iou(pred: np.ndarray, truth: np.ndarray) -> np.ndarray:
+    """Per-image IoU of boolean masks [N, H, W] (1.0 where both are empty)."""
+    inter = (pred & truth).sum(axis=(1, 2)).astype(np.float64)
+    union = (pred | truth).sum(axis=(1, 2)).astype(np.float64)
+    return np.where(union > 0, inter / np.maximum(union, 1.0), 1.0)
+
+
+@torch.no_grad()
+def segment_probabilities(model: nn.Module, images: torch.Tensor, device, *, batch_size: int = 32, amp: bool = False) -> np.ndarray:
+    """Leaf probabilities [N, H, W] (float32, numpy) for a uint8 image tensor [N, 3, H, W]."""
+    model.eval()
+    out = []
+    for start in range(0, len(images), batch_size):
+        x = normalize_batch(images[start : start + batch_size], device)
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp):
+            logits = seg_logits(model, x)
+        out.append(torch.sigmoid(logits.float()).cpu())
+    return torch.cat(out).numpy() if out else np.zeros((0, 0, 0), dtype=np.float32)
+
+
+def seg_val_iou(model: nn.Module, eval_set: SegEvalSet, device, *, amp: bool = False) -> float | None:
+    """Mean per-image IoU of the thresholded probabilities on a SegEvalSet (None for an empty set)."""
+    if not len(eval_set):
+        return None
+    pred = segment_probabilities(model, eval_set.images, device, amp=amp) > SEG_THRESHOLD
+    return float(mask_iou(pred, eval_set.masks.numpy()).mean())
+
+
+def seg_score(composite_iou, white_iou) -> float:
+    """Checkpoint score: the mean of the validation-composite IoU and the white-val IoU (whichever exist)."""
+    values = [v for v in (composite_iou, white_iou) if v is not None]
+    return float(np.mean(values)) if values else float("nan")
+
+
+def train_segmenter(cfg: ExperimentConfig, model: nn.Module, train_ds: SegmenterDataset, val_composites: SegEvalSet,
+                    val_white: SegEvalSet, device: str, *, seed: int, num_workers: int = 0, mp_context=None, log=print) -> TrainOutcome:
+    """AdamW + cosine (per optimiser step, no warmup), BCE + soft Dice, AMP on CUDA. Returns the epoch with the best
+    validation score (`seg_score`); every epoch is evaluated, nothing stops early."""
+    started = time.time()
+    amp = device == "cuda"
+    sampler = EpochSampler(len(train_ds), seed)
+    drop_last = len(train_ds) % cfg.batch_size == 1  # a last batch of one sample breaks BatchNorm
+    loader = make_loader(train_ds, cfg.batch_size, sampler=sampler, num_workers=num_workers, drop_last=drop_last,
+                         pin_memory=device == "cuda", mp_context=mp_context)
+    total_steps = cfg.epochs * len(loader)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
+    best_state, best_epoch, best_score, history, step = None, 0, -math.inf, [], 0
+    for epoch in range(1, cfg.epochs + 1):
+        epoch_started = time.time()
+        sampler.set_epoch(epoch - 1)
+        train_ds.epoch = epoch - 1
+        model.train()
+        loss_sum, seen, lr_now = 0.0, 0, cfg.lr
+        for images, masks, _ in loader:
+            lr_now = lr_at_step(step, base_lr=cfg.lr, warmup_steps=0, total_steps=total_steps)
+            for group in optimizer.param_groups:
+                group["lr"] = lr_now
+            x, y = normalize_batch(images, device), masks[:, 0].to(device)
+            with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp):
+                loss = seg_loss(seg_logits(model, x), y)
+            loss_value = loss.item()
+            if not math.isfinite(loss_value):
+                raise ExperimentError(f"{cfg.exp_id}: the training loss became {loss_value} (diverged)")
+            optimizer.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            loss_sum += loss_value * len(y)
+            seen += len(y)
+            step += 1
+        composite_iou, white_iou = seg_val_iou(model, val_composites, device, amp=amp), seg_val_iou(model, val_white, device, amp=amp)
+        score = seg_score(composite_iou, white_iou)
+        improved = best_state is None or score > best_score
+        if improved:
+            best_state, best_epoch, best_score = cpu_state_dict(model), epoch, score
+        history.append({"epoch": epoch, "lr": lr_now, "train_loss": loss_sum / max(1, seen), "val_iou_composite": composite_iou,
+                        "val_iou_white": white_iou, "val_score": score, "best": int(improved), "seconds": time.time() - epoch_started})
+        fmt = lambda v: "n/a" if v is None else f"{v:.3f}"  # noqa: E731
+        log(f"  epoch {epoch:2d}/{cfg.epochs}  lr {lr_now:.2e}  loss {history[-1]['train_loss']:.3f}  val IoU composites "
+            f"{fmt(composite_iou)} white {fmt(white_iou)}  score {score:.3f}{' *' if improved else '  '}  {history[-1]['seconds']:.1f}s")
+    return TrainOutcome(best_state, best_epoch, best_score, history, False, time.time() - started)
+
+@dataclass(frozen=True)
+class SegPost:
+    """The result of post-processing one probability map (all coordinates are fractions of the image)."""
+
+    mask: np.ndarray  # bool [H, W]: the selected component (all False on fallback)
+    tight: tuple | None  # (x0, y0, x1, y1) bounding box of the component; None on fallback
+    box: tuple  # tight box plus the margin, not clamped; (0, 0, 1, 1) on fallback
+    fallback: bool
+    area: float  # fraction of the image covered by the selected component (0 on fallback)
+
+
+def postprocess_probability(prob: np.ndarray, *, threshold: float = SEG_THRESHOLD, min_area: float = SEG_MIN_AREA,
+                            margin: float = SEG_MARGIN) -> SegPost:
+    """Mask -> crop box (steps 1-4 of the section above, except the aspect step). ``prob`` is [H, W] in [0, 1]."""
+    height, width = prob.shape
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats((prob > threshold).astype(np.uint8), connectivity=8)
+    centre = np.array([(width - 1) / 2.0, (height - 1) / 2.0])
+    half_diagonal = float(np.hypot(width - 1, height - 1)) / 2.0 or 1.0
+    best, best_score = 0, -1.0
+    for i in range(1, count):
+        area = stats[i, cv2.CC_STAT_AREA] / float(height * width)
+        if area < min_area:
+            continue
+        centrality = 1.0 - float(np.linalg.norm(centroids[i] - centre)) / half_diagonal
+        if area * centrality > best_score:
+            best, best_score = i, area * centrality
+    if best == 0:
+        return SegPost(np.zeros((height, width), bool), None, (0.0, 0.0, 1.0, 1.0), True, 0.0)
+    x, y, w, h = (int(stats[best, c]) for c in (cv2.CC_STAT_LEFT, cv2.CC_STAT_TOP, cv2.CC_STAT_WIDTH, cv2.CC_STAT_HEIGHT))
+    x0, y0, x1, y1 = x / width, y / height, (x + w) / width, (y + h) / height
+    box = (x0 - margin * (x1 - x0), y0 - margin * (y1 - y0), x1 + margin * (x1 - x0), y1 + margin * (y1 - y0))
+    return SegPost(labels == best, (x0, y0, x1, y1), box, False, float(stats[best, cv2.CC_STAT_AREA]) / (height * width))
+
+
+def classifier_aspect(input_mode: str, size_div: int = 1) -> float:
+    """Height / width of the classifier input (2.0 for rect, 1.0 for squash and pad)."""
+    height, width = input_size(input_mode, size_div)
+    return height / width
+
+
+def fit_box(cx: float, cy: float, bw: float, bh: float, width: int, height: int) -> tuple[int, int, int, int]:
+    """Pixel box of size (bw, bh) around (cx, cy): clamped to the image size, shifted inside the image, rounded outward to
+    whole pixels (at least 1 x 1)."""
+    bw, bh = min(bw, float(width)), min(bh, float(height))
+    x0 = min(max(cx - bw / 2.0, 0.0), width - bw)
+    y0 = min(max(cy - bh / 2.0, 0.0), height - bh)
+    ix0, iy0 = int(math.floor(x0 + 1e-6)), int(math.floor(y0 + 1e-6))
+    ix1, iy1 = min(width, max(ix0 + 1, int(math.ceil(x0 + bw - 1e-6)))), min(height, max(iy0 + 1, int(math.ceil(y0 + bh - 1e-6))))
+    return ix0, iy0, ix1, iy1
+
+
+def crop_box_pixels(box, aspect: float, width: int, height: int) -> tuple[int, int, int, int]:
+    """The crop of an image of ``width`` x ``height`` for a stored (fractional, margin) ``box``: grown along its relatively
+    short side to height / width = ``aspect``, then shifted inside the image and clamped (see the section text)."""
+    x0, y0, x1, y1 = box[0] * width, box[1] * height, box[2] * width, box[3] * height
+    bw, bh = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+    if bh < bw * aspect:
+        bh = bw * aspect
+    else:
+        bw = bh / aspect
+    return fit_box((x0 + x1) / 2.0, (y0 + y1) / 2.0, bw, bh, width, height)
+
+
+def jitter_crop(crop: tuple[int, int, int, int], rng: np.random.Generator, width: int, height: int, amount: float = SEG_JITTER):
+    """Method B training augmentation of a pixel crop: scaled by a factor in 1 +- ``amount`` (both sides alike, so the aspect
+    is kept) and shifted by up to ``amount`` of its width / height, then fitted into the image again."""
+    x0, y0, x1, y1 = crop
+    scale, dx, dy = rng.uniform(1 - amount, 1 + amount), rng.uniform(-amount, amount), rng.uniform(-amount, amount)
+    bw, bh = x1 - x0, y1 - y0
+    return fit_box((x0 + x1) / 2.0 + dx * bw, (y0 + y1) / 2.0 + dy * bh, bw * scale, bh * scale, width, height)
+
+
+class SegCropHook:
+    """`input_hook` of Method B: crop the image to the stored box of its filename (see the section text). ``jitter`` > 0
+    makes the hook stochastic: the dataset then passes it a random generator derived from (seed, epoch, index)."""
+
+    def __init__(self, boxes: dict, aspect: float, jitter: float = 0.0):
+        self.boxes, self.aspect, self.jitter = boxes, float(aspect), float(jitter)
+        self.stochastic = self.jitter > 0
+
+    def __call__(self, rgb: np.ndarray, record, rng: np.random.Generator | None = None) -> np.ndarray:
+        if record is None:
+            raise ExperimentError("the stored-box crop needs the image's record (use LiveCropHook for ad-hoc images)")
+        entry = self.boxes.get(record.filename)
+        if entry is None:
+            raise ExperimentError(f"boxes.json has no box for {record.filename}; rebuild it with `run --exp S-seg`")
+        height, width = rgb.shape[:2]
+        crop = (0, 0, width, height) if entry["fallback"] else crop_box_pixels(entry["box"], self.aspect, width, height)
+        if self.jitter > 0 and rng is not None:
+            crop = jitter_crop(crop, rng, width, height, self.jitter)
+        x0, y0, x1, y1 = crop
+        return np.ascontiguousarray(rgb[y0:y1, x0:x1])
+
+
+@torch.no_grad()
+def segmenter_posts(model: nn.Module, rgbs: list[np.ndarray], device, size, *, amp: bool = False) -> list[SegPost]:
+    """Post-processed segmentation of full-size RGB images (each is resized to the network ``size`` first)."""
+    batch = torch.from_numpy(np.stack([resize_exact(rgb, *size).transpose(2, 0, 1) for rgb in rgbs]))
+    return [postprocess_probability(p) for p in segment_probabilities(model, batch, device, batch_size=len(rgbs), amp=amp)]
+
+
+class LiveCropHook:
+    """`input_hook` that segments the image it is given and crops to the resulting box (`predict` of Method B). The last
+    decision is kept in ``last`` for the printout."""
+
+    stochastic = False
+
+    def __init__(self, model: nn.Module, device, aspect: float, size_div: int = 1):
+        self.model, self.device, self.aspect, self.size, self.last = model, device, float(aspect), seg_size(size_div), None
+
+    def __call__(self, rgb: np.ndarray, record=None) -> np.ndarray:
+        post = segmenter_posts(self.model, [rgb], self.device, self.size, amp=str(self.device) == "cuda")[0]
+        height, width = rgb.shape[:2]
+        crop = (0, 0, width, height) if post.fallback else crop_box_pixels(post.box, self.aspect, width, height)
+        self.last = {"crop": crop, "fallback": post.fallback, "area": post.area}
+        x0, y0, x1, y1 = crop
+        return np.ascontiguousarray(rgb[y0:y1, x0:x1])
+
+
+BOXES_FILENAME = "boxes.json"
+SEG_METRICS_FILENAME = "seg_metrics.json"
+
+
+def seg_runs_root(data_root, seg_dir=None) -> Path:
+    """The folder that holds the S-seg split folders: ``_work/runs/S-seg`` unless ``seg_dir`` is given."""
+    return Path(seg_dir) if seg_dir is not None else runs_dir(data_root) / "S-seg"
+
+
+def boxes_path(data_root, split_seed: int, seg_dir=None) -> Path:
+    return split_dir(seg_runs_root(data_root, seg_dir), split_seed) / BOXES_FILENAME
+
+
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(read_file_bytes(path)).hexdigest()
+
+
+def load_boxes(data_root, split_seed: int, seg_dir=None) -> dict:
+    """``{filename: {"tight", "box", "fallback", ...}}`` of the split-``k`` segmenter, or a clear ExperimentError."""
+    path = boxes_path(data_root, split_seed, seg_dir)
+    if not path.is_file():
+        raise ExperimentError(
+            f"{path} does not exist: Method B (E4-B) crops by the boxes of the split-{split_seed} segmenter. "
+            f"Run `run --exp S-seg --splits {split_seed}` first (it writes boxes.json after training)"
+        )
+    document = json.loads(read_file_bytes(path).decode("utf-8"))
+    return document["images"]
+
+
+def compute_boxes(model: nn.Module, data_root, records: list[Record], device, size, *, amp: bool = False, batch_size: int = 32) -> tuple[dict, dict]:
+    """(boxes, fallback counts per domain) of the segmenter over every record (cached images): the document written to boxes.json."""
+    boxes, counts = {}, {domain: {"n": 0, "fallback": 0} for domain in DOMAINS}
+    for start in range(0, len(records), batch_size):
+        chunk = records[start : start + batch_size]
+        posts = segmenter_posts(model, [read_cached_rgb(data_root, r.filename) for r in chunk], device, size, amp=amp)
+        for record, post in zip(chunk, posts):
+            boxes[record.filename] = {
+                "domain": record.domain, "fallback": post.fallback, "area": round(post.area, 5),
+                "tight": None if post.tight is None else [round(v, 5) for v in post.tight],
+                "box": [round(v, 5) for v in post.box],
+            }
+            counts[record.domain]["n"] += 1
+            counts[record.domain]["fallback"] += int(post.fallback)
+    return boxes, counts
+
+
+def write_boxes(path: Path, split_seed: int, boxes: dict, counts: dict, exp_id: str) -> str:
+    """Write boxes.json (one image per line) and return its sha256."""
+    header = {"format": 1, "split": split_seed, "exp_id": exp_id, "box_recipe": BOX_RECIPE, "margin": SEG_MARGIN, "min_area": SEG_MIN_AREA,
+              "threshold": SEG_THRESHOLD, "fallbacks": counts}
+    head = ",\n".join(f" {json.dumps(k)}: {json.dumps(v)}" for k, v in header.items())
+    body = ",\n".join(f"  {json.dumps(name)}: {json.dumps(entry)}" for name, entry in sorted(boxes.items()))
+    write_text_atomic(path, "{\n" + head + ',\n "images": {\n' + body + "\n }\n}\n")
+    return file_sha256(path)
+
+
+def load_seg_run_model(run_dir, device: str = "cpu") -> tuple[nn.Module, dict]:
+    """(segmenter in eval mode on ``device``, checkpoint dict) from <run_dir>/best.pt of an S-seg split folder."""
+    path = Path(run_dir) / "best.pt"
+    if not path.is_file():
+        raise ExperimentError(
+            f"{path} does not exist. Method B needs the segmenter checkpoint of its split to segment a new image; checkpoints "
+            "are not synced back from Kaggle by default (*.pt is excluded): keep or restore _work/runs/S-seg/split_<k>/best.pt"
+        )
+    checkpoint = torch.load(fs_path(path), map_location="cpu", weights_only=True)
+    model = build_segmenter(checkpoint["arch"], pretrained=False)
+    model.load_state_dict(checkpoint["state_dict"])
+    return model.to(device).eval(), checkpoint
+
+SEG_EVAL_SETS = ("dev", "eval")
+HIT_FRACTION = 0.5  # the crop box must contain at least this share of the annotated leaf area
+
+
+def annotation_entries(data_root, which: str, annotations=None) -> list[dict]:
+    """The annotated images of one set ("dev" or "eval"): ``{"filename", "cls", "set", "ambiguous", "polygon"}`` with the
+    polygon as an array of fractional (x, y). ``annotations`` default to the embedded ``FIELD_ANNOTATIONS`` and are checked
+    against the committed selection."""
+    if which not in SEG_EVAL_SETS:
+        raise ExperimentError(f"unknown annotation set {which!r}, expected one of {SEG_EVAL_SETS}")
+    annotations = embedded_field_annotations() if annotations is None else annotations
+    if annotations is None:
+        raise ExperimentError("there are no annotations: annotations/field_salient_leaf.json is not embedded (see docs/instructions/annotation-guide.md)")
+    selection = load_selection(data_root)
+    validate_field_annotations(annotations, selection)
+    return [
+        {"filename": row["filename"], "cls": row["cls"], "set": row["set"], "ambiguous": bool(annotations[row["filename"]]["ambiguous"]),
+         "polygon": np.asarray(annotations[row["filename"]]["polygon"], dtype=np.float64)}
+        for row in selection if row["set"] == which
+    ]
+
+
+def rasterize_polygon(polygon, size: tuple[int, int]) -> np.ndarray:
+    """Boolean mask [h, w] of a polygon given as fractional (x, y) vertices."""
+    height, width = size
+    canvas = np.zeros((height, width), np.uint8)
+    cv2.fillPoly(canvas, [np.round(np.asarray(polygon) * (width, height)).astype(np.int32)], 1)
+    return canvas.astype(bool)
+
+
+def iou_dice(pred: np.ndarray, truth: np.ndarray) -> tuple[float, float]:
+    inter = float((pred & truth).sum())
+    union = float((pred | truth).sum())
+    total = float(pred.sum() + truth.sum())
+    return (inter / union if union else 1.0), (2 * inter / total if total else 1.0)
+
+
+def box_fraction(crop_fractions, truth: np.ndarray) -> float:
+    """Share of the ``truth`` mask's area that lies inside the box ``(x0, y0, x1, y1)`` (fractions of the image)."""
+    height, width = truth.shape
+    x0, y0 = int(math.floor(crop_fractions[0] * width + 1e-6)), int(math.floor(crop_fractions[1] * height + 1e-6))
+    x1, y1 = int(math.ceil(crop_fractions[2] * width - 1e-6)), int(math.ceil(crop_fractions[3] * height - 1e-6))
+    return float(truth[y0:y1, x0:x1].sum()) / max(1.0, float(truth.sum()))
+
+
+def evaluate_annotations(model: nn.Module, data_root, entries: list[dict], device, size, aspect: float, *, amp: bool = False) -> tuple[list, list]:
+    """(per-image results, SegPosts) of a segmenter on annotated images. Each result: filename, class, set, ambiguous, iou,
+    dice, hit (crop box contains >= 50% of the leaf), fraction_in_box, fallback, area, crop (fractional box)."""
+    rgbs = [read_cached_rgb(data_root, e["filename"]) for e in entries]
+    posts = segmenter_posts(model, rgbs, device, size, amp=amp) if rgbs else []
+    results = []
+    for entry, rgb, post in zip(entries, rgbs, posts):
+        height, width = rgb.shape[:2]
+        truth = rasterize_polygon(entry["polygon"], post.mask.shape)
+        crop = (0, 0, width, height) if post.fallback else crop_box_pixels(post.box, aspect, width, height)
+        crop_fractions = (crop[0] / width, crop[1] / height, crop[2] / width, crop[3] / height)
+        iou, dice = iou_dice(post.mask, truth)
+        inside = box_fraction(crop_fractions, truth)
+        results.append({
+            "filename": entry["filename"], "cls": entry["cls"], "set": entry["set"], "ambiguous": entry["ambiguous"],
+            "iou": iou, "dice": dice, "hit": inside >= HIT_FRACTION, "fraction_in_box": inside, "fallback": post.fallback,
+            "area": post.area, "crop": [round(v, 5) for v in crop_fractions],
+        })
+    return results, posts
+
+
+def summarize_annotation_results(results: list[dict]) -> dict:
+    """Mean IoU, Dice, hit rate and crop-box area (share of the image) over all images and over the non-ambiguous ones,
+    and the fallback count."""
+    def block(rows):
+        if not rows:
+            return {"n": 0, "iou": None, "dice": None, "hit_rate": None, "box_area": None}
+        return {"n": len(rows), "iou": float(np.mean([r["iou"] for r in rows])), "dice": float(np.mean([r["dice"] for r in rows])),
+                "hit_rate": float(np.mean([r["hit"] for r in rows])),
+                "box_area": float(np.mean([(r["crop"][2] - r["crop"][0]) * (r["crop"][3] - r["crop"][1]) for r in rows]))}
+    return {"all": block(results), "excluding_ambiguous": block([r for r in results if not r["ambiguous"]]),
+            "fallbacks": int(sum(r["fallback"] for r in results))}
+
+
+def example_order(results: list[dict], n: int = 10, failures: int = 2) -> list[int]:
+    """Indices of ``n`` results for the examples figure: the ``failures`` lowest-IoU images go last, the others are spread over
+    the IoU range (best first). Deterministic."""
+    order = sorted(range(len(results)), key=lambda i: (-results[i]["iou"], results[i]["filename"]))
+    if len(order) <= n:
+        return order
+    worst, rest = order[len(order) - failures :], order[: len(order) - failures]
+    picked = [rest[int(round(k))] for k in np.linspace(0, len(rest) - 1, n - failures)]
+    return picked + worst
+
+
+def show_photo(ax, fig, rgb: np.ndarray) -> None:
+    """Draw a photo 1:1: it is downsampled once, with an area filter, to the pixels the axes occupy at FIGURE_DPI."""
+    box = ax.get_position()
+    tile = (max(1, round(box.width * fig.get_figwidth() * FIGURE_DPI)), max(1, round(box.height * fig.get_figheight() * FIGURE_DPI)))
+    height, width = rgb.shape[:2]
+    ax.imshow(cv2.resize(rgb, tile, interpolation=cv2.INTER_AREA), extent=(0, width, height, 0), interpolation="none")
+
+
+def save_seg_examples(data_root, entries: list[dict], results: list[dict], posts: list[SegPost], path: Path, *, n: int = 10, failures: int = 2) -> Path:
+    """`seg_examples.png`: ``n`` annotated field images (``failures`` of them the worst), each with the predicted mask (blue),
+    the annotation (yellow outline) and the crop box (vermilion). Needs ``results`` and ``posts`` of the same images."""
+    plt = pyplot()
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    picks = example_order(results, n, failures)
+    columns = 5
+    rows = math.ceil(len(picks) / columns)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    worst = set(picks[-failures:]) if len(results) > n else set()
+    with plt.rc_context({"font.size": 6}):
+        fig = plt.figure(figsize=(5.8, 2.42 * rows + 0.3))
+        grid = fig.add_gridspec(rows, columns, left=0.005, right=0.995, top=0.995, bottom=0.075, wspace=0.05, hspace=0.2)
+        for slot, index in enumerate(picks):
+            result, post = results[index], posts[index]
+            ax = fig.add_subplot(grid[slot // columns, slot % columns])
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            rgb = read_cached_rgb(data_root, result["filename"])
+            height, width = rgb.shape[:2]
+            show_photo(ax, fig, rgb)
+            scale = np.array([width / post.mask.shape[1], height / post.mask.shape[0]])
+            overlay = np.zeros((*post.mask.shape, 4), np.float32)
+            overlay[post.mask] = (*[int(OKABE_ITO["sky"][i : i + 2], 16) / 255 for i in (1, 3, 5)], 0.5)
+            ax.imshow(overlay, extent=(0, width, height, 0), interpolation="nearest")
+            contours, _ = cv2.findContours(post.mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            for contour in contours:
+                points = (contour[:, 0, :] + 0.5) * scale
+                closed = np.vstack([points, points[:1]])
+                ax.plot(closed[:, 0], closed[:, 1], color=OKABE_ITO["blue"], linewidth=0.7)
+            polygon = entries[index]["polygon"] * (width, height)
+            closed = np.vstack([polygon, polygon[:1]])
+            ax.plot(closed[:, 0], closed[:, 1], color="black", linewidth=1.5, solid_joinstyle="round")
+            ax.plot(closed[:, 0], closed[:, 1], color=OKABE_ITO["yellow"], linewidth=0.7, solid_joinstyle="round")
+            if not result["fallback"]:  # a fallback crop is the whole frame: drawing it would only outline the photo
+                x0, y0, x1, y1 = result["crop"]
+                ax.plot([x0 * width, x1 * width, x1 * width, x0 * width, x0 * width], [y0 * height, y0 * height, y1 * height, y1 * height, y0 * height],
+                        color=OKABE_ITO["vermilion"], linewidth=1.0, linestyle=(0, (3, 1.5)))
+            ax.set_xlim(0, width)
+            ax.set_ylim(height, 0)
+            verdict = "fallback" if result["fallback"] else "box hit" if result["hit"] else "box miss"
+            ax.set_xlabel(f"{result['filename']}\nIoU {result['iou']:.2f}, {verdict}", fontsize=5.5, labelpad=1.5,
+                          color=OKABE_ITO["vermilion"] if index in worst else "black")
+        handles = [Patch(fc=OKABE_ITO["sky"], ec=OKABE_ITO["blue"], alpha=0.7, label="predicted mask"),
+                   Line2D([0], [0], color=OKABE_ITO["yellow"], lw=1.2, label="annotation"),
+                   Line2D([0], [0], color=OKABE_ITO["vermilion"], lw=1.2, linestyle=(0, (3, 1.5)), label="crop box"),
+                   Line2D([], [], linestyle="none", label="fallback: no leaf found, whole image used")]
+        fig.legend(handles=handles, loc="lower center", ncol=4, frameon=False, fontsize=6, bbox_to_anchor=(0.5, 0.0),
+                   handlelength=1.6, columnspacing=1.2)
+        fig.savefig(path, dpi=FIGURE_DPI)
+        plt.close(fig)
+    return path
+
+
+
+def read_seg_metrics(run_dir: Path) -> dict:
+    path = Path(run_dir) / SEG_METRICS_FILENAME
+    return json.loads(read_file_bytes(path).decode("utf-8")) if path.is_file() else {}
+
+
+def run_seg_eval(data_root, which: str, splits, *, final: bool = False, again: bool = False, seg_dir=None, device: str = "cpu",
+                 input_mode: str | None = None, annotations=None, figure: Path | None = None, out=print) -> dict:
+    """`seg-eval`: segmenter metrics on the annotated field images of one set (see the section text for the rule).
+    ``which="eval"`` needs ``final=True`` and, once measured, ``again=True`` to measure the same segmenter again.
+    Returns {split: summary}."""
+    data_root = Path(data_root)
+    if which not in SEG_EVAL_SETS:
+        raise ExperimentError(f"unknown annotation set {which!r}, expected one of {SEG_EVAL_SETS}")
+    if which == "eval" and not final:
+        raise ExperimentError(
+            "the 20 eval annotations are looked at once per final segmenter, for reporting only (06, leakage rule): "
+            "do not use them while developing (use --set dev). If this IS the final segmenter, add --final"
+        )
+    choices = load_choices(data_root)
+    mode = input_mode or choices.raw("input_mode")
+    if mode is None:
+        mode = "rect"
+        out("seg-eval: choices.json has no input_mode yet; the hit rate uses the rect crop aspect (448x224)")
+    entries = annotation_entries(data_root, which, annotations)
+    aspect = classifier_aspect(mode)
+    summaries, shown_runs = {}, {}
+    for split_seed in splits:
+        run_dir = split_dir(seg_runs_root(data_root, seg_dir), split_seed)
+        metrics = read_metrics(run_dir)
+        if metrics is None:
+            raise ExperimentError(f"{run_dir / 'metrics.json'} is missing: train the segmenter first (`run --exp S-seg --splits {split_seed}`)")
+        record = read_seg_metrics(run_dir)
+        previous = record.get(which)
+        if which == "eval" and previous and previous.get("boxes_sha256") == metrics.get("boxes_sha256") and not again:
+            raise ExperimentError(
+                f"split {split_seed}: the eval annotations were already measured for this segmenter ({run_dir / SEG_METRICS_FILENAME}). "
+                "They are looked at once; pass --again only if the segmenter changed or the first run was a mistake"
+            )
+        model, checkpoint = load_seg_run_model(run_dir, device)
+        size = seg_size(checkpoint.get("size_div", 1))
+        results, posts = evaluate_annotations(model, data_root, entries, device, size, aspect, amp=device == "cuda")
+        summary = summarize_annotation_results(results)
+        record[which] = {
+            "set": which, "input_mode": mode, "hit_fraction": HIT_FRACTION, "config_fingerprint": metrics.get("config_fingerprint"),
+            "boxes_sha256": metrics.get("boxes_sha256"), "best_epoch": metrics.get("best_epoch"), "summary": summary, "images": results,
+        }
+        write_json(run_dir / SEG_METRICS_FILENAME, record, indent=1)
+        summaries[split_seed] = summary
+        shown_runs[split_seed] = (run_dir, results, posts)
+        a, e = summary["all"], summary["excluding_ambiguous"]
+        out(f"seg-eval {which} split {split_seed}: IoU {a['iou']:.3f} Dice {a['dice']:.3f} hit {a['hit_rate']:.2f} (n={a['n']}); "
+            f"excluding ambiguous IoU {e['iou']:.3f} Dice {e['dice']:.3f} hit {e['hit_rate']:.2f} (n={e['n']}); "
+            f"crop box {100 * a['box_area']:.0f}% of the image; fallbacks {summary['fallbacks']}")
+        if which == "dev":
+            for r in results:
+                out(f"    {r['filename']:<12}{r['cls']:<14} IoU {r['iou']:.3f} Dice {r['dice']:.3f}  box has {100 * r['fraction_in_box']:.0f}% of the leaf"
+                    f"{'  FALLBACK' if r['fallback'] else ''}{'  (ambiguous)' if r['ambiguous'] else ''}")
+    shown = shown_runs.get(0) if which == "eval" else next(iter(shown_runs.values()), None)
+    if shown is not None:
+        run_dir, results, posts = shown
+        target = figure if figure is not None else figures_dir(data_root) / "seg_examples.png" if which == "eval" else run_dir / "seg_examples_dev.png"
+        out(f"seg-eval: figure {save_seg_examples(data_root, entries, results, posts, Path(target))}")
+    return summaries
+
+
+def cmd_seg_eval(args: "argparse.Namespace") -> int:
+    try:
+        run_seg_eval(Path(args.data_root), args.set, args.splits, final=args.final, again=args.again, seg_dir=args.seg_dir,
+                     device=resolve_device(args.device), figure=args.figure)
+    except (ExperimentError, DatasetError) as exc:
+        print(f"seg-eval: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
+
+def seg_fingerprint_extra(cfg: ExperimentConfig, data_root=None) -> dict:
+    """What the segmenter row and the Method B row add to their config fingerprint; ``{}`` for every other row, so their
+    fingerprints are exactly what they were before phase 06."""
+    if cfg.kind == "segmenter":
+        rejects = white_rejects_path(data_root) if data_root is not None else None
+        digest = hashlib.sha1(read_file_bytes(rejects)).hexdigest() if rejects is not None and rejects.is_file() else ""
+        return {"segmenter": {"recipe": SEG_RECIPE, "composites": COMPOSITE_RECIPE, "rejects": digest}}
+    if cfg.seg_crop:
+        return {"seg_crop": {"recipe": BOX_RECIPE}}
+    return {}
+
+
+def run_seg_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out_dir: Path, options: "RunOptions", log=print) -> dict:
+    """Train the split-``k`` segmenter, pick the best epoch on validation, write the run folder and the boxes of every cached
+    image (see the section text). Returns {"status": "skipped" | "done", "metrics": dict, "out_dir": Path}."""
+    data_root, out_dir = Path(data_root), Path(out_dir)
+    cfg = resolved.config
+    split = load_split(data_root, split_seed)
+    fingerprint = config_fingerprint(cfg, {"seed_offset": options.seed_offset, "limit": options.limit, **seg_fingerprint_extra(cfg, data_root)})
+    state, reason = result_state(out_dir, split["sha256"], fingerprint)
+    if state == "fresh" and not options.force:
+        log(f"[{resolved.requested} split {split_seed}] skipped: {out_dir / 'metrics.json'} exists and is current (--force to retrain)")
+        return {"status": "skipped", "metrics": read_metrics(out_dir), "out_dir": out_dir}
+    if state == "stale":
+        log(f"[{resolved.requested} split {split_seed}] existing result is stale: {reason}; retraining")
+    (out_dir / "metrics.json").unlink(missing_ok=True)  # a half-finished retrain must not look complete
+
+    started = time.time()
+    seed = split_seed + options.seed_offset
+    records = load_index(data_root)
+    rejects = load_white_rejects(data_root, records)
+    whites = white_mask_records(data_root, records, split["train"], rejects)
+    if options.limit:
+        whites = subsample_records(whites, options.limit)
+    build_white_masks(data_root, whites)
+    size = seg_size(cfg.size_div)
+    n_samples = options.limit or SEG_SAMPLES_PER_EPOCH
+    pool = CompositePool(data_root, split_seed, records, rejects=rejects)
+    n_composites = round(SEG_COMPOSITE_SHARE * n_samples) if pool.leaves else 0
+    if n_composites:
+        check_cache_complete(data_root, [*pool.leaves, *(b for group in pool.backgrounds.values() for b in group)])
+    composites = CompositeSource(data_root, split_seed, n_composites, seed, pool=pool) if n_composites else None
+    train_ds = SegmenterDataset(data_root, whites, composites, size=size, n_samples=n_samples, seed=seed)
+    val_composites, val_white = build_seg_val_sets(data_root, split_seed, records, size, limit=options.limit)
+    workers = default_num_workers() if options.num_workers is None else options.num_workers
+    log(f"[{resolved.requested} split {split_seed}] {cfg.exp_id}: {cfg.backbone}  input {size[0]}x{size[1]}  lr {cfg.lr:g}  "
+        f"train {len(train_ds)}/epoch ({train_ds.n_composites} composites + {len(train_ds) - train_ds.n_composites} white), "
+        f"val {len(val_composites)} composites + {len(val_white)} white  device {options.device}, batch {cfg.batch_size}, workers {usable_workers(workers)}")
+    write_json(out_dir / "config.json", {
+        "format": RUN_FORMAT, "requested_exp_id": resolved.requested, "experiment": asdict(cfg), "split": split_seed, "seed": seed,
+        "seed_offset": options.seed_offset, "limit": options.limit, "overrides": dict(options.overrides),
+        "weights": SEG_ARCHITECTURES[cfg.backbone] if cfg.pretrained else None, "input_size": list(size),
+        "segmenter": {"constants": {k: list(v) if isinstance(v, tuple) else v for k, v in SEG_CONSTANTS.items()}, "recipe": SEG_RECIPE,
+                      "composite_recipe": COMPOSITE_RECIPE, "rejects": len(rejects), "samples_per_epoch": n_samples},
+        "config_fingerprint": fingerprint,
+    })
+    write_json(out_dir / "env.json", environment_record(options.device))
+
+    seed_everything(seed)
+    model = build_segmenter(cfg.backbone, pretrained=cfg.pretrained, data_root=options.weights_root).to(options.device)
+    outcome = train_segmenter(cfg, model, train_ds, val_composites, val_white, options.device, seed=seed, num_workers=workers,
+                              mp_context=options.mp_context, log=log)
+    model.load_state_dict(outcome.best_state)
+    amp = options.device == "cuda"
+    composite_iou, white_iou = seg_val_iou(model, val_composites, options.device, amp=amp), seg_val_iou(model, val_white, options.device, amp=amp)
+    boxes, counts = compute_boxes(model, data_root, records, options.device, size, amp=amp)
+    for domain, c in counts.items():
+        c["rate"] = c["fallback"] / c["n"] if c["n"] else None
+    boxes_sha = write_boxes(out_dir / BOXES_FILENAME, split_seed, boxes, counts, cfg.exp_id)
+    write_text_atomic(out_dir / "history.csv", csv_text(SEG_HISTORY_COLUMNS, [
+        [f"{row[c]:.6g}" if isinstance(row[c], float) else "" if row[c] is None else row[c] for c in SEG_HISTORY_COLUMNS] for row in outcome.history]))
+    save_torch_atomic({
+        "format": RUN_FORMAT, "state_dict": outcome.best_state, "arch": cfg.backbone, "size_div": cfg.size_div, "exp_id": cfg.exp_id,
+        "split": split_seed, "epoch": outcome.best_epoch, "val_score": outcome.best_score, "config": asdict(cfg),
+    }, out_dir / "best.pt")
+    write_json(out_dir / SEG_METRICS_FILENAME, {
+        "format": 1, "split": split_seed, "best_epoch": outcome.best_epoch, "boxes_sha256": boxes_sha,
+        "val": {"composite_iou": composite_iou, "white_iou": white_iou, "score": outcome.best_score,
+                "n_composites": len(val_composites), "n_white": len(val_white)},
+        "fallbacks": counts,
+    }, indent=1)
+    epoch_seconds = [row["seconds"] for row in outcome.history]
+    metrics = {
+        "format": RUN_FORMAT, "exp_id": cfg.exp_id, "requested_exp_id": resolved.requested, "kind": "segmenter", "split": split_seed,
+        "seed": seed, "split_sha256": split["sha256"], "config_fingerprint": fingerprint,
+        "wall_time_s": round(time.time() - started, 2), "train_time_s": round(outcome.seconds, 2),
+        "seconds_per_epoch": round(float(np.mean(epoch_seconds)), 3) if epoch_seconds else None,
+        "device": options.device, "arch": cfg.backbone, "lr": cfg.lr, "parameters": count_parameters(model),
+        "n_train_per_epoch": len(train_ds), "n_composites_per_epoch": train_ds.n_composites, "n_val_composites": len(val_composites),
+        "n_val_white": len(val_white), "epochs_run": len(outcome.history), "best_epoch": outcome.best_epoch,
+        "best_val_score": outcome.best_score, "val_iou_composite": composite_iou, "val_iou_white": white_iou,
+        "fallbacks": counts, "boxes_sha256": boxes_sha, "n_boxes": len(boxes), "fast": options.limit is not None,
+        "overrides": dict(options.overrides),
+    }
+    write_json(out_dir / "metrics.json", metrics, indent=1)  # last: its presence marks the run as complete
+    fmt = lambda v: "n/a" if v is None else f"{v:.3f}"  # noqa: E731
+    log(f"[{resolved.requested} split {split_seed}] done in {metrics['wall_time_s']:.0f}s  best epoch {outcome.best_epoch}  val IoU composites "
+        f"{fmt(composite_iou)} white {fmt(white_iou)}; boxes for {len(boxes)} images, fallbacks white {counts['white']['fallback']}/{counts['white']['n']} "
+        f"field {counts['field']['fallback']}/{counts['field']['n']}")
+    return {"status": "done", "metrics": metrics, "out_dir": out_dir}
+
 # ---- from 50_analysis.ipynb ----
 import re
 from typing import NamedTuple
@@ -3630,10 +4437,23 @@ class ExperimentResults:
         return tuple(sorted(self.metrics))
 
 
-def expected_fingerprint(config: ExperimentConfig, composite_factor: float | None = None) -> str:
+def expected_fingerprint(config: ExperimentConfig, composite_factor: float | None = None, data_root=None) -> str:
     """The fingerprint a plain `run` of this config writes (no seed offset, not --fast). Method A rows also carry their
-    composites-per-epoch factor and the composite recipe (``composite_fingerprint_extra``); other rows are unchanged."""
-    return config_fingerprint(config, {"seed_offset": 0, "limit": None, **composite_fingerprint_extra(config, composite_factor)})
+    composites-per-epoch factor and the composite recipe (``composite_fingerprint_extra``), the segmenter and Method B
+    rows their recipes (``seg_fingerprint_extra``; the segmenter's needs ``data_root`` for the reject list); other rows
+    are unchanged."""
+    return config_fingerprint(config, {"seed_offset": 0, "limit": None, **composite_fingerprint_extra(config, composite_factor),
+                                       **seg_fingerprint_extra(config, data_root)})
+
+
+def boxes_problem(data_root, split_seed: int, metrics: dict) -> str | None:
+    """Method B runs only: why the split's run does not match the current S-seg boxes.json (None when it does)."""
+    path = boxes_path(data_root, split_seed)
+    if not path.is_file():
+        return f"split {split_seed}: {path} is missing, so the boxes this run cropped by cannot be verified"
+    if metrics.get("seg_boxes_sha256") != file_sha256(path):
+        return f"split {split_seed}: the S-seg boxes changed since this run (boxes.json sha256 differs; stale run)"
+    return None
 
 
 def load_experiment(data_root, exp_id: str, choices) -> tuple:
@@ -3648,7 +4468,7 @@ def load_experiment(data_root, exp_id: str, choices) -> tuple:
     run_root = runs_dir(data_root) / run_name
     if not run_root.is_dir():
         return None, [f"pending, no runs yet ({run_root} does not exist)"]
-    expected = expected_fingerprint(resolved.config, resolved.composite_factor)
+    expected = expected_fingerprint(resolved.config, resolved.composite_factor, data_root)
     problems, found = [], {}
     for split_seed in ANALYSIS_SPLITS:
         metrics = read_metrics(split_dir(run_root, split_seed))
@@ -3666,6 +4486,8 @@ def load_experiment(data_root, exp_id: str, choices) -> tuple:
             problems.append(f"split {split_seed}: config fingerprint differs from the registry (the experiment definition changed)")
         elif metrics.get("fast") or metrics.get("overrides"):
             problems.append(f"split {split_seed}: this is a --fast / dev-override run, not a result")
+        elif resolved.config.seg_crop and boxes_problem(data_root, split_seed, metrics):
+            problems.append(boxes_problem(data_root, split_seed, metrics))
         else:
             found[split_seed] = metrics
     if problems:
@@ -3988,10 +4810,15 @@ def describe_gate(gate: str, result: dict) -> str:
     return "\n".join(lines)
 
 
-def run_gate(data_root, gate: str, out=print) -> dict:
-    """Recompute gate ``g0`` or ``g1`` from the run folders and write its entry to choices.json (other keys stay)."""
+def run_gate(data_root, gate: str, out=print, *, cut=(), force: bool = False) -> dict:
+    """Recompute gate ``g0``, ``g1`` or ``g2`` from the run folders and write its entry to choices.json (other keys
+    stay). ``cut`` and ``force`` belong to g2 (see its section below)."""
     data_root = Path(data_root)
     choices = load_choices(data_root)
+    if gate != "g2" and (cut or force):
+        raise ExperimentError(f"gate {gate}: --cut and --force belong to gate g2")
+    if gate == "g2":
+        return run_gate_g2(data_root, choices, cut=tuple(cut), force=force, out=out)
     if gate == "g0":
         exps = {mode: require_complete(data_root, f"E0-{mode}", choices, gate) for mode in INPUT_MODES}
         result, key = evaluate_g0(exps), "input_mode"
@@ -3999,11 +4826,233 @@ def run_gate(data_root, gate: str, out=print) -> dict:
         exps = {name: require_complete(data_root, exp_id, choices, gate) for name, exp_id in G1_CANDIDATES.items()}
         result, key = evaluate_g1(exps, {name: choices.get("lr", name) for name in G1_CANDIDATES}), "backbone"
     else:
-        raise ExperimentError(f"unknown gate {gate!r}, expected g0 or g1")
+        raise ExperimentError(f"unknown gate {gate!r}, expected g0, g1 or g2")
     path = write_choice(data_root, key, result["value"], result["evidence"])
     out(describe_gate(gate, result))
     out(f"  written to {path}: {key} = {result['value']!r}" + (f", lr = {result['evidence']['lr']['value']:g}" if gate == "g1" else ""))
     return result
+
+G2_METHODS = ("plain", "A", "B")  # simplest first: the last tie-break prefers the earlier one
+G2_METHOD_EXPERIMENTS = {"A": "E3-A", "B": "E4-B"}
+G2_METHOD_LABELS = {"plain": "plain unified model", "A": "Method A (composites)", "B": "Method B (segment, crop)"}
+G2_RULE = (
+    f"G2 (phase 06): recommend the method with the highest {GATE_METRIC}, among the plain unified model of the G1 "
+    "backbone, Method A (E3-A) and Method B (E4-B). If the top two are within one std of each other, prefer the one with "
+    "the higher mean validation field macro-F1; if their field means are also within one std, prefer the simpler method "
+    "(plain < A < B). " + TIE_RULE
+)
+
+
+def within_one_std(a, b) -> tuple:
+    """(|gap| of the two means, tolerance = the larger std, whether the gap is within it)."""
+    gap, tolerance = abs(a.mean - b.mean), max(a.std, b.std)
+    return gap, tolerance, gap <= tolerance
+
+
+def decide_g2(mixed: dict, field: dict) -> dict:
+    """Gate G2. ``mixed`` / ``field`` map method ("plain", "A", "B"; the ones not cut) -> Aggregate of val mixed / field
+    macro-F1. A tie in mean keeps the G2_METHODS order, so the simpler method ranks first."""
+    methods = [m for m in G2_METHODS if m in mixed]
+    ranked = sorted(methods, key=lambda m: -mixed[m].mean)
+    if len(ranked) == 1:
+        return {"value": ranked[0], "decided_by": "only candidate (the others were cut)", "ranking": ranked,
+                "top_two_gap": None, "tolerance": None, "field_gap": None, "field_tolerance": None}
+    gap, tolerance, tied = top_two_gap(mixed, ranked)
+    first, second = ranked[:2]
+    field_gap = field_tolerance = None
+    if not tied:
+        value, clause = first, "highest mean"
+    else:
+        field_gap, field_tolerance, field_tied = within_one_std(field[first], field[second])
+        if field_tied:
+            value, clause = min((first, second), key=G2_METHODS.index), "within one std on mixed and on field -> simpler method"
+        else:
+            value, clause = max((first, second), key=lambda m: field[m].mean), "within one std -> higher val field macro-F1"
+    return {"value": value, "decided_by": clause, "ranking": ranked, "top_two_gap": gap, "tolerance": tolerance,
+            "field_gap": field_gap, "field_tolerance": field_tolerance}
+
+
+def g2_candidate_experiments(choices, cut=()) -> dict:
+    """{method: experiment ID} of the G2 candidates that are not cut. The plain one is the G1 backbone's unified row."""
+    unknown = set(cut) - set(G2_METHOD_EXPERIMENTS)
+    if unknown:
+        raise ExperimentError(f"gate g2: only Method A or B can be cut, not {sorted(unknown)}")
+    plain = G1_CANDIDATES[choices.get("backbone")]
+    return {"plain": plain, **{m: exp_id for m, exp_id in G2_METHOD_EXPERIMENTS.items() if m not in cut}}
+
+
+def evaluate_g2(exps: dict, cut=()) -> dict:
+    """{"value": recommended experiment ID, "evidence"} from the complete candidates (keyed by method)."""
+    mixed = {m: aggregate(exps[m], "mixed", "macro_f1", "val") for m in exps}
+    field = {m: aggregate(exps[m], "field", "macro_f1", "val") for m in exps}
+    decision = decide_g2(mixed, field)
+    method = decision["value"]
+    pairs = [(m, "plain") for m in ("A", "B") if m in exps] + ([("B", "A")] if "A" in exps and "B" in exps else [])
+    as_float = lambda v: None if v is None else float(v)  # noqa: E731
+    evidence = {
+        "rule": G2_RULE, "metric": GATE_METRIC, "method": method, "method_label": G2_METHOD_LABELS[method],
+        "decided_by": decision["decided_by"], "ranking": decision["ranking"],
+        "top_two_gap": as_float(decision["top_two_gap"]), "tolerance_one_std": as_float(decision["tolerance"]),
+        "field_gap": as_float(decision["field_gap"]), "field_tolerance_one_std": as_float(decision["field_tolerance"]),
+        "cut": sorted(cut), "candidates": candidate_evidence(exps), "paired_differences": paired_evidence(exps, pairs),
+    }
+    return {"value": exps[method].exp_id, "evidence": evidence}
+
+
+def describe_g2(result: dict) -> str:
+    ev = result["evidence"]
+
+    def cell(record: dict) -> str:
+        return f"{record['mean']:.3f} +- {record['std']:.3f}"
+
+    lines = [f"gate g2: {ev['metric']}", f"  {'candidate':<22}{'val mixed F1':>16}{'val field F1':>16}"]
+    for method in ev["ranking"]:
+        c = ev["candidates"][method]
+        lines.append(f"  {method + ' (' + c['experiment'] + ')':<22}{cell(c['val_mixed_macro_f1']):>16}{cell(c['val_field_macro_f1']):>16}")
+    for method in ev["cut"]:
+        lines.append(f"  {method + ' (' + G2_METHOD_EXPERIMENTS[method] + ')':<22}{'cut':>16}{'cut':>16}")
+    if ev["top_two_gap"] is not None:
+        first, second = ev["ranking"][:2]
+        within = "within" if ev["top_two_gap"] <= ev["tolerance_one_std"] else "outside"
+        lines.append(f"  top two: {first} leads {second} by {ev['top_two_gap']:.3f} on mixed; one std = {ev['tolerance_one_std']:.3f} ({within} one std)")
+        if ev["field_gap"] is not None:
+            within = "within" if ev["field_gap"] <= ev["field_tolerance_one_std"] else "outside"
+            lines.append(f"  on field they differ by {ev['field_gap']:.3f}; one std = {ev['field_tolerance_one_std']:.3f} ({within} one std)")
+    lines.append(f"  decision: {result['value']} = {ev['method_label']}  ({ev['decided_by']})")
+    return "\n".join(lines)
+
+
+def run_gate_g2(data_root, choices, *, cut=(), force: bool = False, out=print) -> dict:
+    """Gate G2 (see the section text): refuses incomplete candidates that are not cut, and a changed outcome once frozen."""
+    names = g2_candidate_experiments(choices, cut)
+    exps = {method: require_complete(data_root, exp_id, choices, "g2") for method, exp_id in names.items()}
+    result = evaluate_g2(exps, cut)
+    frozen = choices.raw("recommended")
+    if frozen is not None and frozen != result["value"] and not force:
+        out(describe_g2(result))
+        raise ExperimentError(
+            f"choices.json already recommends {frozen!r} (frozen by an earlier `gate g2`), and the runs now decide "
+            f"{result['value']!r}. The recommendation is frozen once made (06: flipping it after seeing test numbers is "
+            "test-set selection). If the earlier decision was a genuine mistake, rerun with --force and say so in the report"
+        )
+    path = write_choice(data_root, "recommended", result["value"], result["evidence"])
+    out(describe_g2(result))
+    out(f"  written to {path}: recommended = {result['value']!r}" + (" (overwrote a different frozen choice: --force)" if frozen not in (None, result["value"]) else ""))
+    return result
+
+METHOD_EXPERIMENTS = ("E3-A", "E4-B")
+SEGMENTER_EXPERIMENT = "S-seg"
+HIDDEN_UNTIL_G2 = "hidden until gate g2"
+
+
+def plain_method_experiment(choices) -> str | None:
+    """The G2 'plain' candidate: the unified row of the G1 backbone (None while gate G1 has not run)."""
+    backbone = choices.raw("backbone")
+    return G1_CANDIDATES.get(backbone) if backbone else None
+
+
+def table_methods(results: dict, choices) -> Table:
+    """Plain vs Method A vs Method B (G2 evidence on val; test only once the recommendation is frozen)."""
+    plain = plain_method_experiment(choices)
+    recommended = choices.raw("recommended")
+    rows_spec = (("plain", plain), ("A", "E3-A"), ("B", "E4-B"))
+    rows = []
+    for part in PARTS:
+        hidden = part == "test" and recommended is None
+        for method, exp_id in rows_spec:
+            label = exp_id or "(G1 backbone not chosen)"
+            cells = [HIDDEN_UNTIL_G2] * len(SCORE_HEADER) if hidden else score_cells(results.get(exp_id) if exp_id else None, part)
+            mark = " (recommended)" if recommended is not None and exp_id == recommended else ""
+            rows.append([part, G2_METHOD_LABELS[method] + mark, label, *cells])
+        for method, exp_id in rows_spec[1:]:
+            cells = ([HIDDEN_UNTIL_G2] * len(SCORE_HEADER) if hidden
+                     else difference_cells(results.get(exp_id), results.get(plain) if plain else None, part))
+            rows.append([part, f"{method} - plain (paired)", f"{exp_id} - {plain or 'plain'}", *cells])
+    return Table(
+        "table_methods",
+        "Methods: plain unified model vs Method A (composites) vs Method B (segment, crop)",
+        ("Part", "Method", "Experiment", *SCORE_HEADER),
+        rows,
+        "Mean +- std over the 5 splits (std with ddof=1). Plain is the unified model of the G1 backbone; A adds composites "
+        "to its training data; B crops every image to the box of its split's leaf segmenter. Gate G2 uses only the val rows. "
+        "The paired rows are the per-split difference minus plain. Test rows are shown only after gate G2 froze the "
+        "recommendation. Rows that are not complete yet read 'pending'.",
+    )
+
+
+def segmenter_eval_sections(exp: ExperimentResults | None, data_root) -> dict | None:
+    """{split: eval section of seg_metrics.json} when every split has one measured on its current boxes, else None."""
+    if exp is None:
+        return None
+    sections = {}
+    for split_seed in exp.splits:
+        section = read_seg_metrics(split_dir(runs_dir(data_root) / exp.run_name, split_seed)).get("eval")
+        if not section or section.get("boxes_sha256") != exp.metrics[split_seed].get("boxes_sha256"):
+            return None
+        sections[split_seed] = section
+    return sections
+
+
+def annotation_counts(data_root, which: str) -> dict:
+    """{"all": n, "excluding_ambiguous": n} of an annotation set (flags only, no measurement); '-' when unavailable."""
+    try:
+        entries = annotation_entries(data_root, which)
+    except (ExperimentError, DatasetError):
+        return {"all": "-", "excluding_ambiguous": "-"}
+    return {"all": len(entries), "excluding_ambiguous": sum(not e["ambiguous"] for e in entries)}
+
+
+def format_rate(stat) -> str:
+    """'85.0 +- 5.0' (percent, 1 decimal) or 'n/a'."""
+    return "n/a" if stat.mean != stat.mean or stat.std != stat.std else f"{100 * stat.mean:.1f} +- {100 * stat.std:.1f}"
+
+
+def table_segmenter(exp: ExperimentResults | None, data_root) -> Table:
+    """The leaf segmenter over its 5 splits (see the section text): eval annotations, fallbacks and the validation IoUs."""
+    eval_sections = segmenter_eval_sections(exp, data_root)
+    measure = "seg-eval --set eval --final"
+    rows = []
+
+    def add(label, images, values, fmt, *, needs_eval=False):
+        if exp is None:
+            rows.append([label, images, PENDING, PENDING])
+        elif needs_eval and eval_sections is None:
+            rows.append([label, images, f"{PENDING} ({measure})", PENDING])
+        else:
+            values = values()
+            mean, std = mean_std(values)
+            stat = Aggregate(mean, std, values)
+            per_split = "; ".join("n/a" if v is None else (f"{100 * v:.1f}" if fmt is format_rate else f"{v:.3f}") for v in values)
+            rows.append([label, images, fmt(stat) if fmt is format_rate else format_mean_std(stat, "macro_f1"), per_split])
+
+    splits = exp.splits if exp is not None else ()
+    n_eval = ({block: eval_sections[splits[0]]["summary"][block]["n"] for block in ("all", "excluding_ambiguous")} if eval_sections
+              else annotation_counts(data_root, "eval"))
+    for block, label in (("all", "eval annotations"), ("excluding_ambiguous", "eval annotations without the ambiguous ones")):
+        n = n_eval[block]
+        for key, name, fmt in (("iou", "IoU", None), ("dice", "Dice", None), ("hit_rate", "Salient-leaf hit rate (%)", format_rate),
+                               ("box_area", "Crop box area (% of the image)", format_rate)):
+            add(f"{name}, {label}", n, lambda b=block, k=key: [eval_sections[s]["summary"][b].get(k) for s in splits], fmt, needs_eval=True)
+    add("Fallbacks on the eval annotations (%)", n_eval["all"], lambda: [eval_sections[s]["summary"]["fallbacks"] / max(1, eval_sections[s]["summary"]["all"]["n"]) for s in splits],
+        format_rate, needs_eval=True)
+    for domain in DOMAINS:
+        n = exp.metrics[splits[0]]["fallbacks"][domain]["n"] if exp is not None else "-"
+        add(f"Fallbacks, all cached {domain} images (%)", n, lambda d=domain: [exp.metrics[s]["fallbacks"][d]["rate"] for s in splits], format_rate)
+    add("IoU, white val pseudo-masks (checkpoint data)", exp.metrics[splits[0]]["n_val_white"] if exp is not None else "-",
+        lambda: [exp.metrics[s]["val_iou_white"] for s in splits], None)
+    add("IoU, val composites (checkpoint data)", exp.metrics[splits[0]]["n_val_composites"] if exp is not None else "-",
+        lambda: [exp.metrics[s]["val_iou_composite"] for s in splits], None)
+    return Table(
+        "table_segmenter",
+        "Salient-leaf segmenter (S-seg, one per split)",
+        ("Metric", "Images per split", "Mean +- std", "Per split (0-4)"),
+        rows,
+        "Mean +- std over the 5 split-segmenters (std with ddof=1). Eval annotations: the 20 hand-annotated field images that "
+        "are looked at once per final segmenter. IoU and Dice compare the post-processed mask (the selected component; a "
+        "fallback scores 0) with the annotated polygon at 512x256. Hit: the crop box (with the 15% margin, at the classifier's "
+        "input aspect) contains at least 50% of the annotated leaf area; a fallback box is the whole image. Fallback: no "
+        "component covers 2% of the image, so the whole image is used. The validation IoUs threshold the raw mask at 0.5.",
+    )
 
 FINDINGS_TITLE = (
     "# Findings\n\n"
@@ -4062,13 +5111,41 @@ def g0_findings(result: dict) -> str:
     return " ".join(sentences)
 
 
+def g2_findings(result: dict) -> str:
+    """The G2 section of findings.md, every number taken from the frozen evidence in choices.json."""
+    ev = result["evidence"]
+
+    def f1(method: str, key: str) -> str:
+        record = ev["candidates"][method][key]
+        return f"{record['mean']:.3f} +- {record['std']:.3f}"
+
+    named = lambda m: f"{G2_METHOD_LABELS[m]} ({ev['candidates'][m]['experiment']})"  # noqa: E731
+    sentences = [
+        f"Gate G2 recommends {named(ev['method'])}, by the rule fixed in phase 06: highest mean validation mixed macro-F1; "
+        "if the top two are within one std, the higher validation field macro-F1; if that is also within one std, the simpler method.",
+        "Validation mixed / field macro-F1 (mean +- std over 5 splits): "
+        + "; ".join(f"{named(m)} {f1(m, 'val_mixed_macro_f1')} / {f1(m, 'val_field_macro_f1')}" for m in ev["ranking"]) + ".",
+    ]
+    if ev["cut"]:
+        sentences.append("Left out because of a cut line: " + ", ".join(f"Method {m}" for m in ev["cut"]) + ".")
+    sentences.append(f"Decided by: {ev['decided_by']}.")
+    for name, pair in ev["paired_differences"].items():
+        a, b = name.split("_minus_")
+        mixed, field = pair["val_mixed_macro_f1"], pair["val_field_macro_f1"]
+        sentences.append(f"Paired {a} - {b} on validation: mixed {mixed['mean']:+.3f} +- {mixed['std']:.3f} "
+                         f"({mixed['splits_ahead']} of {len(mixed['per_split'])} splits ahead), field {field['mean']:+.3f} +- {field['std']:.3f}.")
+    return " ".join(sentences)
+
+
 def summarize(data_root, out=print) -> None:
     """Regenerate every table and findings section that the runs available so far support. Experiments that are
     incomplete or do not match the registry are skipped with a warning."""
     data_root = Path(data_root)
     choices = load_choices(data_root)
-    results = load_experiments(data_root, ANALYSIS_EXPERIMENTS, choices)
-    for table in (table_input_mode(results), table_required(results), table_domains(results)):
+    results = load_experiments(data_root, (*ANALYSIS_EXPERIMENTS, *METHOD_EXPERIMENTS, SEGMENTER_EXPERIMENT), choices)
+    tables = (table_input_mode(results), table_required(results), table_domains(results), table_methods(results, choices),
+              table_segmenter(results.get(SEGMENTER_EXPERIMENT), data_root))
+    for table in tables:
         for path in write_table(data_root, table):
             out(f"summarize: wrote {path}")
     blocks = {}
@@ -4081,6 +5158,9 @@ def summarize(data_root, out=print) -> None:
         blocks["g0"] = auto_block("g0", "G0 input mode", g0_findings(g0))
     else:
         warn("findings.md: G0 section skipped, the three E0 experiments are not all complete")
+    recommended = choices.data.get("recommended")
+    if isinstance(recommended, dict) and recommended.get("evidence"):
+        blocks["g2"] = auto_block("g2", "G2 recommended method", g2_findings(recommended))
     path = results_dir(data_root) / "findings.md"
     existing = read_file_bytes(path).decode("utf-8") if path.is_file() else None
     write_text_atomic(path, update_findings_text(existing, blocks))
@@ -4117,6 +5197,8 @@ CHOICE_SOURCES = {
     "(`run --exp <ID> --sweep-lr`)",
     "composite_n_factor": "the composites per epoch of Method A (x the white training count), written by `choose-composites` "
     "after the split-0 comparison (`run --exp E3-A --sweep-composites`)",
+    "recommended": "the recommended method's experiment ID (plain G1 unified row, E3-A or E4-B), written and frozen by gate G2 "
+    "(`gate g2`, phase 06)",
 }
 
 
@@ -4151,10 +5233,11 @@ class Choices:
             "backbone": lambda v: v in BACKBONES,
             "lr": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 1,
             "composite_n_factor": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) in COMPOSITE_N_FACTORS,
+            "recommended": lambda v: v in EXPERIMENTS,
         }[key]
         if not valid(value):
             options = {"input_mode": INPUT_MODES, "backbone": BACKBONES, "lr": "a number in (0, 1)",
-                       "composite_n_factor": f"one of {COMPOSITE_N_FACTORS}"}[key]
+                       "composite_n_factor": f"one of {COMPOSITE_N_FACTORS}", "recommended": "an experiment ID"}[key]
             raise ChoicesError(f"{self.path}: invalid {label} = {value!r} (expected {options})")
         return float(value) if key in ("lr", "composite_n_factor") else value
 
@@ -4222,8 +5305,10 @@ _ROWS = (
     # Later phases: runnable only once their hooks exist.
     _row("E3-A", None, _U, _ALL3, use_composites=True, note="Method A (phase 05): composites as extra training samples"),
     _row("E3-A-WF", None, _W, _WF_TEST, use_composites=True, note="white + composites; field images are only backgrounds"),
-    _row("S-seg", "lraspp_mobilenet_v3_large", _U, (), kind="segmenter", note="leaf segmenter (phase 06)"),
-    _row("E4-B", None, _U, _ALL3, seg_crop=True, note="Method B (phase 06): segment, crop, classify"),
+    _row("S-seg", "lraspp_mobilenet_v3_large", _U, (), kind="segmenter", epochs=SEG_EPOCHS, lr=SEG_LR, weight_decay=SEG_WEIGHT_DECAY,
+         batch_size=SEG_BATCH_SIZE, stage1_epochs=0, warmup_epochs=0, label_smoothing=0.0, dropout=0.0, clip_norm=0.0, patience=0,
+         note="leaf segmenter (phase 06): LRASPP-MobileNetV3, composites + white pseudo-masks, 512x256"),
+    _row("E4-B", None, _U, _ALL3, seg_crop=True, note="Method B (phase 06): crop to the S-seg box (stored boxes.json), classify"),
     _row("X-domain-WW", None, _W, ("white",), note="best backbone, train white, test white"),
     _row("X-domain-FF", None, _F, ("field",), note="best backbone, train field, test field"),
     _row("X-gradcam", None, _U, (), kind="analysis", note="Grad-CAM shortcut analysis (phase 07), see the gradcam command"),
@@ -4246,7 +5331,7 @@ FIXED_ALIASES = {"E1-WW": "E1-WF"}
 #   X-domain-FF has no counterpart for ConvNeXt-T / Swin-T (there is no E2 F->F row), so it is not aliased.
 BACKBONE_ALIASES = {"X-domain-WW": {"resnet50": "E1-WF", "convnext_tiny": "E2-cnx-WF", "swin_t": "E2-swin-WF"}}
 NON_CLASSIFIER_MESSAGE = {
-    "segmenter": "is the leaf segmenter, trained by the segmentation pipeline of phase 06 (06-segmentation-method-b.md)",
+    "segmenter": "is the leaf segmenter, run with `run --exp S-seg` (it is not a classifier)",
     "analysis": "is a Grad-CAM analysis, produced by the `gradcam` command of phase 07 (07-analysis.md)",
 }
 
@@ -4304,6 +5389,8 @@ def resolve_experiment(
     if exp_id not in EXPERIMENTS:
         expand_experiment_ids(exp_id)  # raises with a helpful message
     base = EXPERIMENTS[exp_id]
+    if base.kind == "segmenter":  # needs no choice: the architecture, lr and recipe are fixed in the registry row
+        return ResolvedExperiment(base, exp_id, {}, ())
     if base.kind != "classifier":
         raise NotReadyError(f"{exp_id} {NON_CLASSIFIER_MESSAGE[base.kind]}; it cannot be run as a classifier")
     used: dict = {}
@@ -4372,7 +5459,8 @@ def pretrained_available(backbone: str, data_root) -> bool:
     previous = os.environ.get("TORCH_HOME")
     try:
         set_torch_home(data_root, create=False)
-        return weight_file_ok(weight_checkpoint_path(backbone_weights(backbone)))
+        weights = backbone_weights(backbone) if backbone in BACKBONE_SPECS else torchvision.models.get_weight(SEG_ARCHITECTURES[backbone])
+        return weight_file_ok(weight_checkpoint_path(weights))
     finally:
         if previous is None:
             os.environ.pop("TORCH_HOME", None)
@@ -4404,7 +5492,7 @@ def apply_run_flags(args, resolved: ResolvedExperiment, data_root) -> tuple[Reso
     limit = None
     if args.fast:
         changes.update(FAST_CONFIG)
-        changes["pretrained"] = pretrained_available(resolved.config.backbone, data_root)
+        changes["pretrained"] = pretrained_available(getattr(args, "seg_arch", None) or resolved.config.backbone, data_root)
         overrides["fast"] = True
         limit = FAST_IMAGES
     for flag, field_name in (("epochs", "epochs"), ("stage1_epochs", "stage1_epochs"), ("lr", "lr")):
@@ -4412,6 +5500,12 @@ def apply_run_flags(args, resolved: ResolvedExperiment, data_root) -> tuple[Reso
         if value is not None:
             changes[field_name] = value
             overrides[flag] = value
+    seg_arch = getattr(args, "seg_arch", None)
+    if seg_arch is not None:
+        if resolved.config.kind != "segmenter":
+            raise ExperimentError(f"--seg-arch only applies to the segmenter (S-seg), not {resolved.requested}")
+        changes["backbone"] = seg_arch
+        overrides["seg_arch"] = seg_arch
     for flag in ("batch_size", "grad_accum"):
         value = getattr(args, flag, None)
         if value is not None:
@@ -4438,12 +5532,13 @@ def run_command(args) -> int:
     splits = (0,) if sweep or sweep_composites else tuple(args.splits)
     if (sweep or sweep_composites) and tuple(args.splits) != DEFAULT_SPLITS and tuple(args.splits) != (0,):
         print("run: note - the sweeps always use split 0 only")
-    dev = bool(args.fast or args.lr is not None or args.epochs is not None or args.stage1_epochs is not None)
+    dev = bool(args.fast or args.lr is not None or args.epochs is not None or args.stage1_epochs is not None
+               or getattr(args, "seg_arch", None) is not None)
     options_base = dict(device=device, seed_offset=args.seed_offset, num_workers=args.num_workers, force=args.force,
-                        weights_root=data_root)
+                        weights_root=data_root, seg_dir=getattr(args, "seg_dir", None))
     weights_home = set_torch_home(data_root)
     print(f"run: device {device}, data root {data_root}, TORCH_HOME {weights_home}")
-    summary = []
+    summary, seg_summary = [], []
     for exp_id in ids:
         if sweep:
             variants = [(lr, None) for lr in SWEEP_LRS]  # (learning rate, composites factor) of each run
@@ -4465,14 +5560,24 @@ def run_command(args) -> int:
                   + ("  (sweep, never a result)" if sweep or sweep_composites else "  (scratch, never a result)" if dev else ""))
             options = RunOptions(limit=limit, overrides=tuple(overrides.items()), **options_base)
             for split_seed in splits:
-                result = run_split(resolved, split_seed, data_root=data_root, out_dir=split_dir(root / name, split_seed),
-                                   options=options, log=lambda text: print(text, flush=True))
+                runner = run_seg_split if cfg.kind == "segmenter" else run_split
+                result = runner(resolved, split_seed, data_root=data_root, out_dir=split_dir(root / name, split_seed),
+                                options=options, log=lambda text: print(text, flush=True))
                 metrics = result["metrics"]
-                summary.append((name, split_seed, result["status"], metrics["val"]["mixed"]["macro_f1"], metrics["test"]["mixed"]["macro_f1"]))
-    print("run: summary (macro-F1)")
-    print(f"  {'run':<22}{'split':>5}  {'status':<8}{'val mixed':>10}{'test mixed':>11}")
-    for name, split_seed, status, val_f1, test_f1 in summary:
-        print(f"  {name:<22}{split_seed:>5}  {status:<8}{fmt3(val_f1):>10}{fmt3(test_f1):>11}")
+                if cfg.kind == "segmenter":
+                    seg_summary.append((name, split_seed, result["status"], metrics["val_iou_composite"], metrics["val_iou_white"]))
+                else:
+                    summary.append((name, split_seed, result["status"], metrics["val"]["mixed"]["macro_f1"], metrics["test"]["mixed"]["macro_f1"]))
+    if summary:
+        print("run: summary (macro-F1)")
+        print(f"  {'run':<22}{'split':>5}  {'status':<8}{'val mixed':>10}{'test mixed':>11}")
+        for name, split_seed, status, val_f1, test_f1 in summary:
+            print(f"  {name:<22}{split_seed:>5}  {status:<8}{fmt3(val_f1):>10}{fmt3(test_f1):>11}")
+    if seg_summary:
+        print("run: summary (segmenter, IoU on validation images)")
+        print(f"  {'run':<22}{'split':>5}  {'status':<8}{'composites':>11}{'white':>8}")
+        for name, split_seed, status, composite_iou, white_iou in seg_summary:
+            print(f"  {name:<22}{split_seed:>5}  {status:<8}{fmt3(composite_iou):>11}{fmt3(white_iou):>8}")
     return EXIT_OK
 
 
@@ -4693,7 +5798,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
             run_dir = split_dir(runs_dir(data_root) / run_folder_name(exp_id, choices), args.split)
         if not Path(args.image).is_file():
             raise ExperimentError(f"image {args.image} does not exist")
-        predict_image(run_dir, args.image, resolve_device(args.device), data_root)
+        predict_image(run_dir, args.image, resolve_device(args.device), data_root, seg_dir=args.seg_dir)
     except (ExperimentError, DatasetError) as exc:
         print(f"predict: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
@@ -4701,7 +5806,7 @@ def cmd_predict(args: argparse.Namespace) -> int:
 
 def cmd_gate(args: argparse.Namespace) -> int:
     try:
-        run_gate(Path(args.data_root), args.gate)
+        run_gate(Path(args.data_root), args.gate, cut=tuple(args.cut or ()), force=args.force)
     except (ExperimentError, DatasetError) as exc:
         print(f"gate {args.gate}: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
@@ -4836,16 +5941,51 @@ def method_a_smoke(data_root, tmp_root, selected: list[Record], log=print) -> No
         f"tiny E3-A run with {metrics['composites']['n_per_epoch']} composites per epoch ({time.time() - started:.0f} s)")
 
 
+def method_b_smoke(data_root, tmp_root, selected: list[Record], log=print) -> None:
+    """Method B on the tiny smoke set (everything in ``tmp_root``, after `method_a_smoke` built the pseudo-masks): one tiny
+    segmenter epoch through `run_seg_split` (run folder, boxes of every image, no annotation touched), a tiny E4-B run that
+    crops by those boxes, and `predict` on the E4-B run (segmenter, crop, classifier)."""
+    started = time.time()
+    resolved = resolve_experiment("S-seg", Choices(choices_path(tmp_root), {}))
+    pretrained = pretrained_available(resolved.config.backbone, data_root)
+    resolved = replace(resolved, config=replace(resolved.config, pretrained=pretrained, **FAST_CONFIG))
+    seg_run = split_dir(runs_dir(tmp_root) / "S-seg", 0)
+    result = run_seg_split(resolved, 0, data_root=tmp_root, out_dir=seg_run,
+                           options=RunOptions(device="cpu", num_workers=0, limit=FAST_IMAGES, weights_root=Path(data_root)), log=lambda _: None)
+    for name in ("config.json", "env.json", "history.csv", "metrics.json", "best.pt", BOXES_FILENAME, SEG_METRICS_FILENAME):
+        smoke_require((seg_run / name).is_file(), f"segmenter run folder lacks {name}")
+    smoke_require(not list(seg_run.glob("*.tmp*")), "temporary files left behind (segmenter run)")
+    seg_metrics = read_seg_metrics(seg_run)
+    smoke_require("dev" not in seg_metrics and "eval" not in seg_metrics, "a training run must not touch the annotations")
+    boxes = load_boxes(tmp_root, 0)
+    smoke_require(set(boxes) == {r.filename for r in selected}, "boxes.json does not cover every cached image")
+    smoke_require(all(e["fallback"] or (e["box"][0] < e["box"][2] and e["box"][1] < e["box"][3]) for e in boxes.values()), "a box has no area")
+    smoke_require(run_seg_split(resolved, 0, data_root=tmp_root, out_dir=seg_run, options=RunOptions(device="cpu", num_workers=0, limit=FAST_IMAGES,
+                  weights_root=Path(data_root)), log=lambda _: None)["status"] == "skipped", "a finished segmenter split was not skipped")
+    b = resolve_experiment("E4-B", Choices(choices_path(tmp_root), {}), placeholders=True)
+    b = replace(b, config=replace(b.config, pretrained=False, **FAST_CONFIG))
+    run_dir = split_dir(runs_dir(tmp_root) / "E4-B_smoke", 0)
+    outcome = run_split(b, 0, data_root=tmp_root, out_dir=run_dir, options=RunOptions(device="cpu", num_workers=0), log=lambda _: None)
+    smoke_require(outcome["metrics"]["seg_boxes_sha256"] == result["metrics"]["boxes_sha256"], "E4-B did not record the boxes it used")
+    probs = predict_image(run_dir, Path(data_root) / selected[0].rel_path, "cpu", tmp_root, out=lambda text: None)
+    smoke_require(probs.shape == (NUM_CLASSES,) and abs(float(probs.sum()) - 1.0) < 1e-4, "predict (E4-B) returned bad probabilities")
+    fallbacks = result["metrics"]["fallbacks"]
+    log(f"smoke: OK - Method B: tiny segmenter epoch ({'pretrained' if pretrained else 'random'} weights, {result['metrics']['n_train_per_epoch']} samples), "
+        f"boxes for {len(boxes)} images ({sum(c['fallback'] for c in fallbacks.values())} fallbacks), tiny E4-B run cropping by them, "
+        f"predict = segment + crop + classify ({time.time() - started:.0f} s)")
+
+
 def smoke_extra_checks(data_root, tmp_root, selected: list[Record]) -> None:
     classifier_smoke(data_root, tmp_root, selected)
     method_a_smoke(data_root, tmp_root, selected)
+    method_b_smoke(data_root, tmp_root, selected)
 
 
 def cmd_smoke(args: argparse.Namespace) -> int:
     """Tiny end-to-end check: data root, image discovery, library imports, device, the data path (index, EXIF
     read, cache, dHash, splits, figures on ~20 images in a temp folder) and one tiny classifier experiment
-    through the real `run` code path on CPU, followed by `predict`, then Method A (pseudo-masks, composites, a tiny E3-A run);
-    everything in a temp folder."""
+    through the real `run` code path on CPU, followed by `predict`, then Method A (pseudo-masks, composites, a tiny E3-A run)
+    and Method B (a tiny segmenter epoch, boxes, a tiny E4-B run, `predict` with the segmenter); everything in a temp folder."""
     data_root = Path(args.data_root)
     print(f"smoke: data root = {data_root.resolve()}")
     if not data_root.is_dir():
@@ -4965,6 +6105,10 @@ def _configure_run(parser: argparse.ArgumentParser) -> None:
     dev.add_argument("--lr", type=float, default=None, metavar="LR", help="fine-tuning learning rate instead of choices.json")
     dev.add_argument("--epochs", type=int, default=None, metavar="N", help="fine-tuning epochs (default 30)")
     dev.add_argument("--stage1-epochs", type=int, default=None, metavar="N", help="linear-probe epochs (default 2)")
+    dev.add_argument("--seg-arch", default=None, choices=tuple(SEG_ARCHITECTURES), metavar="ARCH",
+                     help="S-seg only: try another segmenter architecture (the one swap 06 allows, decided on the dev annotations)")
+    parser.add_argument("--seg-dir", type=Path, default=None, metavar="DIR",
+                        help="Method B (E4-B): the S-seg runs folder whose split_<k>/boxes.json to use (default: _work/runs/S-seg)")
 
 
 def _configure_choose_lr(parser: argparse.ArgumentParser) -> None:
@@ -4972,7 +6116,12 @@ def _configure_choose_lr(parser: argparse.ArgumentParser) -> None:
 
 
 def _configure_gate(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("gate", choices=("g0", "g1"), help="g0: input mode (after E0), g1: backbone (after E1-U, E2-cnx-U, E2-swin-U)")
+    parser.add_argument("gate", choices=("g0", "g1", "g2"), help="g0: input mode (after E0), g1: backbone (after E1-U, E2-cnx-U, E2-swin-U), "
+                        "g2: recommended method (plain G1 model vs E3-A vs E4-B)")
+    parser.add_argument("--cut", action="append", choices=("A", "B"), default=None, metavar="METHOD",
+                        help="g2 only: leave Method A or B out because it was cut (cut lines of the README); repeat for both")
+    parser.add_argument("--force", action="store_true",
+                        help="g2 only: overwrite a recommendation that an earlier `gate g2` froze with a different outcome")
 
 
 def _configure_gradcam(parser: argparse.ArgumentParser) -> None:
@@ -4985,6 +6134,18 @@ def _configure_predict(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--split", type=int, default=0, metavar="K", help="split seed (default: 0)")
     parser.add_argument("--image", type=Path, required=True, metavar="PATH", help="image to classify")
     parser.add_argument("--run-dir", type=Path, default=None, metavar="DIR", help="use DIR/best.pt directly instead of the run folder of --exp")
+    parser.add_argument("--seg-dir", type=Path, default=None, metavar="DIR",
+                        help="Method B: the S-seg runs folder with the segmenter checkpoints (default: next to the experiment's folder)")
+
+
+def _configure_seg_eval(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--set", required=True, choices=SEG_EVAL_SETS,
+                        help="dev: the 10 development annotations (any time); eval: the 20 reporting annotations (needs --final)")
+    parser.add_argument("--splits", type=parse_splits, default=DEFAULT_SPLITS, metavar="LIST", help="comma-separated split seeds (default: 0,1,2,3,4)")
+    parser.add_argument("--final", action="store_true", help="--set eval only: confirm that these are the final segmenters (the eval images are looked at once)")
+    parser.add_argument("--again", action="store_true", help="--set eval only: measure a segmenter again that was already measured")
+    parser.add_argument("--seg-dir", type=Path, default=None, metavar="DIR", help="the S-seg runs folder to read (default: _work/runs/S-seg)")
+    parser.add_argument("--figure", type=Path, default=None, metavar="PATH", help="where to write the examples figure (default: see seg-eval in 40_segmentation.ipynb)")
 
 
 @dataclass(frozen=True)
@@ -5021,9 +6182,15 @@ COMMANDS = (
     ),
     Command(
         "gate",
-        "recompute decision gate g0 (input mode) or g1 (backbone) from the runs and record it in choices.json",
+        "recompute decision gate g0 (input mode), g1 (backbone) or g2 (recommended method) from the runs and record it in choices.json",
         cmd_gate,
         _configure_gate,
+    ),
+    Command(
+        "seg-eval",
+        "segmenter metrics on the annotated field images: --set dev (development) or --set eval --final (reporting, once)",
+        cmd_seg_eval,
+        _configure_seg_eval,
     ),
     Command("summarize", "aggregate all runs into tables and findings (figures follow in phase 07)", cmd_summarize),
     Command("gradcam", "Grad-CAM figures for one experiment and split", not_implemented("gradcam", "07"), _configure_gradcam),

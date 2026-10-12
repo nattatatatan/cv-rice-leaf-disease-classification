@@ -130,10 +130,14 @@ def test_lr_override_beats_choices(gs, choices_in):
     assert resolved.config.lr == 1e-4
 
 
-def test_non_classifier_rows_are_registered_but_not_runnable(gs, choices_in):
-    for exp_id, phase in (("S-seg", "phase 06"), ("X-gradcam", "phase 07")):
-        with pytest.raises(gs.NotReadyError, match=phase):
-            gs.resolve_experiment(exp_id, choices_in({}))
+def test_the_gradcam_row_is_registered_but_not_runnable(gs, choices_in):
+    with pytest.raises(gs.NotReadyError, match="phase 07"):
+        gs.resolve_experiment("X-gradcam", choices_in({}))
+
+
+def test_the_segmenter_row_needs_no_choice(gs, choices_in):
+    resolved = gs.resolve_experiment("S-seg", choices_in({}))
+    assert resolved.config == gs.EXPERIMENTS["S-seg"] and resolved.config.kind == "segmenter" and resolved.choices_used == {}
 
 
 def test_groups_and_unknown_ids(gs):

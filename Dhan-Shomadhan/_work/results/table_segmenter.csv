@@ -1,0 +1,14 @@
+Metric,Images per split,Mean +- std,Per split (0-4)
+"IoU, eval annotations",20,pending,pending
+"Dice, eval annotations",20,pending,pending
+"Salient-leaf hit rate (%), eval annotations",20,pending,pending
+"Crop box area (% of the image), eval annotations",20,pending,pending
+"IoU, eval annotations without the ambiguous ones",15,pending,pending
+"Dice, eval annotations without the ambiguous ones",15,pending,pending
+"Salient-leaf hit rate (%), eval annotations without the ambiguous ones",15,pending,pending
+"Crop box area (% of the image), eval annotations without the ambiguous ones",15,pending,pending
+Fallbacks on the eval annotations (%),20,pending,pending
+"Fallbacks, all cached white images (%)",-,pending,pending
+"Fallbacks, all cached field images (%)",-,pending,pending
+"IoU, white val pseudo-masks (checkpoint data)",-,pending,pending
+"IoU, val composites (checkpoint data)",-,pending,pending

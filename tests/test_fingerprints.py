@@ -81,3 +81,20 @@ def test_fingerprints_of_the_rows_that_are_not_run_yet_are_pinned(gs, exp_id):
     choices = gs.Choices(Path("choices.json"), {"input_mode": "rect", "lr": lrs})
     resolved = gs.resolve_experiment(exp_id, choices)
     assert gs.expected_fingerprint(resolved.config) == GOLDEN[exp_id]
+
+
+# Phase 06 rows (not run yet; pinned so that a later change to the segmenter recipe, the box post-processing or the
+# registry is a conscious decision: once batch5 has run, a changed pin means S-seg and E4-B must be retrained).
+# S-seg is pinned for a data root without white_rejects.txt (the reject list is part of its fingerprint).
+PHASE06_GOLDEN = {
+    "S-seg": "02fb65325a37c4ff1ddad8e5424ddef1c95dc3ecbfc12f8e18c37a94efd2ba9c",
+    "E4-B": "5dd53f380c4b87ba1fdde35a4ad18babe141066aaa3407c5c08a52e908ad0754",
+}
+
+
+def test_fingerprints_of_the_phase_06_rows_are_pinned(gs, tmp_path):
+    seg = gs.resolve_experiment("S-seg", committed_choices(gs)).config
+    assert gs.expected_fingerprint(seg, None, tmp_path) == PHASE06_GOLDEN["S-seg"]
+    choices = gs.Choices(Path("choices.json"), {"input_mode": "rect", "backbone": "resnet50", "lr": {"resnet50": 1e-4}})
+    b = gs.resolve_experiment("E4-B", choices).config
+    assert gs.expected_fingerprint(b) == PHASE06_GOLDEN["E4-B"]

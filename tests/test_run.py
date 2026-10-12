@@ -128,9 +128,8 @@ def test_real_run_needs_a_chosen_lr_and_says_how_to_get_one(gs, prepared, capsys
 
 def test_later_phase_rows_fail_cleanly(gs, prepared, capsys):
     assert run_cli(gs, prepared, "--exp", "E4-B", "--fast", "--splits", "0") == 1
-    assert "phase 06" in capsys.readouterr().err
-    assert run_cli(gs, prepared, "--exp", "S-seg", "--fast") == 1
-    assert "phase 06" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "boxes.json does not exist" in err and "run --exp S-seg --splits 0" in err
     assert run_cli(gs, prepared, "--exp", "nope") == 1
     assert "unknown experiment" in capsys.readouterr().err
 
