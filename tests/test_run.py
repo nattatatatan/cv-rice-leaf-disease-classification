@@ -127,8 +127,6 @@ def test_real_run_needs_a_chosen_lr_and_says_how_to_get_one(gs, prepared, capsys
 
 
 def test_later_phase_rows_fail_cleanly(gs, prepared, capsys):
-    assert run_cli(gs, prepared, "--exp", "E3-A", "--fast", "--splits", "0") == 1
-    assert "phase 05" in capsys.readouterr().err
     assert run_cli(gs, prepared, "--exp", "E4-B", "--fast", "--splits", "0") == 1
     assert "phase 06" in capsys.readouterr().err
     assert run_cli(gs, prepared, "--exp", "S-seg", "--fast") == 1

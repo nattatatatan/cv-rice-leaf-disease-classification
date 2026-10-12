@@ -2058,15 +2058,14 @@ def result_state(run_dir: Path, split_sha256: str, fingerprint: str) -> tuple[st
     return "fresh", "metrics.json is current"
 
 
-def make_extra_sources(cfg: ExperimentConfig, data_root, split_seed: int, seed: int) -> tuple:
-    """Extra training samples. PHASE 05 REPLACES THIS BODY: return (CompositeSource(split_seed, n_per_epoch, seed),)
-    when ``cfg.use_composites``."""
-    if cfg.use_composites:
-        raise NotReadyError(
-            f"{cfg.exp_id} trains with copy-paste composites (Method A), which need phase 05 "
-            "(CompositeSource, docs/instructions/05-copy-paste-method-a.md)"
-        )
-    return ()
+def make_extra_sources(cfg: ExperimentConfig, data_root, split_seed: int, seed: int, *, n_factor: float = 1.0,
+                       limit: int | None = None) -> tuple:
+    """Extra training samples: ``(CompositeSource,)`` for the Method A experiments (``cfg.use_composites``), else ``()``.
+    ``n_factor`` scales the composites per epoch (x the white training count, chosen by `choose-composites`);
+    ``limit`` caps them for --fast. See `build_composite_source` in 30_copy_paste.ipynb."""
+    if not cfg.use_composites:
+        return ()
+    return (build_composite_source(data_root, split_seed, seed, n_factor=n_factor, limit=limit),)
 
 
 def make_input_hook(cfg: ExperimentConfig, data_root, split_seed: int):
@@ -2129,7 +2128,8 @@ def run_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out
     data_root, out_dir = Path(data_root), Path(out_dir)
     cfg = resolved.config
     split = load_split(data_root, split_seed)  # verifies the sha256
-    fingerprint = config_fingerprint(cfg, {"seed_offset": options.seed_offset, "limit": options.limit})
+    fingerprint = config_fingerprint(cfg, {"seed_offset": options.seed_offset, "limit": options.limit,
+                                           **composite_fingerprint_extra(cfg, resolved.composite_factor)})
     state, reason = result_state(out_dir, split["sha256"], fingerprint)
     if state == "fresh" and not options.force:
         log(f"[{resolved.requested} split {split_seed}] skipped: {out_dir / 'metrics.json'} exists and is current (--force to retrain)")
@@ -2148,7 +2148,8 @@ def run_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out
         train_recs, val_recs, test_recs = (subsample_records(r, options.limit) for r in (train_recs, val_recs, test_recs))
     check_cache_complete(data_root, [*train_recs, *val_recs, *test_recs])
 
-    extra_sources = make_extra_sources(cfg, data_root, split_seed, seed)
+    extra_sources = make_extra_sources(cfg, data_root, split_seed, seed, n_factor=resolved.composite_factor or 1.0,
+                                       limit=options.limit)
     input_hook = make_input_hook(cfg, data_root, split_seed)
     train_tf = ImageTransform(cfg.input_mode, train=True, size_div=cfg.size_div)
     eval_tf = ImageTransform(cfg.input_mode, train=False, size_div=cfg.size_div)
@@ -2199,6 +2200,9 @@ def run_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root, out
         "oom_fallback": used_cfg.batch_size != cfg.batch_size, "fast": options.limit is not None,
         "overrides": dict(options.overrides), "val": val_metrics, "test": test_metrics,
     }
+    if cfg.use_composites:
+        metrics["composites"] = {"n_factor": resolved.composite_factor or 1.0, "n_per_epoch": len(extra_sources[0]),
+                                 "recipe": COMPOSITE_RECIPE, "scale": extra_sources[0].scale}
     write_json(out_dir / "metrics.json", metrics, indent=1)  # last: its presence marks the run as complete
     log(f"[{resolved.requested} split {split_seed}] done in {metrics['wall_time_s']:.0f}s  best epoch {outcome.best_epoch}  "
         f"val mixed F1 {fmt3(val_metrics['mixed']['macro_f1'])}  test F1 mixed {fmt3(test_metrics['mixed']['macro_f1'])} "
@@ -2532,6 +2536,546 @@ def prepare_pseudo_masks(data_root, records: list[Record], *, workers: int | Non
         out("              review the sheets and list the failures in _work/masks/white_rejects.txt (T5.1)")
     return {"built": stats.built, "reused": stats.reused, "rejects": rejects, "sheets": sheets}
 
+COMPOSITE_ROTATION_DEG = 25.0  # step 3: leaf rotation, uniform in +-this
+COMPOSITE_LEAF_LENGTH = (0.55, 0.95)  # step 3: leaf length as a fraction of the background height
+COMPOSITE_CENTER = (0.25, 0.75)  # step 3: the leaf centre lies in the middle 50% of the frame (both axes)
+COMPOSITE_BLUR_SIGMA = (0.0, 4.0)  # step 4: background defocus (px at 1280 px scale)
+COMPOSITE_L_BLEND = (0.5, 0.7)  # step 5: how far the leaf's mean L moves toward the background's (spec: 0.3-0.7, upper half used)
+COMPOSITE_WB_GAIN = 0.05  # step 5: per-channel leaf gain in 1 +- this
+COMPOSITE_FEATHER_SIGMA = (1.5, 3.0)  # step 6: alpha blur (px)
+COMPOSITE_CHROMA_EPS = 15.0  # step 5: damping of the chroma rescaling that follows a lightness change
+COMPOSITE_CHROMA_LIMITS = (0.8, 2.0)  # step 5: the chroma factor stays within these bounds
+COMPOSITE_EDGE_ERODE = 2  # step 2: px; the pseudo-mask edge still holds paper-coloured pixels
+COMPOSITE_CUT_FADE = 0.12  # step 2: taper length at a cut end, as a fraction of the leaf length
+COMPOSITE_SHADOW_P = 0.3  # step 7
+COMPOSITE_SHADOW_OFFSET = (6.0, 16.0)  # step 7: px
+COMPOSITE_SHADOW_SIGMA = (4.0, 9.0)  # step 7: px
+COMPOSITE_SHADOW_STRENGTH = (0.25, 0.5)  # step 7
+COMPOSITE_TRAIN_SCALE = 0.5  # CompositeSource composes at this fraction of the 1280 px cache (the network sees 448x224 anyway)
+COMPOSITE_RECIPE_VERSION = 1
+COMPOSITE_CONSTANTS = {
+    "version": COMPOSITE_RECIPE_VERSION, "masks": MASK_RECIPE, "train_scale": COMPOSITE_TRAIN_SCALE, "rotation": COMPOSITE_ROTATION_DEG,
+    "length": COMPOSITE_LEAF_LENGTH, "center": COMPOSITE_CENTER, "blur": COMPOSITE_BLUR_SIGMA,
+    "l_blend": COMPOSITE_L_BLEND, "wb_gain": COMPOSITE_WB_GAIN, "feather": COMPOSITE_FEATHER_SIGMA,
+    "chroma": (COMPOSITE_CHROMA_EPS, COMPOSITE_CHROMA_LIMITS), "erode": COMPOSITE_EDGE_ERODE, "cut_fade": COMPOSITE_CUT_FADE, "shadow_p": COMPOSITE_SHADOW_P,
+    "shadow_offset": COMPOSITE_SHADOW_OFFSET, "shadow_sigma": COMPOSITE_SHADOW_SIGMA,
+    "shadow_strength": COMPOSITE_SHADOW_STRENGTH,
+}
+COMPOSITE_RECIPE = hashlib.sha1(json.dumps(COMPOSITE_CONSTANTS, sort_keys=True).encode()).hexdigest()[:12]
+
+
+@dataclass(frozen=True)
+class CompositeParams:
+    """Every random choice of one composite (drawn up front, in this order, from one generator)."""
+
+    angle: float
+    length_fraction: float
+    center: tuple[float, float]  # (x, y) as fractions of the background width and height
+    blur_sigma: float
+    l_blend: float
+    gains: tuple[float, float, float]
+    feather_sigma: float
+    shadow: bool
+    shadow_angle: float
+    shadow_offset: float
+    shadow_sigma: float
+    shadow_strength: float
+
+
+def draw_composite_params(rng: np.random.Generator) -> CompositeParams:
+    u = rng.uniform
+    return CompositeParams(
+        angle=float(u(-COMPOSITE_ROTATION_DEG, COMPOSITE_ROTATION_DEG)),
+        length_fraction=float(u(*COMPOSITE_LEAF_LENGTH)),
+        center=(float(u(*COMPOSITE_CENTER)), float(u(*COMPOSITE_CENTER))),
+        blur_sigma=float(u(*COMPOSITE_BLUR_SIGMA)),
+        l_blend=float(u(*COMPOSITE_L_BLEND)),
+        gains=tuple(float(g) for g in u(1 - COMPOSITE_WB_GAIN, 1 + COMPOSITE_WB_GAIN, size=3)),
+        feather_sigma=float(u(*COMPOSITE_FEATHER_SIGMA)),
+        shadow=bool(rng.random() < COMPOSITE_SHADOW_P),
+        shadow_angle=float(u(0.0, 2 * np.pi)),
+        shadow_offset=float(u(*COMPOSITE_SHADOW_OFFSET)),
+        shadow_sigma=float(u(*COMPOSITE_SHADOW_SIGMA)),
+        shadow_strength=float(u(*COMPOSITE_SHADOW_STRENGTH)),
+    )
+
+
+def taper_cut_ends(alpha: np.ndarray, touches: tuple[bool, bool, bool, bool], fade: float) -> np.ndarray:
+    """Taper the leaf to a point over ``fade`` px at every side of the crop that touched the border of the white photo
+    (top, bottom, left, right), so that a leaf the photo cut off does not end in a straight edge inside the field
+    image. A pixel survives where its distance to the paper is at least ``(1 - ramp)`` times the half-width of the
+    leaf in that row (column), with ``ramp`` going 1 -> 0 over ``fade`` px toward the border."""
+    if fade < 1.0 or not any(touches):
+        return alpha
+    height, width = alpha.shape
+    distance = cv2.distanceTransform((alpha > 0.5).astype(np.uint8), cv2.DIST_L2, 3)
+    keep = np.ones((height, width), bool)
+    top, bottom, left, right = touches
+    for sides, count, along_rows in (((top, bottom), height, True), ((left, right), width, False)):
+        if not any(sides):
+            continue
+        index = np.arange(count, dtype=np.float32)
+        ramp = np.ones(count, np.float32)
+        if sides[0]:
+            ramp = np.minimum(ramp, (index + 0.5) / fade)
+        if sides[1]:
+            ramp = np.minimum(ramp, (count - index - 0.5) / fade)
+        ramp = np.clip(ramp, 0.0, 1.0)
+        half_width = distance.max(axis=1 if along_rows else 0)
+        threshold = (1.0 - ramp) * half_width
+        keep &= distance >= (threshold[:, None] if along_rows else threshold[None, :])
+    return alpha * keep
+
+
+def rotate_patch(rgb: np.ndarray, alpha: np.ndarray, angle: float) -> tuple[np.ndarray, np.ndarray]:
+    """Rotate a leaf patch (uint8 RGB and float alpha) by ``angle`` degrees on a canvas that is large enough to hold it."""
+    height, width = alpha.shape
+    radians = np.deg2rad(abs(angle))
+    new_w = int(np.ceil(width * np.cos(radians) + height * np.sin(radians))) + 2
+    new_h = int(np.ceil(width * np.sin(radians) + height * np.cos(radians))) + 2
+    matrix = cv2.getRotationMatrix2D((width / 2, height / 2), angle, 1.0)
+    matrix[0, 2] += new_w / 2 - width / 2
+    matrix[1, 2] += new_h / 2 - height / 2
+    rotated_rgb = cv2.warpAffine(rgb, matrix, (new_w, new_h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    rotated_alpha = cv2.warpAffine(alpha, matrix, (new_w, new_h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    return rotated_rgb, rotated_alpha
+
+
+def composite_arrays(leaf_rgb: np.ndarray, leaf_mask: np.ndarray, bg_rgb: np.ndarray, rng: np.random.Generator,
+                     params: CompositeParams | None = None, *, scale: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
+    """Steps 2-8 of the section above. ``leaf_rgb`` / ``leaf_mask`` are a white-background image and its pseudo-mask
+    (uint8 0/255), ``bg_rgb`` the field image. Returns (composite uint8 RGB, mask uint8 0/255), both of the
+    background's size. ``params`` (default: drawn from ``rng``) exists so that tests can fix single choices.
+
+    ``scale`` is the resolution of the three inputs relative to the 1280 px cache (1.0 = cache resolution, 0.5 =
+    half): every constant in pixels (blur, erode, feather, shadow) is multiplied by it, so a half-resolution
+    composite is the same picture at a quarter of the cost. `CompositeSource` uses it for training."""
+    p = params or draw_composite_params(rng)
+    p = replace(p, blur_sigma=p.blur_sigma * scale, feather_sigma=p.feather_sigma * scale,
+                shadow_offset=p.shadow_offset * scale, shadow_sigma=p.shadow_sigma * scale)
+    frame_h, frame_w = bg_rgb.shape[:2]
+    # 2: crop the leaf, pull the alpha edge inside the leaf, taper the ends the white photo cut off
+    x, y, w, h = cv2.boundingRect((leaf_mask > 0).astype(np.uint8))
+    if w == 0 or h == 0:
+        raise DatasetError("the leaf mask is empty")
+    erode = max(1, round(COMPOSITE_EDGE_ERODE * scale)) if COMPOSITE_EDGE_ERODE else 0
+    eroded = cv2.erode(leaf_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erode + 1, 2 * erode + 1))) if erode else leaf_mask
+    alpha = (eroded[y : y + h, x : x + w] > 0).astype(np.float32)
+    rgb = np.ascontiguousarray(leaf_rgb[y : y + h, x : x + w])
+    touches = (y == 0, y + h == leaf_mask.shape[0], x == 0, x + w == leaf_mask.shape[1])
+    alpha = taper_cut_ends(alpha, touches, COMPOSITE_CUT_FADE * max(h, w))
+    # 3: scale to the target length, rotate, place
+    fit = p.length_fraction * frame_h / max(h, w)
+    new_w, new_h = max(1, round(w * fit)), max(1, round(h * fit))
+    interpolation = cv2.INTER_AREA if fit < 1.0 else cv2.INTER_LINEAR
+    rgb = cv2.resize(rgb, (new_w, new_h), interpolation=interpolation)
+    alpha = cv2.resize(alpha, (new_w, new_h), interpolation=interpolation)
+    rgb, alpha = rotate_patch(rgb, alpha, p.angle)
+    patch_h, patch_w = alpha.shape
+    x0 = round(p.center[0] * frame_w - patch_w / 2)
+    y0 = round(p.center[1] * frame_h - patch_h / 2)
+    # 4: defocused background (the whole frame)
+    bg = cv2.GaussianBlur(bg_rgb, (0, 0), p.blur_sigma) if p.blur_sigma > 0.1 else bg_rgb
+    # the region that can change: the patch plus room for the feather and the shadow
+    margin = int(np.ceil(3 * max(p.feather_sigma, p.shadow_sigma if p.shadow else 0) + (p.shadow_offset if p.shadow else 0))) + 1
+    rx0, ry0 = max(0, x0 - margin), max(0, y0 - margin)
+    rx1, ry1 = min(frame_w, x0 + patch_w + margin), min(frame_h, y0 + patch_h + margin)
+    if rx1 <= rx0 or ry1 <= ry0:
+        raise DatasetError("the leaf was placed outside the frame")
+    roi_h, roi_w = ry1 - ry0, rx1 - rx0
+    alpha_roi = np.zeros((roi_h, roi_w), np.float32)
+    leaf_roi = np.zeros((roi_h, roi_w, 3), np.uint8)
+    px0, py0 = max(rx0, x0), max(ry0, y0)  # overlap of the patch with the region, in frame coordinates
+    px1, py1 = min(rx1, x0 + patch_w), min(ry1, y0 + patch_h)
+    if px1 <= px0 or py1 <= py0:
+        raise DatasetError("the leaf was placed outside the frame")
+    alpha_roi[py0 - ry0 : py1 - ry0, px0 - rx0 : px1 - rx0] = alpha[py0 - y0 : py1 - y0, px0 - x0 : px1 - x0]
+    leaf_roi[py0 - ry0 : py1 - ry0, px0 - rx0 : px1 - rx0] = rgb[py0 - y0 : py1 - y0, px0 - x0 : px1 - x0]
+    # 6: feather
+    alpha_roi = np.clip(cv2.GaussianBlur(alpha_roi, (0, 0), p.feather_sigma), 0.0, 1.0)
+    bg_roi = bg[ry0:ry1, rx0:rx1].astype(np.float32) / 255.0
+    # 5: harmonise the leaf's brightness with the background around it, then the white-balance gain
+    leaf_f = np.clip(leaf_roi.astype(np.float32) / 255.0 * np.asarray(p.gains, np.float32), 0.0, 1.0)
+    leaf_lab = cv2.cvtColor(leaf_f, cv2.COLOR_RGB2LAB)
+    weight = alpha_roi > 0.5
+    if weight.any():
+        leaf_l = float(leaf_lab[..., 0][weight].mean())
+        bg_l = float(cv2.cvtColor(bg_roi, cv2.COLOR_RGB2LAB)[..., 0].mean())
+        lightness = np.clip(leaf_lab[..., 0] + p.l_blend * (bg_l - leaf_l), 0.0, 100.0)
+        # chroma follows lightness (a brighter leaf keeps its saturation instead of turning grey); the hue is unchanged
+        chroma_scale = np.clip((lightness + COMPOSITE_CHROMA_EPS) / (leaf_lab[..., 0] + COMPOSITE_CHROMA_EPS), *COMPOSITE_CHROMA_LIMITS)
+        leaf_lab[..., 1:] *= chroma_scale[..., None]
+        leaf_lab[..., 0] = lightness
+        leaf_f = np.clip(cv2.cvtColor(leaf_lab, cv2.COLOR_LAB2RGB), 0.0, 1.0)
+    # 7: soft shadow under the leaf
+    if p.shadow:
+        dx, dy = p.shadow_offset * np.cos(p.shadow_angle), p.shadow_offset * np.sin(p.shadow_angle)
+        shifted = cv2.warpAffine(alpha_roi, np.float32([[1, 0, dx], [0, 1, dy]]), (roi_w, roi_h), borderValue=0)
+        shadow = cv2.GaussianBlur(shifted, (0, 0), p.shadow_sigma) * p.shadow_strength
+        bg_roi = bg_roi * (1.0 - shadow * (1.0 - alpha_roi))[..., None]
+    # 6 (blend) and 8: composite and mask
+    blended = bg_roi * (1.0 - alpha_roi[..., None]) + leaf_f * alpha_roi[..., None]
+    out = bg.copy()
+    out[ry0:ry1, rx0:rx1] = np.clip(blended * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    mask = np.zeros((frame_h, frame_w), np.uint8)
+    mask[ry0:ry1, rx0:rx1] = (alpha_roi > 0.5).astype(np.uint8) * 255
+    return out, mask
+
+class CompositeLeakError(DatasetError):
+    """A composite source that is not allowed: a val/test image, a wrong domain or class, or an annotated image."""
+
+
+def annotation_exclusion_set(records: list[Record]) -> set[str]:
+    """The field images that never serve as a background: the 30 annotated images of T6.1 and their near-duplicate
+    partners. Empty when the dataset has too few field images to select from (tiny test trees)."""
+    try:
+        selection = annotation_selection(records)
+    except DatasetError:
+        return set()
+    return annotation_exclusions(selection, globals().get("DUPLICATE_GROUPS", []))
+
+
+class CompositePool:
+    """The images a split may use to build composites (step 1): leaves from the white **train** part (not rejected, with
+    a background of their class available) and backgrounds from the field **train** part (same class as the leaf, not
+    annotated). Every name is checked against the split, here and again at every sample."""
+
+    def __init__(self, data_root, split_seed: int, records: list[Record] | None = None, rejects=None, exclusions=None):
+        self.data_root = Path(data_root)
+        records = load_index(data_root) if records is None else records
+        split = load_split(data_root, split_seed)
+        self.split_seed = split_seed
+        self.train = frozenset(split["train"])
+        self.held_out = frozenset(split["val"]) | frozenset(split["test"])
+        self.rejects = frozenset(load_white_rejects(data_root, records) if rejects is None else rejects)
+        self.exclusions = frozenset(annotation_exclusion_set(records) if exclusions is None else exclusions)
+        self.white_train = [r for r in records if r.domain == "white" and r.filename in self.train]
+        self.backgrounds: dict[int, list[Record]] = {}
+        for r in records:
+            if r.domain == "field" and r.filename in self.train and r.filename not in self.exclusions:
+                self.backgrounds.setdefault(r.cls_idx, []).append(r)
+        self.leaves = [r for r in self.white_train if r.filename not in self.rejects and self.backgrounds.get(r.cls_idx)]
+        for r in (*self.leaves, *(b for group in self.backgrounds.values() for b in group)):
+            self.check_name(r)
+
+    def check_name(self, record: Record) -> None:
+        if record.filename in self.held_out or record.filename not in self.train:
+            raise CompositeLeakError(f"{record.filename} is not in the training part of split {self.split_seed}: "
+                                     "no validation or test image may enter a composite")
+
+    def check_pair(self, leaf: Record, background: Record) -> None:
+        self.check_name(leaf)
+        self.check_name(background)
+        if leaf.domain != "white" or background.domain != "field":
+            raise CompositeLeakError(f"a composite needs a white leaf on a field background, got {leaf.domain} on {background.domain}")
+        if leaf.cls_idx != background.cls_idx:
+            raise CompositeLeakError(f"{leaf.filename} ({leaf.cls}) cannot go on {background.filename} ({background.cls}): classes differ")
+        if leaf.filename in self.rejects or background.filename in self.exclusions:
+            raise CompositeLeakError(f"{leaf.filename} / {background.filename} is rejected or annotated")
+
+    def sample_background(self, leaf: Record, rng: np.random.Generator) -> Record:
+        group = self.backgrounds[leaf.cls_idx]
+        return group[int(rng.integers(len(group)))]
+
+    def sample(self, rng: np.random.Generator, cls_idx: int | None = None) -> tuple[Record, Record]:
+        """A random (leaf, background) pair of one class (any class when ``cls_idx`` is None), checked."""
+        pool = self.leaves if cls_idx is None else [r for r in self.leaves if r.cls_idx == cls_idx]
+        if not pool:
+            raise ExperimentError(f"no white leaves with a field background to build composites from (class {cls_idx})")
+        leaf = pool[int(rng.integers(len(pool)))]
+        background = self.sample_background(leaf, rng)
+        self.check_pair(leaf, background)
+        return leaf, background
+
+
+def load_leaf(data_root, record: Record, scale: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
+    """(white-background image, pseudo-mask uint8 0/255) at ``scale`` times the cache resolution."""
+    rgb, mask = read_cached_rgb(data_root, record.filename), read_white_mask(data_root, record.filename)
+    if scale != 1.0:
+        rgb = cv2.resize(rgb, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        mask = ((cv2.resize(mask, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) > 127) * 255).astype(np.uint8)
+    return rgb, mask
+
+
+def load_background(data_root, record: Record, scale: float = 1.0) -> np.ndarray:
+    rgb = read_cached_rgb(data_root, record.filename)
+    return rgb if scale == 1.0 else cv2.resize(rgb, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+
+def make_composite(leaf_rec: Record, bg_rec: Record, rng: np.random.Generator, *, data_root,
+                   scale: float = 1.0) -> tuple[np.ndarray, np.ndarray, int]:
+    """T5.2: (composite image, mask, label). ``leaf_rec`` is a white image (its pseudo-mask is read from
+    ``_work/masks/white``), ``bg_rec`` a field image of the same class, which is also the label's class index.
+    The image has the background's size at ``scale`` x the cache resolution; the mask is uint8 0/255
+    (``alpha > 0.5``). All randomness comes from ``rng``. Use ``CompositePool.sample`` to choose the records: it
+    guarantees train-only, same-class, non-annotated sources."""
+    if leaf_rec.cls_idx != bg_rec.cls_idx:
+        raise CompositeLeakError(f"{leaf_rec.filename} ({leaf_rec.cls}) and {bg_rec.filename} ({bg_rec.cls}) differ in class")
+    leaf_rgb, leaf_mask = load_leaf(data_root, leaf_rec, scale)
+    image, mask = composite_arrays(leaf_rgb, leaf_mask, load_background(data_root, bg_rec, scale), rng, scale=scale)
+    return image, mask, bg_rec.cls_idx
+
+
+class CompositeSource:
+    """Method A's extra training samples (T5.3), plugged into `LeafDataset(extra_sources=...)`.
+
+    ``source[i]`` for ``0 <= i < n_per_epoch`` is composite number ``i`` of an epoch; ``load(i, epoch)`` returns
+    ``(uint8 RGB, class index, name)`` like the other sources, and the dataset passes it through the same training
+    augmentation as a real image. Every epoch is new: the random generator of epoch ``e`` is ``default_rng(seed *
+    1000 + e)``; it permutes the accepted white leaves (so each leaf is used about once per epoch when
+    ``n_per_epoch`` is the white-train count, a subset when it is smaller), and sample ``i`` draws its background and
+    all composite choices from ``default_rng([seed * 1000 + e, i])``. A sample is therefore a function of
+    ``(seed, epoch, i)`` only, whatever worker process makes it.
+
+    Composites are made at ``scale`` x the cache resolution (default `COMPOSITE_TRAIN_SCALE`): the network sees
+    448x224, so half the cache resolution costs nothing in the picture and a quarter in compute. Decoded sources are
+    kept in a per-process cache of at most ``cache_mb`` megabytes (reading three images would otherwise cost more than
+    the composition itself)."""
+
+    def __init__(self, data_root, split_seed: int, n_per_epoch: int | None = None, seed: int = 0, *,
+                 scale: float = COMPOSITE_TRAIN_SCALE, pool: CompositePool | None = None, cache_mb: float = 900.0):
+        self.data_root = Path(data_root)
+        self.pool = pool if pool is not None else CompositePool(data_root, split_seed)
+        if not self.pool.leaves:
+            raise ExperimentError(f"split {split_seed} has no white training leaf with a same-class field background for composites")
+        self.split_seed, self.seed, self.scale = split_seed, int(seed), scale
+        self.n_per_epoch = len(self.pool.white_train) if n_per_epoch is None else int(n_per_epoch)
+        if self.n_per_epoch < 1:
+            raise ExperimentError("n_per_epoch must be at least 1")
+        self.cache_bytes = int(cache_mb * 1e6)
+        self._leaf_cache: dict = {}
+        self._bg_cache: dict = {}
+        self._cached = 0
+
+    def __len__(self) -> int:
+        return self.n_per_epoch
+
+    def __getstate__(self) -> dict:
+        state = dict(self.__dict__)
+        state.update(_leaf_cache={}, _bg_cache={}, _cached=0)  # workers start with an empty cache
+        return state
+
+    def epoch_seed(self, epoch: int) -> int:
+        return self.seed * 1000 + int(epoch)
+
+    def pair(self, index: int, epoch: int) -> tuple[Record, Record]:
+        """The (leaf, background) of composite ``index`` in ``epoch``; checked against the split."""
+        order = np.random.default_rng(self.epoch_seed(epoch)).permutation(len(self.pool.leaves))
+        leaf = self.pool.leaves[int(order[index % len(order)])]
+        background = self.pool.sample_background(leaf, np.random.default_rng([self.epoch_seed(epoch), index, 1]))
+        self.pool.check_pair(leaf, background)
+        return leaf, background
+
+    def _remember(self, cache: dict, key: str, value, nbytes: int):
+        if self._cached + nbytes <= self.cache_bytes:
+            cache[key] = value
+            self._cached += nbytes
+        return value
+
+    def _leaf(self, record: Record):
+        hit = self._leaf_cache.get(record.filename)
+        if hit is None:
+            rgb, mask = load_leaf(self.data_root, record, self.scale)
+            hit = self._remember(self._leaf_cache, record.filename, (rgb, mask), rgb.nbytes + mask.nbytes)
+        return hit
+
+    def _background(self, record: Record):
+        hit = self._bg_cache.get(record.filename)
+        if hit is None:
+            rgb = load_background(self.data_root, record, self.scale)
+            hit = self._remember(self._bg_cache, record.filename, rgb, rgb.nbytes)
+        return hit
+
+    def load(self, index: int, epoch: int = 0) -> tuple[np.ndarray, int, str]:
+        if not 0 <= index < self.n_per_epoch:
+            raise IndexError(index)
+        leaf, background = self.pair(index, epoch)
+        rng = np.random.default_rng([self.epoch_seed(epoch), index])
+        leaf_rgb, leaf_mask = self._leaf(leaf)
+        image, _ = composite_arrays(leaf_rgb, leaf_mask, self._background(background), rng, scale=self.scale)
+        return image, background.cls_idx, f"composite:{leaf.filename}+{background.filename}"
+
+    def __getitem__(self, index: int):
+        return self.load(index)
+
+COMPOSITE_FIGURE_SEED = 7
+EXAMPLES_PER_CLASS = 2
+REALISM_PER_CLASS = 4  # composites per class in the realism check; the same number of real images
+REALISM_ROWS, REALISM_COLUMNS = 5, 8
+
+
+def composite_examples(pool: CompositePool, seed: int = COMPOSITE_FIGURE_SEED, per_class: int = EXAMPLES_PER_CLASS) -> list[dict]:
+    """``per_class`` composites of every class: dicts with the two records, the composite and its source images."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for cls_idx in range(NUM_CLASSES):
+        used: set[str] = set()
+        for _ in range(per_class):
+            for _attempt in range(20):  # two different leaves per class, when the pool has them
+                leaf, background = pool.sample(rng, cls_idx)
+                if leaf.filename not in used:
+                    break
+            used.add(leaf.filename)
+            image, mask, _ = make_composite(leaf, background, rng, data_root=pool.data_root)
+            rows.append({"cls_idx": cls_idx, "leaf": leaf, "background": background, "image": image, "mask": mask})
+    return rows
+
+
+def save_composites_examples(data_root, split_seed: int = 0, path: Path | None = None, pool: CompositePool | None = None) -> Path:
+    """`composites_examples.png`: rows = classes, 2 examples per row, each leaf | background | composite."""
+    plt = pyplot()
+    pool = pool or CompositePool(data_root, split_seed)
+    path = path or figures_dir(data_root) / "composites_examples.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    examples = composite_examples(pool)
+    headers = ("White leaf", "Field background", "Composite")
+    with plt.rc_context({"font.size": 7}):
+        fig = plt.figure(figsize=(5.8, 1.78 * NUM_CLASSES + 0.3))
+        grid = fig.add_gridspec(NUM_CLASSES, 3 * EXAMPLES_PER_CLASS, left=0.055, right=0.998, top=0.965, bottom=0.014,
+                                wspace=0.04, hspace=0.12)
+        for n, example in enumerate(examples):
+            row, pair = divmod(n, EXAMPLES_PER_CLASS)
+            panels = (
+                (example["leaf"].filename, read_cached_rgb(data_root, example["leaf"].filename)),
+                (example["background"].filename, read_cached_rgb(data_root, example["background"].filename)),
+                ("", example["image"]),
+            )
+            for k, (caption, rgb) in enumerate(panels):
+                column = 3 * pair + k
+                ax = fig.add_subplot(grid[row, column])
+                ax.imshow(thumbnail(rgb, 560))
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+                if caption:
+                    ax.set_xlabel(caption, fontsize=5.5, labelpad=1.5)
+                if row == 0:
+                    ax.set_title(headers[k], fontsize=6.5, fontweight="bold", pad=2)
+                if column == 0:
+                    ax.set_ylabel(CLASS_NAMES[row], fontsize=7.5, fontweight="bold", labelpad=3)
+        fig.savefig(path, dpi=FIGURE_DPI)
+        plt.close(fig)
+    return path
+
+
+def realism_items(pool: CompositePool, seed: int = COMPOSITE_FIGURE_SEED) -> list[dict]:
+    """The 40 shuffled items of the realism check: ``REALISM_PER_CLASS`` composites and as many real field training
+    images (never a background used by one of the composites) per class, in a random order."""
+    rng = np.random.default_rng([seed, 99])
+    items: list[dict] = []
+    used: set[str] = set()
+    for cls_idx in range(NUM_CLASSES):
+        for _ in range(REALISM_PER_CLASS):
+            leaf, background = pool.sample(rng, cls_idx)
+            image, _, _ = make_composite(leaf, background, rng, data_root=pool.data_root)
+            used.add(background.filename)
+            items.append({"kind": "composite", "cls": CLASS_NAMES[cls_idx], "image": image,
+                          "leaf": leaf.filename, "background": background.filename})
+    for cls_idx in range(NUM_CLASSES):
+        free = [r for r in pool.backgrounds.get(cls_idx, []) if r.filename not in used]
+        for k in rng.permutation(len(free))[:REALISM_PER_CLASS]:
+            items.append({"kind": "real", "cls": CLASS_NAMES[cls_idx], "image": read_cached_rgb(pool.data_root, free[int(k)].filename),
+                          "filename": free[int(k)].filename})
+    return [items[int(i)] for i in rng.permutation(len(items))]
+
+
+def realism_key(items: list[dict], split_seed: int, seed: int) -> dict:
+    rows = []
+    for position, item in enumerate(items, start=1):
+        row, col = divmod(position - 1, REALISM_COLUMNS)
+        entry = {"position": position, "row": row + 1, "column": col + 1, "kind": item["kind"], "class": item["cls"]}
+        entry.update({k: item[k] for k in ("leaf", "background", "filename") if k in item})
+        rows.append(entry)
+    return {
+        "note": "ANSWER KEY of composites_realism_check.png. Do not open it before you have written down your guesses.",
+        "grid": f"{REALISM_ROWS} rows x {REALISM_COLUMNS} columns, position = (row - 1) * {REALISM_COLUMNS} + column",
+        "split": split_seed, "seed": seed, "composites": sum(i["kind"] == "composite" for i in items),
+        "real": sum(i["kind"] == "real" for i in items), "items": rows,
+    }
+
+
+def save_realism_check(data_root, split_seed: int = 0, path: Path | None = None, key_path: Path | None = None,
+                       pool: CompositePool | None = None, seed: int = COMPOSITE_FIGURE_SEED) -> tuple[Path, Path]:
+    """`composites_realism_check.png` (40 numbered, unlabelled images) and its answer key as JSON."""
+    plt = pyplot()
+    pool = pool or CompositePool(data_root, split_seed)
+    path = path or figures_dir(data_root) / "composites_realism_check.png"
+    key_path = key_path or results_dir(data_root) / "composites_realism_key.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    items = realism_items(pool, seed)
+    with plt.rc_context({"font.size": 6}):
+        fig = plt.figure(figsize=(6.4, 8.35))
+        grid = fig.add_gridspec(REALISM_ROWS, REALISM_COLUMNS, left=0.004, right=0.996, top=0.997, bottom=0.003, wspace=0.03, hspace=0.02)
+        for n, item in enumerate(items):
+            ax = fig.add_subplot(grid[n // REALISM_COLUMNS, n % REALISM_COLUMNS])
+            ax.imshow(thumbnail(item["image"], 560))
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            ax.text(0.05, 0.985, str(n + 1), transform=ax.transAxes, ha="left", va="top", fontsize=7, fontweight="bold",
+                    color="white", bbox={"boxstyle": "round,pad=0.18", "fc": "black", "ec": "none", "alpha": 0.75})
+        fig.savefig(path, dpi=FIGURE_DPI)
+        plt.close(fig)
+    write_json(key_path, realism_key(items, split_seed, seed), indent=1)
+    return path, key_path
+
+
+def prepare_composites(data_root, records: list[Record], out=print) -> dict:
+    """T5.2 part of `prepare`: the two composite figures from split 0. Skipped when a prerequisite is missing."""
+    started = time.time()
+    try:
+        pool = CompositePool(data_root, SPLIT_SEEDS[0], records)
+        masks = load_white_mask_manifest(data_root)["files"]
+        if not pool.leaves or any(r.filename not in masks for r in pool.leaves):
+            raise DatasetError("pseudo-masks are missing")
+    except DatasetError as exc:
+        out(f"  composites  skipped: {exc}")
+        return {}
+    if any(len(pool.backgrounds.get(c, [])) == 0 for c in range(NUM_CLASSES)):
+        out("  composites  skipped: a class has no field training image")
+        return {}
+    examples = save_composites_examples(data_root, SPLIT_SEEDS[0], pool=pool)
+    check, key = save_realism_check(data_root, SPLIT_SEEDS[0], pool=pool)
+    out(f"  composites  {len(pool.leaves)} usable white leaves ({len(pool.white_train) - len(pool.leaves)} of {len(pool.white_train)} "
+        f"train leaves rejected or without a background), {sum(len(v) for v in pool.backgrounds.values())} field backgrounds; "
+        f"{examples.name}, {check.name} + key ({time.time() - started:.0f} s)")
+    return {"examples": examples, "realism": check, "key": key}
+
+COMPOSITE_N_FACTORS = (0.5, 1.0)  # candidates of the split-0 comparison of n_per_epoch (x the white training count)
+COMPOSITE_DEFAULT_FACTOR = 1.0
+
+
+def composite_factor_tag(factor: float) -> str:
+    """0.5 -> '0.5', 1.0 -> '1' (sweep folder names)."""
+    return f"{factor:g}"
+
+
+def composite_sweep_run_name(exp_id: str, factor: float) -> str:
+    return f"{exp_id}_n{composite_factor_tag(factor)}"
+
+
+def composite_fingerprint_extra(config: ExperimentConfig, factor: float | None) -> dict:
+    """What a composites experiment adds to its config fingerprint; ``{}`` for every other experiment, so their
+    fingerprints are exactly what they were before Method A existed."""
+    if not config.use_composites:
+        return {}
+    return {"composites": {"n_factor": COMPOSITE_DEFAULT_FACTOR if factor is None else float(factor), "recipe": COMPOSITE_RECIPE}}
+
+
+def build_composite_source(data_root, split_seed: int, seed: int, *, n_factor: float = COMPOSITE_DEFAULT_FACTOR,
+                           limit: int | None = None) -> CompositeSource:
+    """The `CompositeSource` of one run (see the section text). ``limit`` (--fast) caps the composites per epoch."""
+    records = load_index(data_root)
+    split = load_split(data_root, split_seed)
+    white_train = select_records(records, split["train"], ("white",))
+    build_white_masks(data_root, white_train)
+    pool = CompositePool(data_root, split_seed, records)
+    check_cache_complete(data_root, [*pool.leaves, *(b for group in pool.backgrounds.values() for b in group)])
+    n = max(1, round(n_factor * len(white_train)))
+    return CompositeSource(data_root, split_seed, min(n, limit) if limit else n, seed, pool=pool)
+
 # ---- from 40_segmentation.ipynb ----
 ANNOTATION_SEED = 2026
 ANNOTATIONS_PER_CLASS = 6
@@ -2768,9 +3312,10 @@ class ExperimentResults:
         return tuple(sorted(self.metrics))
 
 
-def expected_fingerprint(config: ExperimentConfig) -> str:
-    """The fingerprint a plain `run` of this config writes (no seed offset, not --fast)."""
-    return config_fingerprint(config, {"seed_offset": 0, "limit": None})
+def expected_fingerprint(config: ExperimentConfig, composite_factor: float | None = None) -> str:
+    """The fingerprint a plain `run` of this config writes (no seed offset, not --fast). Method A rows also carry their
+    composites-per-epoch factor and the composite recipe (``composite_fingerprint_extra``); other rows are unchanged."""
+    return config_fingerprint(config, {"seed_offset": 0, "limit": None, **composite_fingerprint_extra(config, composite_factor)})
 
 
 def load_experiment(data_root, exp_id: str, choices) -> tuple:
@@ -2785,7 +3330,7 @@ def load_experiment(data_root, exp_id: str, choices) -> tuple:
     run_root = runs_dir(data_root) / run_name
     if not run_root.is_dir():
         return None, [f"pending, no runs yet ({run_root} does not exist)"]
-    expected = expected_fingerprint(resolved.config)
+    expected = expected_fingerprint(resolved.config, resolved.composite_factor)
     problems, found = [], {}
     for split_seed in ANALYSIS_SPLITS:
         metrics = read_metrics(split_dir(run_root, split_seed))
@@ -3252,6 +3797,8 @@ CHOICE_SOURCES = {
     "backbone": 'the winning backbone ("best of E2"), written by gate G1 (phase 04, Batch 3)',
     "lr": "the learning rate of this backbone, written by `choose-lr --backbone NAME` after the split-0 sweep "
     "(`run --exp <ID> --sweep-lr`)",
+    "composite_n_factor": "the composites per epoch of Method A (x the white training count), written by `choose-composites` "
+    "after the split-0 comparison (`run --exp E3-A --sweep-composites`)",
 }
 
 
@@ -3285,11 +3832,13 @@ class Choices:
             "input_mode": lambda v: v in INPUT_MODES,
             "backbone": lambda v: v in BACKBONES,
             "lr": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 1,
+            "composite_n_factor": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) in COMPOSITE_N_FACTORS,
         }[key]
         if not valid(value):
-            options = {"input_mode": INPUT_MODES, "backbone": BACKBONES, "lr": "a number in (0, 1)"}[key]
+            options = {"input_mode": INPUT_MODES, "backbone": BACKBONES, "lr": "a number in (0, 1)",
+                       "composite_n_factor": f"one of {COMPOSITE_N_FACTORS}"}[key]
             raise ChoicesError(f"{self.path}: invalid {label} = {value!r} (expected {options})")
-        return float(value) if key == "lr" else value
+        return float(value) if key in ("lr", "composite_n_factor") else value
 
 
 def load_choices(data_root) -> Choices:
@@ -3420,15 +3969,19 @@ class ResolvedExperiment:
     requested: str  # the ID that was asked for (differs from config.exp_id for the E1-U alias)
     choices_used: dict  # which values came from choices.json (or FAST placeholders), for config.json
     notes: tuple[str, ...] = ()
+    composite_factor: float | None = None  # Method A rows: composites per epoch x the white training count; else None
 
 
 def resolve_experiment(
-    exp_id: str, choices: Choices, *, lr: float | None = None, placeholders: bool = False
+    exp_id: str, choices: Choices, *, lr: float | None = None, placeholders: bool = False,
+    composite_factor: float | None = None,
 ) -> ResolvedExperiment:
     """Turn a registry entry into a concrete config.
 
     ``lr`` overrides the choices.json learning rate (sweeps, ``--lr``). ``placeholders=True`` (``--fast``)
-    substitutes FAST_PLACEHOLDERS for choices that do not exist yet, and says so in ``notes``.
+    substitutes FAST_PLACEHOLDERS for choices that do not exist yet, and says so in ``notes``. ``composite_factor``
+    overrides the chosen composites-per-epoch factor of Method A rows (the split-0 comparison); without it
+    `composite_n_factor` of choices.json is used, and the default 1x when `choose-composites` has not run yet.
     """
     if exp_id not in EXPERIMENTS:
         expand_experiment_ids(exp_id)  # raises with a helpful message
@@ -3454,22 +4007,35 @@ def resolve_experiment(
 
     if exp_id in FIXED_ALIASES or exp_id in BACKBONE_ALIASES:
         target = FIXED_ALIASES[exp_id] if exp_id in FIXED_ALIASES else BACKBONE_ALIASES[exp_id][pick("backbone")]
-        inner = resolve_experiment(target, choices, lr=lr, placeholders=placeholders)
+        inner = resolve_experiment(target, choices, lr=lr, placeholders=placeholders, composite_factor=composite_factor)
         note = f"{exp_id} is an alias of {inner.config.exp_id} (identical training): same run folder, no retraining"
-        return ResolvedExperiment(inner.config, exp_id, {**inner.choices_used, **used}, (note, *inner.notes, *notes))
+        return ResolvedExperiment(inner.config, exp_id, {**inner.choices_used, **used}, (note, *inner.notes, *notes),
+                                  inner.composite_factor)
 
     if base.alias_of_winner:
         mode = pick("input_mode")
         inner = resolve_experiment(f"{base.alias_of_winner}-{mode}", choices, lr=lr, placeholders=placeholders)
         note = f"{exp_id} is an alias of {inner.config.exp_id} (the winning input mode): same run folder, no retraining"
-        return ResolvedExperiment(inner.config, exp_id, {**inner.choices_used, **used}, (note, *inner.notes, *notes))
+        return ResolvedExperiment(inner.config, exp_id, {**inner.choices_used, **used}, (note, *inner.notes, *notes),
+                                  inner.composite_factor)
 
     backbone = base.backbone if base.backbone is not None else pick("backbone")
     mode = base.input_mode if base.input_mode is not None else pick("input_mode")
     if lr is None:
         lr = base.lr if base.lr is not None else pick("lr", backbone)
     config = replace(base, backbone=backbone, input_mode=mode, lr=lr)
-    return ResolvedExperiment(config, exp_id, used, tuple(notes))
+    factor = None
+    if config.use_composites:
+        if composite_factor is not None:
+            factor, used["composite_n_factor"] = float(composite_factor), float(composite_factor)
+        elif choices.raw("composite_n_factor") is not None:
+            factor = choices.get("composite_n_factor")
+            used["composite_n_factor"] = factor
+        else:
+            factor = COMPOSITE_DEFAULT_FACTOR
+            used["composite_n_factor"] = factor
+            notes.append(f"composite_n_factor is not chosen yet (`choose-composites`): using the default {COMPOSITE_DEFAULT_FACTOR:g}x")
+    return ResolvedExperiment(config, exp_id, used, tuple(notes), factor)
 
 def cmd_download_weights(args: argparse.Namespace) -> int:
     try:
@@ -3496,16 +4062,19 @@ def pretrained_available(backbone: str, data_root) -> bool:
             os.environ["TORCH_HOME"] = previous
 
 
-def run_destination(data_root, args, cfg: ExperimentConfig, dev: bool) -> tuple[Path, str]:
+def run_destination(data_root, args, cfg: ExperimentConfig, dev: bool, composite_factor: float | None = None) -> tuple[Path, str]:
     """(root folder, run name) for one resolved config; see the table in the notebook."""
+    sweep_composites = getattr(args, "sweep_composites", False)
     if args.out_dir:
         root = Path(args.out_dir)
     elif dev:
         root = scratch_dir(data_root)
     else:
-        root = sweep_dir(data_root) if args.sweep_lr else runs_dir(data_root)
+        root = sweep_dir(data_root) if args.sweep_lr or sweep_composites else runs_dir(data_root)
     if args.sweep_lr:
         return root, sweep_run_name(cfg.exp_id, cfg.lr)
+    if sweep_composites:
+        return root, composite_sweep_run_name(cfg.exp_id, composite_factor)
     suffix = "" if args.out_dir or not dev else "_fast" if args.fast else "_dev"
     return root, cfg.exp_id + suffix
 
@@ -3541,11 +4110,16 @@ def run_command(args) -> int:
     device = resolve_device(args.device)
     ids = expand_experiment_ids(args.exp)
     sweep = args.sweep_lr
+    sweep_composites = getattr(args, "sweep_composites", False)
+    if sweep and sweep_composites:
+        raise ExperimentError("--sweep-lr and --sweep-composites are two different sweeps; run them one at a time")
     if sweep and args.lr is not None:
         raise ExperimentError("--sweep-lr already sets the learning rates (1e-4 and 3e-4); do not combine it with --lr")
-    splits = (0,) if sweep else tuple(args.splits)
-    if sweep and tuple(args.splits) != DEFAULT_SPLITS and tuple(args.splits) != (0,):
-        print("run: note - --sweep-lr always uses split 0 only (T3.4 rule)")
+    if sweep_composites and ids != [COMPOSITE_SWEEP_EXPERIMENT]:
+        raise ExperimentError(f"--sweep-composites compares the composites per epoch of {COMPOSITE_SWEEP_EXPERIMENT}: use --exp {COMPOSITE_SWEEP_EXPERIMENT}")
+    splits = (0,) if sweep or sweep_composites else tuple(args.splits)
+    if (sweep or sweep_composites) and tuple(args.splits) != DEFAULT_SPLITS and tuple(args.splits) != (0,):
+        print("run: note - the sweeps always use split 0 only")
     dev = bool(args.fast or args.lr is not None or args.epochs is not None or args.stage1_epochs is not None)
     options_base = dict(device=device, seed_offset=args.seed_offset, num_workers=args.num_workers, force=args.force,
                         weights_root=data_root)
@@ -3553,16 +4127,24 @@ def run_command(args) -> int:
     print(f"run: device {device}, data root {data_root}, TORCH_HOME {weights_home}")
     summary = []
     for exp_id in ids:
-        for sweep_lr in (SWEEP_LRS if sweep else (None,)):
-            resolved = resolve_experiment(exp_id, choices, lr=sweep_lr if sweep else args.lr, placeholders=args.fast)
+        if sweep:
+            variants = [(lr, None) for lr in SWEEP_LRS]  # (learning rate, composites factor) of each run
+        elif sweep_composites:
+            variants = [(None, f) for f in COMPOSITE_N_FACTORS]
+        else:
+            variants = [(None, None)]
+        for sweep_lr, factor in variants:
+            resolved = resolve_experiment(exp_id, choices, lr=sweep_lr if sweep else args.lr, placeholders=args.fast,
+                                          composite_factor=factor)
             resolved, overrides, limit = apply_run_flags(args, resolved, data_root)
             cfg = resolved.config
             if sweep and cfg.exp_id != SWEEP_EXPERIMENT.get(cfg.backbone):
                 print(f"run: note - choose-lr reads the sweep of {SWEEP_EXPERIMENT.get(cfg.backbone)} for {cfg.backbone}, not {cfg.exp_id}")
-            root, name = run_destination(data_root, args, cfg, dev)
+            root, name = run_destination(data_root, args, cfg, dev, resolved.composite_factor)
             for note in resolved.notes:
                 print(f"run: {note}")
-            print(f"run: {resolved.requested} -> {root / name}/split_<k>/" + ("  (sweep, never a result)" if sweep else "  (scratch, never a result)" if dev else ""))
+            print(f"run: {resolved.requested} -> {root / name}/split_<k>/"
+                  + ("  (sweep, never a result)" if sweep or sweep_composites else "  (scratch, never a result)" if dev else ""))
             options = RunOptions(limit=limit, overrides=tuple(overrides.items()), **options_base)
             for split_seed in splits:
                 result = run_split(resolved, split_seed, data_root=data_root, out_dir=split_dir(root / name, split_seed),
@@ -3673,6 +4255,102 @@ def reuse_sweep_run(data_root, backbone: str, lr: float) -> str:
     return "copied"
 
 
+COMPOSITE_SWEEP_EXPERIMENT = "E3-A"
+
+
+def read_composite_sweep(data_root) -> tuple[dict, str]:
+    """({factor: metrics of the split-0 sweep run}, split sha256). Refuses missing, --fast / dev, mismatching runs."""
+    runs, shas = {}, set()
+    for factor in COMPOSITE_N_FACTORS:
+        run_dir = split_dir(sweep_dir(data_root) / composite_sweep_run_name(COMPOSITE_SWEEP_EXPERIMENT, factor), 0)
+        metrics = read_metrics(run_dir)
+        if metrics is None:
+            raise ExperimentError(
+                f"missing sweep result {run_dir / 'metrics.json'}; run `run --exp {COMPOSITE_SWEEP_EXPERIMENT} --sweep-composites` first")
+        if metrics.get("fast") or metrics.get("overrides"):
+            raise ExperimentError(f"{run_dir} is a --fast / dev-override run, not a real sweep run; re-run the sweep without those flags")
+        used = (metrics.get("composites") or {}).get("n_factor")
+        if used is None or abs(used - factor) > 1e-12:
+            raise ExperimentError(f"{run_dir}: expected composites per epoch factor {factor:g}, found {used}")
+        runs[factor] = metrics
+        shas.add(metrics["split_sha256"])
+    if len(shas) != 1:
+        raise ExperimentError("the two composite sweep runs used different splits; re-run both")
+    return runs, shas.pop()
+
+
+def reuse_composite_sweep_run(data_root, factor: float) -> str:
+    """Copy the sweep run at ``factor`` to split 0 of `_work/runs/E3-A/` ("copied", or "exists" when a real split 0 is
+    there). ExperimentError when it is not the same training: other config fingerprint (recipe, backbone, lr, factor
+    changed since) or other split."""
+    data_root = Path(data_root)
+    choices = load_choices(data_root)
+    sweep_split = split_dir(sweep_dir(data_root) / composite_sweep_run_name(COMPOSITE_SWEEP_EXPERIMENT, factor), 0)
+    metrics = read_metrics(sweep_split)
+    resolved = resolve_experiment(COMPOSITE_SWEEP_EXPERIMENT, choices)  # with the factor now in choices.json
+    expected = config_fingerprint(resolved.config, {"seed_offset": 0, "limit": None,
+                                                    **composite_fingerprint_extra(resolved.config, resolved.composite_factor)})
+    if metrics is None or metrics.get("config_fingerprint") != expected:
+        raise ExperimentError(
+            "the sweep run's config fingerprint differs from the real E3-A run (the recipe, backbone or lr changed since the sweep)")
+    if metrics.get("split_sha256") != load_split(data_root, 0)["sha256"]:
+        raise ExperimentError("the sweep run's split sha256 differs from the committed split_0")
+    destination = split_dir(runs_dir(data_root) / run_folder_name(COMPOSITE_SWEEP_EXPERIMENT, choices), 0)
+    if destination.exists() and any(destination.iterdir()):
+        return "exists"
+    provenance = {
+        "copied_from": "/".join(sweep_split.relative_to(runs_dir(data_root)).parts),
+        "reason": "choose-composites: the sweep run at the chosen composites-per-epoch factor is the same training as split 0 "
+        "of this run (identical config fingerprint and split sha256), so it was copied instead of retrained",
+        "config_fingerprint": expected, "split_sha256": metrics["split_sha256"], "n_factor": factor,
+    }
+    staging = destination.with_name(destination.name + f".tmp{os.getpid()}")
+    if staging.exists():
+        shutil.rmtree(staging)
+    shutil.copytree(sweep_split, staging)
+    write_json(staging / PROVENANCE_FILENAME, provenance, indent=2)
+    if destination.exists():
+        destination.rmdir()
+    os.replace(staging, destination)
+    return "copied"
+
+
+def choose_composites(data_root, out=print) -> dict:
+    """T5.3 rule: of the two split-0 sweep runs of E3-A (0.5x and 1x white-train count composites per epoch), take the
+    factor with the higher **validation** mixed macro-F1; a tie goes to 1x, the default. Records it in choices.json."""
+    runs, sha = read_composite_sweep(data_root)
+    scores = {f: runs[f]["val"]["mixed"]["macro_f1"] for f in COMPOSITE_N_FACTORS}
+    best = max(COMPOSITE_N_FACTORS, key=lambda f: (scores[f], f == COMPOSITE_DEFAULT_FACTOR))
+    evidence = {
+        "experiment": COMPOSITE_SWEEP_EXPERIMENT, "split": 0, "split_sha256": sha,
+        "val_mixed_macro_f1": {composite_factor_tag(f): scores[f] for f in COMPOSITE_N_FACTORS},
+        "n_per_epoch": {composite_factor_tag(f): runs[f]["composites"]["n_per_epoch"] for f in COMPOSITE_N_FACTORS},
+        "rule": "higher validation mixed macro-F1 on split 0; a tie goes to 1x (the default)",
+    }
+    path = write_choice(data_root, "composite_n_factor", best, evidence)
+    out("choose-composites: " + ", ".join(f"{composite_factor_tag(f)}x -> val mixed F1 {fmt3(scores[f])}" for f in COMPOSITE_N_FACTORS)
+        + f"  =>  {composite_factor_tag(best)}x  (written to {path})")
+    try:
+        reuse = reuse_composite_sweep_run(data_root, best)
+        message = {
+            "copied": f"the sweep run at {composite_factor_tag(best)}x was copied to split 0 of E3-A (same training; the real run will skip split 0)",
+            "exists": "the real split 0 already exists and was left untouched",
+        }[reuse]
+    except (ExperimentError, DatasetError) as exc:
+        reuse, message = "not reused", f"sweep run not reused for split 0 ({exc}); the real run will train it"
+    out(f"choose-composites: {message}")
+    return {"n_factor": best, "evidence": evidence, "split_0": reuse}
+
+
+def cmd_choose_composites(args: argparse.Namespace) -> int:
+    try:
+        choose_composites(Path(args.data_root))
+    except (ExperimentError, DatasetError) as exc:
+        print(f"choose-composites: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
+
+
 def cmd_choose_lr(args: argparse.Namespace) -> int:
     try:
         choose_lr(Path(args.data_root), args.backbone)
@@ -3737,13 +4415,14 @@ def resolve_device(requested: str = "auto") -> str:
 
 def cmd_prepare(args: argparse.Namespace) -> int:
     """Index, cache, near-duplicate audit, splits, tables and figures (phase 02), then the white pseudo-masks and QC sheets
-    (T5.1) and the annotation selection (T6.1).
+    (T5.1), the composite figures (T5.2) and the annotation selection (T6.1).
     Idempotent."""
     try:
         data_root = Path(args.data_root)
         prepare_data(data_root, workers=args.workers)
         records = load_index(data_root)
         prepare_pseudo_masks(data_root, records, workers=args.workers)
+        prepare_composites(data_root, records)
         prepare_annotations(data_root, records)
     except DatasetError as exc:
         print(f"prepare: FAIL - {exc}", file=sys.stderr)
@@ -3804,10 +4483,51 @@ def classifier_smoke(data_root, tmp_root, selected: list[Record], log=print) -> 
         f"skipped on rerun, predict OK ({time.time() - started:.0f} s)")
 
 
+def method_a_smoke(data_root, tmp_root, selected: list[Record], log=print) -> None:
+    """Method A on the tiny smoke set (everything in ``tmp_root``): pseudo-masks of the white images and a QC sheet,
+    one composite per class (reproducible from its seed), and one tiny E3-A run whose training set contains
+    composites, through the real `run_split` path."""
+    started = time.time()
+    stats = build_white_masks(tmp_root, selected, workers=1)
+    white = [r for r in selected if r.domain == "white"]
+    smoke_require(stats.total == len(white) and stats.built == len(white), "pseudo-masks were not built for every white image")
+    for record in white:
+        mask = read_white_mask(tmp_root, record.filename)
+        smoke_require(mask.shape == read_cached_rgb(tmp_root, record.filename).shape[:2] and mask.any(),
+                      f"{record.filename}: the pseudo-mask is empty or has the wrong size")
+    smoke_require(build_white_masks(tmp_root, selected, workers=1).built == 0, "second mask run is not idempotent")
+    sheets = save_mask_qc_sheets(tmp_root, selected, rejects=set())
+    smoke_require(all(p.stat().st_size > 1000 for p in sheets), "QC sheets were not written")
+    split = smoke_split(selected)
+    pool = CompositePool(tmp_root, 0, selected, exclusions=set())
+    smoke_require(pool.leaves and all(r.filename in split["train"] for r in pool.leaves), "composite pool is empty or leaks")
+    classes = sorted({r.cls_idx for r in pool.leaves})
+    for cls_idx in classes:
+        leaf, background = pool.sample(np.random.default_rng(cls_idx), cls_idx)
+        image, mask, label = make_composite(leaf, background, np.random.default_rng(7), data_root=tmp_root)
+        again, _, _ = make_composite(leaf, background, np.random.default_rng(7), data_root=tmp_root)
+        smoke_require(label == cls_idx and image.shape[:2] == mask.shape and mask.any() and np.array_equal(image, again),
+                      f"composite of class {cls_idx} is empty or not reproducible")
+    resolved = resolve_experiment("E3-A", Choices(choices_path(tmp_root), {}), placeholders=True)
+    resolved = replace(resolved, config=replace(resolved.config, pretrained=False, **FAST_CONFIG))
+    run_dir = split_dir(tmp_root / WORK_DIRNAME / "runs" / "E3-A_smoke", 0)
+    result = run_split(resolved, 0, data_root=tmp_root, out_dir=run_dir, options=RunOptions(device="cpu", num_workers=0), log=lambda _: None)
+    metrics = result["metrics"]
+    smoke_require(metrics["composites"]["n_per_epoch"] > 0 and metrics["n_train"] > len(split["train"]) - 1, "E3-A trained without composites")
+    log(f"smoke: OK - Method A: {stats.built} pseudo-masks and QC sheet, composites of {len(classes)} classes (reproducible), "
+        f"tiny E3-A run with {metrics['composites']['n_per_epoch']} composites per epoch ({time.time() - started:.0f} s)")
+
+
+def smoke_extra_checks(data_root, tmp_root, selected: list[Record]) -> None:
+    classifier_smoke(data_root, tmp_root, selected)
+    method_a_smoke(data_root, tmp_root, selected)
+
+
 def cmd_smoke(args: argparse.Namespace) -> int:
     """Tiny end-to-end check: data root, image discovery, library imports, device, the data path (index, EXIF
     read, cache, dHash, splits, figures on ~20 images in a temp folder) and one tiny classifier experiment
-    through the real `run` code path on CPU, followed by `predict` (everything in a temp folder)."""
+    through the real `run` code path on CPU, followed by `predict`, then Method A (pseudo-masks, composites, a tiny E3-A run);
+    everything in a temp folder."""
     data_root = Path(args.data_root)
     print(f"smoke: data root = {data_root.resolve()}")
     if not data_root.is_dir():
@@ -3833,7 +4553,7 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     device = resolve_device(args.device)
     print(f"smoke: OK - device = {device} (requested: {args.device}), fast = {args.fast}")
     try:
-        run_data_smoke(data_root, extra_checks=lambda tmp_root, selected: classifier_smoke(data_root, tmp_root, selected))
+        run_data_smoke(data_root, extra_checks=lambda tmp_root, selected: smoke_extra_checks(data_root, tmp_root, selected))
     except (DatasetError, ExperimentError) as exc:
         print(f"smoke: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
@@ -3917,6 +4637,8 @@ def _configure_run(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--force", action="store_true", help="retrain splits whose metrics.json already exists")
     parser.add_argument("--sweep-lr", action="store_true",
                         help="learning-rate sweep: split 0 at lr 1e-4 and 3e-4 into _work/runs/sweep/ (never a result)")
+    parser.add_argument("--sweep-composites", action="store_true",
+                        help="Method A: split 0 of --exp E3-A with 0.5x and 1x composites per epoch into _work/runs/sweep/ (never a result)")
     parser.add_argument("--batch-size", type=int, default=None, metavar="N", help="batch size (default 32; 16 + --grad-accum 2 if memory is short)")
     parser.add_argument("--grad-accum", type=int, default=None, metavar="N", help="gradient accumulation steps (default 1)")
     parser.add_argument("--num-workers", type=int, default=None, metavar="N", help="data-loading processes (default: cores - 1, at most 4)")
@@ -3973,6 +4695,11 @@ COMMANDS = (
         "record the learning rate of a backbone from its split-0 sweep (T3.4 rule) in choices.json",
         cmd_choose_lr,
         _configure_choose_lr,
+    ),
+    Command(
+        "choose-composites",
+        "record the composites per epoch of Method A from its split-0 sweep (validation only) in choices.json",
+        cmd_choose_composites,
     ),
     Command(
         "gate",

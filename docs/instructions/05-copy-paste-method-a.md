@@ -32,15 +32,15 @@ Steps, each with its reason:
 6. **Edge feathering**: blur alpha with sigma 1.5-3 px and alpha-blend. *Removes the hard cut-out edge.*
 7. **Optional shadow** (p = 0.3): a darkened, blurred, offset copy of the alpha under the leaf.
 8. Output at cache resolution: the composite plus a binary mask (`alpha > 0.5`), which the segmenter in 06 uses.
-- [ ] All randomness from a passed `np.random.Generator`, so a seed reproduces a composite exactly.
-- [ ] `_work/figures/composites_examples.png`: 10 composites (2 per class) next to their source leaf and background. This goes into report section 5.
-- [ ] **Realism check (cheap)**: Nattan looks at 20 composites mixed with 20 real field images. If the composites are trivially identifiable at a glance, iterate on steps 4-6 before training on them.
+- [x] All randomness from a passed `np.random.Generator`, so a seed reproduces a composite exactly. (`make_composite(leaf_rec, bg_rec, rng, *, data_root, scale=1.0)`; the sampling rules live in `CompositePool`, which raises `CompositeLeakError` for a val/test image, a wrong class or an annotated background. Extras within steps 2 and 5: the mask is eroded 2 px and a leaf end that the white photo cut off tapers to a point; chroma follows the lightness change; L blend is drawn from the upper half 0.5-0.7 of the spec range; annotated images AND their near-duplicate partners are excluded as backgrounds.)
+- [x] `_work/figures/composites_examples.png` (made by `prepare`): 10 composites (2 per class) next to their source leaf and background. This goes into report section 5.
+- [ ] **Realism check (cheap)**: `_work/figures/composites_realism_check.png` (20 composites mixed with 20 real field images, shuffled 5 x 8, numbered, key in `_work/results/composites_realism_key.json`; made by `prepare`). Nattan looks at 20 composites mixed with 20 real field images. If the composites are trivially identifiable at a glance, iterate on steps 4-6 before training on them.
 - Tests: output shapes; mask non-empty; the same seed gives the same output; a test-split filename can never be sampled (assert).
 
 ### T5.3 Composite source for training (`extra_sources` hook from T3.2)
-- [ ] `CompositeSource(split_k, n_per_epoch, seed)`: generates composites **on the fly** with a fresh rng per epoch (`seed * 1000 + epoch`), so each epoch sees new variations at no storage cost.
-- [ ] Default `n_per_epoch` = number of white training images (~538), roughly tripling the "field-like" samples per epoch. Composites pass through the same train augmentation as real images.
-- [ ] Hyperparameter: on split 0 val only, compare `n_per_epoch` in {0.5x, 1x} white-train count. Record the choice in `choices.json`.
+- [x] `CompositeSource(split_k, n_per_epoch, seed)`: generates composites **on the fly** with a fresh rng per epoch (`seed * 1000 + epoch`), so each epoch sees new variations at no storage cost.
+- [x] Default `n_per_epoch` = number of white training images (~538), roughly tripling the "field-like" samples per epoch. Composites pass through the same train augmentation as real images.
+- [ ] Hyperparameter: on split 0 val only, compare `n_per_epoch` in {0.5x, 1x} white-train count. Record the choice in `choices.json`. (Code done; the Colab run is open: `run --exp E3-A --sweep-composites`, then `choose-composites`, which writes `composite_n_factor`; see the notebook `30_copy_paste.ipynb`, section T5.3. Needs gate G1 first.)
 
 ### T5.4 Experiments
 - [ ] `E3-A`: G1 backbone, G0 input mode, `train_domains = {white, field}`, `use_composites = True`, all 5 splits.
