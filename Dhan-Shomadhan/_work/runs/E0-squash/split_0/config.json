@@ -1,0 +1,56 @@
+{
+ "format": 1,
+ "requested_exp_id": "E0-squash",
+ "experiment": {
+  "exp_id": "E0-squash",
+  "backbone": "resnet50",
+  "train_domains": [
+   "white",
+   "field"
+  ],
+  "select_domains": [
+   "white",
+   "field"
+  ],
+  "test_subsets": [
+   "white",
+   "field",
+   "mixed"
+  ],
+  "input_mode": "squash",
+  "use_composites": false,
+  "seg_crop": false,
+  "kind": "classifier",
+  "alias_of_winner": "",
+  "stage1_epochs": 2,
+  "stage1_lr": 0.001,
+  "epochs": 30,
+  "lr": 0.0001,
+  "weight_decay": 0.05,
+  "warmup_epochs": 1,
+  "label_smoothing": 0.1,
+  "batch_size": 32,
+  "grad_accum": 1,
+  "clip_norm": 1.0,
+  "patience": 10,
+  "dropout": 0.2,
+  "pretrained": true,
+  "size_div": 1,
+  "note": "320x320, aspect distorted"
+ },
+ "split": 0,
+ "seed": 0,
+ "seed_offset": 0,
+ "limit": null,
+ "choices_used": {
+  "lr[resnet50]": 0.0001
+ },
+ "notes": [],
+ "overrides": {},
+ "weights": "ResNet50_Weights.IMAGENET1K_V2",
+ "input_size": [
+  320,
+  320
+ ],
+ "config_fingerprint": "5c75631cb0ea8561f8b19b6fa8cb84328c0208be94cd0174398068c8d7a77fd7"
+}
