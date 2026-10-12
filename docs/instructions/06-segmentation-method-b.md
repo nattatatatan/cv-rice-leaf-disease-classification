@@ -30,6 +30,12 @@ Prerequisites: 05 T5.1-T5.3 done. T6.1 (annotation) is manual and can start on d
 - [x] Checkpoint selection: IoU on **val composites** (built from white val leaves on field val backgrounds; fixed seed, 200 images) + white val pseudo-masks.
 - [ ] One segmenter per split: `_work/runs/S-seg/split_<k>/` (same artefact layout as classifiers, plus `seg_metrics.json`). (Code done: `run --exp S-seg`, idempotent like `run` (split sha256 + fingerprint, `--force`), `--fast` / `--epochs` / `--seg-arch` go to `scratch/`. The GPU runs are open: batch5.)
 - [ ] Development loop on the **dev** annotations only: if the dev IoU is poor, adjust composite realism (T5.2 steps 4-6) or the post-processing below. One allowed architecture swap, decided on dev only: `deeplabv3_mobilenet_v3_large`.
+  - Dev loop run on 2026-10-13 (split 0, 8 epochs, M2; dev annotations only): LRASPP dev IoU 0.000, 9 of 10 dev images
+    fall back, 311 of 337 field images fall back, while val composites reach IoU 0.73 and white val 0.92. The segmenter
+    learns "pasted leaf vs real field leaf" (real field leaves are background in every composite), so it rejects the real
+    salient leaf. DeepLabV3 swap: dev IoU 0.015, 8 of 10 fallbacks (not adopted). Post-processing sweep (threshold
+    0.1-0.5, min area 0.5-2%): best dev IoU 0.05, 1 of 10 boxes with >= 50% of the leaf. Whites at the composites'
+    resolution: no change. **Open: needs Nattan's decision before batch5** (see the agent report for options).
 
 ### Post-processing: mask -> crop box
 1. Sigmoid > 0.5 -> connected components -> keep the component with the largest `area x centrality`, where centrality = 1 - (normalised distance of the component centroid from the image centre).
