@@ -1,0 +1,33 @@
+# First-pass QC of the white pseudo-masks by the agent (T5.1), NOT the reject list. Same format as
+# _work/masks/white_rejects.txt (one filename per line, "#" starts a comment), so Nattan can copy the lines he agrees with.
+# Reviewed on pseudo_mask_qc_01..17.png with the final thresholds (MASK_V_MIN 20, MASK_CLOSE_KSIZE 45).
+# 25 of 769 suspected (3.2%), 17 of them in the training part of split 0 (the only images used for tuning), 8 in val/test
+# (listed because the reject list covers all images; they were never used to tune anything). "borderline" = usable if in doubt.
+#
+# --- training part of split 0 ---
+bs_wb_43.jpg   # train: torn, ragged leaf tip fragmented, tip lost
+bs_wb_48.jpg   # train: two torn leaves joined, pale lesion strip left out of the mask
+ls_wb_0.jpg    # train: dark blurred shadow/object at the lower right is included
+ls_wb_4.jpg    # train: cluttered close-up, loose fibres included, lesion holes
+ls_wb_30.jpg   # train: leaf end broken, pale lower part lost (ghost loop)
+rb_wb_1.jpg    # train: a second leaf and the dark shadow beside it are merged in
+rb_wb_30.jpg   # train: very ragged torn edge
+rb_wb_33.jpg   # train: mask loops along the torn edge, leaf split
+rb_wb_49.jpg   # train: fibres/hairs attached to the leaf
+rt_wb_2.jpg    # train: straw-coloured lower tip lost
+sb_wb_111.jpg  # train: sun-bleached pale upper half lost (saturation equals paper)
+sb_wb_112.jpg  # train: sun-bleached pale upper half lost
+sb_wb_193.jpg  # train: pale upper half lost, only the lower leaf is masked
+sb_wb_201.jpg  # train: leaf below a lesion gap lost
+sb_wb_30.jpg   # train: pale upper strip lost
+sb_wb_5.jpg    # train: borderline, lesion notch at the leaf edge
+sb_wb_6.jpg    # train: borderline, lesion notches at the leaf edge
+# --- validation / test part of split 0 (not used for tuning) ---
+bs_wb_77.jpg   # test: pale yellow tip lost
+bs_wb_89.jpg   # val: borderline, pale strip at the lower left lost
+ls_wb_1.jpg    # test: two leaves and a shadow merged on greenish paper
+ls_wb_2.jpg    # test: cluttered close-up, fibres included
+ls_wb_6.jpg    # val: borderline, ragged torn leaf
+rb_wb_58.jpg   # test: fibres attached
+rt_wb_67.jpg   # test: straw-coloured tail lost
+sb_wb_205.jpg  # test: second (crossing) leaf lost

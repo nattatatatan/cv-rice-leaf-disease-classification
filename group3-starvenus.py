@@ -2249,7 +2249,288 @@ def predict_image(run_dir, image, device: str, data_root=None, out=print) -> np.
     return probs
 
 # ---- from 30_copy_paste.ipynb ----
-# Phase 05 (copy-paste): pseudo-masks and composites are added here.
+import math
+import time
+
+MASK_BLUR_KSIZE = 5  # Gaussian blur before the HSV conversion (pixels, odd)
+MASK_V_MIN = 20  # minimum brightness (V, 0-255) of a leaf pixel; only near-black pixels are dropped
+MASK_CLOSE_KSIZE = 45  # elliptical closing kernel (px at the 1280 px cache scale): fills pale lesions
+MASK_OPEN_KSIZE = 7  # elliptical opening kernel: removes specks
+MASK_RECIPE_VERSION = 1  # bump when the algorithm (not a constant) changes
+MASK_CONSTANTS = {
+    "version": MASK_RECIPE_VERSION, "blur": MASK_BLUR_KSIZE, "v_min": MASK_V_MIN,
+    "close": MASK_CLOSE_KSIZE, "open": MASK_OPEN_KSIZE,
+}
+MASK_RECIPE = hashlib.sha1(json.dumps(MASK_CONSTANTS, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def fill_holes(mask: np.ndarray) -> np.ndarray:
+    """``mask`` (uint8 0/255) with every background region that does not touch the border filled in
+    (scipy-free: flood fill the outside of a 1 px padded copy with cv2.floodFill)."""
+    padded = cv2.copyMakeBorder(mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+    flooded = padded.copy()
+    cv2.floodFill(flooded, np.zeros((padded.shape[0] + 2, padded.shape[1] + 2), np.uint8), (0, 0), 255)
+    holes = cv2.bitwise_not(flooded)[1:-1, 1:-1]
+    return mask | holes
+
+
+def largest_component(mask: np.ndarray) -> np.ndarray:
+    """uint8 0/255 mask reduced to its largest 8-connected component (an empty mask stays empty)."""
+    count, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    if count <= 1:
+        return np.zeros_like(mask)
+    keep = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    return ((labels == keep) * 255).astype(np.uint8)
+
+
+def white_pseudo_mask(rgb: np.ndarray) -> np.ndarray:
+    """Leaf mask (uint8 0/255, same height and width) of a white-background image; see the section text."""
+    hsv = cv2.cvtColor(cv2.GaussianBlur(rgb, (MASK_BLUR_KSIZE, MASK_BLUR_KSIZE), 0), cv2.COLOR_RGB2HSV)
+    saturation, value = hsv[..., 1], hsv[..., 2]
+    threshold, _ = cv2.threshold(saturation, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = (((saturation > threshold) & (value > MASK_V_MIN)).astype(np.uint8)) * 255
+    ellipse = lambda size: cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))  # noqa: E731
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, ellipse(MASK_CLOSE_KSIZE))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, ellipse(MASK_OPEN_KSIZE))
+    return largest_component(fill_holes(mask))
+
+
+def white_masks_dir(data_root) -> Path:
+    return work_dir(data_root) / "masks" / "white"
+
+
+def white_mask_path(data_root, filename: str) -> Path:
+    return white_masks_dir(data_root) / f"{filename}.png"
+
+
+def white_rejects_path(data_root) -> Path:
+    return work_dir(data_root) / "masks" / "white_rejects.txt"
+
+
+def read_mask_file(path) -> np.ndarray:
+    mask = cv2.imdecode(np.frombuffer(read_file_bytes(path), np.uint8), cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        raise DatasetError(f"{path}: cannot decode mask")
+    return mask
+
+
+def read_white_mask(data_root, filename: str) -> np.ndarray:
+    """The stored pseudo-mask (uint8 0/255) of a white image."""
+    path = white_mask_path(data_root, filename)
+    if not path.is_file():
+        raise DatasetError(f"{path} does not exist; run `prepare` (or `run`, which builds the masks it needs)")
+    return read_mask_file(path)
+
+
+def _mask_one(task: tuple) -> tuple[str, float]:
+    """Worker: cached image -> mask PNG. Returns (filename, mask area as a fraction of the image)."""
+    filename, source, target = task
+    mask = white_pseudo_mask(read_rgb(source))
+    ok, buffer = cv2.imencode(".png", mask)
+    if not ok:
+        raise DatasetError(f"{filename}: PNG encoding failed")
+    write_bytes_atomic(Path(target), buffer.tobytes())
+    return filename, float((mask > 0).mean())
+
+
+@dataclass
+class MaskStats:
+    total: int
+    built: int
+    reused: int
+
+
+def white_masks_manifest_path(data_root) -> Path:
+    return white_masks_dir(data_root) / "manifest.json"
+
+
+def load_white_mask_manifest(data_root) -> dict:
+    path = white_masks_manifest_path(data_root)
+    if path.is_file():
+        try:
+            manifest = json.loads(read_file_bytes(path).decode("utf-8"))
+            if manifest.get("recipe") == MASK_RECIPE:
+                return manifest
+        except (OSError, ValueError):
+            pass
+    return {"recipe": MASK_RECIPE, "files": {}}  # damaged, or made by another recipe: rebuild everything
+
+
+def build_white_masks(data_root, records: list[Record], *, workers: int | None = None, log=None) -> MaskStats:
+    """Pseudo-masks of the white images among ``records`` (idempotent: an up-to-date mask is kept). A mask is up to
+    date when its file exists, the manifest was written by this recipe and the source sha1 is unchanged."""
+    data_root = Path(data_root)
+    manifest = load_white_mask_manifest(data_root)
+    files = manifest["files"]
+    white = [r for r in records if r.domain == "white"]
+
+    def current(record: Record) -> bool:
+        entry = files.get(record.filename)
+        return bool(entry) and entry.get("sha1") == record.sha1 and white_mask_path(data_root, record.filename).is_file()
+
+    todo = [r for r in white if not current(r)]
+    sha_of = {r.filename: r.sha1 for r in todo}
+    tasks = [(r.filename, str(cache_dir(data_root) / r.filename), str(white_mask_path(data_root, r.filename))) for r in todo]
+    for task in tasks:
+        if not Path(task[1]).is_file():
+            raise DatasetError(f"{task[1]} is missing; run `prepare` to build the cache")
+    done = 0
+    try:
+        for filename, area in run_parallel(_mask_one, tasks, workers=workers or default_workers()):
+            files[filename] = {"sha1": sha_of[filename], "area": area}
+            done += 1
+            if log and done % 200 == 0:
+                log(f"masks: {done}/{len(tasks)}")
+    finally:
+        if done:
+            write_json(white_masks_manifest_path(data_root), {"recipe": MASK_RECIPE, "files": dict(sorted(files.items()))})
+    return MaskStats(total=len(white), built=len(todo), reused=len(white) - len(todo))
+
+
+def load_white_rejects(data_root, records: list[Record] | None = None) -> set[str]:
+    """Filenames in ``_work/masks/white_rejects.txt`` (one per line; blank lines and ``#`` comments are ignored).
+    With ``records`` every name must be a white image of the index, otherwise DatasetError names the line."""
+    path = white_rejects_path(data_root)
+    if not path.is_file():
+        return set()
+    known = {r.filename for r in records if r.domain == "white"} if records is not None else None
+    rejects: set[str] = set()
+    for number, line in enumerate(read_file_bytes(path).decode("utf-8").splitlines(), start=1):
+        name = line.split("#", 1)[0].strip()
+        if not name:
+            continue
+        if known is not None and name not in known:
+            raise DatasetError(f"{path}, line {number}: {name!r} is not a white-background image of the dataset")
+        rejects.add(name)
+    return rejects
+
+QC_COLUMNS, QC_ROWS = 8, 6  # 48 tiles per sheet at most
+QC_TILE = (264, 560)  # (width, height) of an image tile in pixels, the aspect of the cached images (0.47)
+QC_LABEL_HEIGHT = 24
+QC_GAP = 4
+
+
+def mask_area_rows(records: list[Record], areas: dict[str, float], rejects: set[str]) -> list[list]:
+    """Per class [class, accepted leaves, mean %, std %, median %, min %, max %] of the mask area, then an 'all' row."""
+    rows, pooled = [], []
+    for cls in (*CLASS_NAMES, None):
+        names = [r.filename for r in records if r.domain == "white" and (cls is None or r.cls == cls)
+                 and r.filename not in rejects and r.filename in areas]
+        values = 100.0 * np.array([areas[n] for n in names]) if names else np.zeros(0)
+        rows.append([cls or "all", len(names), *(float(f(values)) if len(values) else float("nan") for f in
+                    (np.mean, lambda v: np.std(v, ddof=1) if len(v) > 1 else float("nan"), np.median, np.min, np.max))])
+    return rows
+
+
+def white_mask_area_markdown(records: list[Record], areas: dict[str, float], rejects: set[str]) -> str:
+    rows = mask_area_rows(records, areas, rejects)
+    lines = [
+        "| Class | Leaves | Mean area (%) | Std (%) | Median (%) | Min (%) | Max (%) |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for name, n, mean, std, median, low, high in rows:
+        cells = " | ".join("n/a" if v != v else f"{v:.1f}" for v in (mean, std, median, low, high))
+        lines.append(f"| {name if name != 'all' else '**All**'} | {n} | {cells} |")
+    note = (
+        f"\nFraction of a white-background image covered by the pseudo-mask of the leaf, over the accepted leaves "
+        f"(white images {sum(r.domain == 'white' for r in records)}, rejected in white_rejects.txt: {len(rejects)}). "
+        f"Std with ddof=1.\n"
+    )
+    return "\n".join(lines) + "\n" + note
+
+
+def write_white_mask_area(data_root, records: list[Record], rejects: set[str]) -> Path:
+    areas = {name: entry["area"] for name, entry in load_white_mask_manifest(data_root)["files"].items()}
+    path = results_dir(data_root) / "white_mask_area.md"
+    write_text_atomic(path, white_mask_area_markdown(records, areas, rejects))
+    return path
+
+
+def draw_outline(image: np.ndarray, mask: np.ndarray, *, color=(255, 255, 0), halo: int = 3, line: int = 1) -> np.ndarray:
+    """A copy of ``image`` (RGB) with the outline of ``mask`` (uint8 0/255, same size): a ``halo`` px black line under a
+    ``line`` px coloured line."""
+    out = image.copy()
+    contours, _ = cv2.findContours((mask > 0).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    cv2.drawContours(out, contours, -1, (0, 0, 0), halo)
+    cv2.drawContours(out, contours, -1, color, line)
+    return out
+
+
+def qc_tile(rgb: np.ndarray, mask: np.ndarray, label: str, right: str, rejected: bool) -> np.ndarray:
+    width, height = QC_TILE
+    image = cv2.resize(rgb, (width, height), interpolation=cv2.INTER_AREA)
+    small = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
+    tile = np.full((height + QC_LABEL_HEIGHT, width, 3), 255, np.uint8)
+    tile[:height] = draw_outline(image, small)
+    if rejected:
+        reject = tuple(int(OKABE_ITO["vermilion"][i : i + 2], 16) for i in (1, 3, 5))
+        cv2.rectangle(tile, (0, 0), (width - 1, height - 1), reject, 6)
+    font, scale = cv2.FONT_HERSHEY_SIMPLEX, 0.5
+    cv2.putText(tile, label, (3, height + 17), font, scale, (0, 0, 0), 1, cv2.LINE_AA)
+    (text_width, _), _ = cv2.getTextSize(right, font, scale, 1)
+    cv2.putText(tile, right, (width - text_width - 3, height + 17), font, scale, (0, 0, 0), 1, cv2.LINE_AA)
+    return tile
+
+
+def qc_sheet_groups(n: int, per_sheet: int = QC_COLUMNS * QC_ROWS) -> list[tuple[int, int]]:
+    """(start, stop) of each sheet: the fewest sheets that fit ``per_sheet``, filled as evenly as possible
+    (769 images -> 17 sheets: 4 of 46 and 13 of 45)."""
+    sheets = max(1, math.ceil(n / per_sheet))
+    base, extra = divmod(n, sheets)
+    groups, start = [], 0
+    for k in range(sheets):
+        stop = start + base + (1 if k < extra else 0)
+        groups.append((start, stop))
+        start = stop
+    return groups
+
+
+def save_mask_qc_sheets(data_root, records: list[Record], rejects: set[str] | None = None) -> list[Path]:
+    """`pseudo_mask_qc_<k>.png`, k = 01.., for every white image (see the section text). Old sheets are removed."""
+    rejects = rejects if rejects is not None else load_white_rejects(data_root, records)
+    white = [r for r in records if r.domain == "white"]
+    manifest = load_white_mask_manifest(data_root)["files"]
+    out_dir = figures_dir(data_root)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("pseudo_mask_qc_*.png"):
+        old.unlink()
+    paths = []
+    tile_h = QC_TILE[1] + QC_LABEL_HEIGHT
+    for number, (start, stop) in enumerate(qc_sheet_groups(len(white)), start=1):
+        sheet = np.full((QC_ROWS * (tile_h + QC_GAP) + QC_GAP, QC_COLUMNS * (QC_TILE[0] + QC_GAP) + QC_GAP, 3), 255, np.uint8)
+        for slot, record in enumerate(white[start:stop]):
+            area = manifest[record.filename]["area"]
+            tile = qc_tile(read_cached_rgb(data_root, record.filename), read_white_mask(data_root, record.filename),
+                           record.filename, f"{100 * area:.1f}%", record.filename in rejects)
+            row, col = divmod(slot, QC_COLUMNS)
+            top, left = QC_GAP + row * (tile_h + QC_GAP), QC_GAP + col * (QC_TILE[0] + QC_GAP)
+            sheet[top : top + tile_h, left : left + QC_TILE[0]] = tile
+        path = out_dir / f"pseudo_mask_qc_{number:02d}.png"
+        ok, buffer = cv2.imencode(".png", cv2.cvtColor(sheet, cv2.COLOR_RGB2BGR))
+        if not ok:
+            raise DatasetError(f"{path}: PNG encoding failed")
+        write_bytes_atomic(path, buffer.tobytes())
+        paths.append(path)
+    return paths
+
+
+def prepare_pseudo_masks(data_root, records: list[Record], *, workers: int | None = None, out=print) -> dict:
+    """T5.1 part of `prepare`: masks of every white image (idempotent), the area table and the QC sheets."""
+    started = time.time()
+    if not any(r.domain == "white" for r in records):
+        out("  masks       skipped: no white images")
+        return {"built": 0}
+    stats = build_white_masks(data_root, records, workers=workers, log=out)
+    rejects = load_white_rejects(data_root, records)
+    area_path = write_white_mask_area(data_root, records, rejects)
+    sheets = save_mask_qc_sheets(data_root, records, rejects)
+    out(
+        f"  masks       {stats.total} white pseudo-masks: built {stats.built}, up to date {stats.reused}; "
+        f"{len(rejects)} rejected in white_rejects.txt; {len(sheets)} QC sheets, {area_path.name} ({time.time() - started:.0f} s)"
+    )
+    if not rejects and not white_rejects_path(data_root).is_file():
+        out("              review the sheets and list the failures in _work/masks/white_rejects.txt (T5.1)")
+    return {"built": stats.built, "reused": stats.reused, "rejects": rejects, "sheets": sheets}
 
 # ---- from 40_segmentation.ipynb ----
 ANNOTATION_SEED = 2026
@@ -3455,12 +3736,15 @@ def resolve_device(requested: str = "auto") -> str:
     return requested
 
 def cmd_prepare(args: argparse.Namespace) -> int:
-    """Index, cache, near-duplicate audit, splits, tables and figures (phase 02), then the annotation selection (T6.1).
+    """Index, cache, near-duplicate audit, splits, tables and figures (phase 02), then the white pseudo-masks and QC sheets
+    (T5.1) and the annotation selection (T6.1).
     Idempotent."""
     try:
         data_root = Path(args.data_root)
         prepare_data(data_root, workers=args.workers)
-        prepare_annotations(data_root, load_index(data_root))
+        records = load_index(data_root)
+        prepare_pseudo_masks(data_root, records, workers=args.workers)
+        prepare_annotations(data_root, records)
     except DatasetError as exc:
         print(f"prepare: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
