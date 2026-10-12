@@ -8,7 +8,7 @@ Usage (from the repo root)::
 What it does:
 
 1. Reads ``notebooks/[0-9][0-9]_*.ipynb`` in sorted order. ``00_*`` (exploration)
-   and anything not matching the pattern (e.g. ``colab_runner.ipynb``) are skipped.
+   and anything not matching the pattern (e.g. ``runner.ipynb``) are skipped.
 2. Collects every code cell whose first line is exactly ``#| export`` (the marker
    line itself is dropped) and concatenates them, with a comment header per notebook.
 3. Prepends a module docstring and appends ``if __name__ == "__main__": main()``.

@@ -72,7 +72,7 @@ def test_skips_audit_and_runner_notebooks(export_tool, tmp_path):
         tmp_path,
         {
             "00_audit.ipynb": [exported("import pandas as pd")],
-            "colab_runner.ipynb": [exported("import google.colab")],
+            "runner.ipynb": [exported("import google.colab")],
             "90_cli.ipynb": [exported(MAIN)],
         },
     )

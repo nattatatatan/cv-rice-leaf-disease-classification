@@ -23,7 +23,7 @@ group/
     40_segmentation.ipynb    # segmenter, annotations, crop pipeline
     50_analysis.ipynb        # aggregation, tables, figures, Grad-CAM
     90_cli.ipynb             # argparse CLI + experiment registry
-    colab_runner.ipynb       # not exported; drives runs on Colab
+    runner.ipynb             # not exported; drives runs on Colab and Kaggle
   tools/
     export_py.py             # notebook -> <group_name>.py
   tests/
@@ -55,7 +55,7 @@ group/
 - [x] Update its hardcoded label mapping to the class/domain mapping defined in [02](02-data.md) once T2.1 exists (it now reads `CSV_LABELS` from the generated module).
 
 ### T1.4 Export tool `tools/export_py.py` (stdlib only)
-- [x] Read `notebooks/[0-9][0-9]_*.ipynb` in sorted order, skipping `00_*` and `colab_runner`.
+- [x] Read `notebooks/[0-9][0-9]_*.ipynb` in sorted order, skipping `00_*` and `runner`.
 - [x] Collect code cells whose first line is exactly `#| export`. Strip that line. Concatenate with a comment header per notebook (`# ---- from 20_classifier.ipynb ----`).
 - [x] Prepend a module docstring (project title, group name, "generated file, do not edit", how to run `--help`) and append `if __name__ == "__main__": main()`.
 - [x] **Import guard**: parse the result with `ast`; fail with a clear message if any import's top-level package is not in `{stdlib, numpy, matplotlib, cv2, sklearn, skimage, torch, torchvision}`. Use `sys.stdlib_module_names` for stdlib.
@@ -85,7 +85,7 @@ Global flags: `--data-root` (default `Dhan-Shomadhan`), `--device {auto,cuda,mps
 - [x] One trivial test now (`--help` exits 0). Later phases add their own tests.
 - Done when: `python tools/export_py.py && python -m pytest -q && python <group_name>.py smoke` passes.
 
-### T1.7 Colab runner (`notebooks/colab_runner.ipynb`)
+### T1.7 Colab runner (`notebooks/runner.ipynb`)
 - [x] Cells: mount Drive; `pip install -r requirements.txt` (record `pip freeze` to Drive the first time); unzip `MyDrive/csci935/Dhan-Shomadhan.zip` to `/content/`; copy the latest `<group_name>.py` from `MyDrive/csci935/`; set `--data-root /content/Dhan-Shomadhan`.
 - [x] Restore `_work/cache` and `_work/weights` from Drive if present (saves ~5 min per session); otherwise run `download-weights` and `prepare`, then save them to Drive.
 - [x] One cell per experiment batch: `!python <group_name>.py run --exp E1-U`.
