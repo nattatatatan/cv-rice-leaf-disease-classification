@@ -1,0 +1,17 @@
+{
+  "lr": {
+    "resnet50": {
+      "value": 0.0001,
+      "evidence": {
+        "experiment": "E0-rect",
+        "split": 0,
+        "split_sha256": "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+        "val_mixed_macro_f1": {
+          "1e-4": 0.7735882221227048,
+          "3e-4": 0.7524463210345563
+        },
+        "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr"
+      }
+    }
+  }
+}
