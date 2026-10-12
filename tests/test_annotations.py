@@ -84,7 +84,7 @@ def test_prepare_annotations_writes_the_selection_and_copies_the_cached_images_i
     lines = []
     result = gs.prepare_annotations(root, records, out=lines.append)
     assert result["selected"] == 30 and result["copied"] == 30
-    assert "30 field images selected (10 dev, 20 eval)" in lines[0] and "no FIELD_ANNOTATIONS" in lines[1]
+    assert "30 field images selected (10 dev, 20 eval)" in lines[0] and "not the full dataset" in lines[1]
     selection = gs.load_selection(root)
     assert len(selection) == 30
     for row in selection:
@@ -93,6 +93,31 @@ def test_prepare_annotations_writes_the_selection_and_copies_the_cached_images_i
     before = gs.selection_path(root).read_bytes()
     assert gs.prepare_annotations(root, records, out=lambda _: None)["copied"] == 0
     assert gs.selection_path(root).read_bytes() == before
+
+
+def test_embedded_annotations_are_not_validated_against_a_synthetic_selection(gs, field_rich_root, monkeypatch):
+    """The embedded real polygons describe the real selection: on a tiny tree they are ignored (like DUPLICATE_GROUPS)."""
+    root, records = field_rich_root
+    monkeypatch.setattr(gs, "FIELD_ANNOTATIONS", {"bsf_1.jpg": {}}, raising=False)
+    lines = []
+    result = gs.prepare_annotations(root, records, out=lines.append)
+    assert result["figure"] is None and "not the full dataset" in lines[-1]
+
+
+def test_embedded_annotations_are_validated_when_the_index_is_the_full_dataset(gs, field_rich_root, monkeypatch):
+    root, records = field_rich_root
+    monkeypatch.setattr(gs, "class_domain_counts", lambda _: gs.EXPECTED_COUNTS)
+    monkeypatch.setattr(gs, "FIELD_ANNOTATIONS", {"bsf_1.jpg": {}}, raising=False)
+    with pytest.raises(gs.DatasetError, match="do not match the selection"):
+        gs.prepare_annotations(root, records, out=lambda _: None)
+
+
+def test_committed_annotations_validate_against_the_committed_selection(gs):
+    selection = gs.load_selection(DATA_ROOT)
+    annotations = gs.embedded_field_annotations()
+    assert annotations is not None, "annotations/field_salient_leaf.json is embedded"
+    assert gs.validate_field_annotations(annotations, selection) is annotations
+    assert len(annotations) == 30 and sum(a["ambiguous"] for a in annotations.values()) == 6
 
 
 def test_prepare_annotations_skips_data_with_too_few_field_images(gs, tiny_tree):
@@ -152,17 +177,31 @@ def test_annotation_overview_draws_every_polygon_on_a_300_dpi_figure(gs, field_r
     assert count(drawn, [0, 94, 213], 25) - count(bare, [0, 94, 213], 25) > 100, "ambiguous marker (vermilion)"
 
 
-def test_prepare_annotations_draws_the_overview_when_the_annotations_are_embedded(gs, field_rich_root, monkeypatch):
+def test_annotation_overview_keeps_smooth_gradients_smooth(gs, field_rich_root):
+    """The photos are downsampled with an area filter and drawn 1:1: a smooth ramp stays a smooth ramp (no palette, no flat bands)."""
     root, records = field_rich_root
     gs.prepare_annotations(root, records, out=lambda _: None)
-    monkeypatch.setattr(gs, "FIELD_ANNOTATIONS", synthetic_annotations(gs, gs.load_selection(root)), raising=False)
+    ramp = np.dstack([np.tile(np.linspace(20, 235, 1280)[:, None], (1, 600))] * 3).astype(np.uint8)
+    ramp[..., 1] = np.clip(ramp[..., 1].astype(int) + 15, 0, 255)
+    for row in gs.load_selection(root):
+        gs.write_bytes_atomic(gs.cache_dir(root) / row["filename"], gs.encode_jpeg(ramp, 95))
+    path = gs.save_annotation_overview(root, gs.load_selection(root), {})
+    image = cv2.imread(str(path))
+    column = image[:, image.shape[1] // 2 - 40 : image.shape[1] // 2 - 30, 1].mean(axis=1)
+    run = column[(column > 40) & (column < 220)]
+    assert len(np.unique(np.round(run))) > 150, "the green ramp keeps (nearly) every grey level"
+    assert np.abs(np.diff(run))[np.abs(np.diff(run)) < 5].size > 0.9 * (run.size - 1), "no jumps inside a tile"
+
+
+def test_prepare_annotations_draws_the_overview_for_the_given_annotations(gs, field_rich_root):
+    root, records = field_rich_root
+    gs.prepare_annotations(root, records, out=lambda _: None)
     lines = []
-    result = gs.prepare_annotations(root, records, out=lines.append)
+    result = gs.prepare_annotations(root, records, out=lines.append, annotations=synthetic_annotations(gs, gs.load_selection(root)))
     assert result["figure"] == root / "_work/figures/annotations_overview.png" and result["figure"].is_file()
     assert "6 ambiguous" in lines[-1]
-    monkeypatch.setattr(gs, "FIELD_ANNOTATIONS", {"bsf_1.jpg": {}}, raising=False)
     with pytest.raises(gs.DatasetError, match="do not match the selection"):
-        gs.prepare_annotations(root, records, out=lambda _: None)
+        gs.prepare_annotations(root, records, out=lambda _: None, annotations={"bsf_1.jpg": {}})
 
 
 # ------------------------------------------------------------------------------------------ the converter
