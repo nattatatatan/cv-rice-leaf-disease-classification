@@ -1,11 +1,11 @@
 Part,Method,Experiment,White macro-F1,White accuracy (%),Field macro-F1,Field accuracy (%),Mixed macro-F1,Mixed accuracy (%),Domain-balanced macro-F1,Domain-balanced accuracy (%)
-val,plain unified model,(G1 backbone not chosen),pending,pending,pending,pending,pending,pending,pending,pending
+val,plain unified model,E2-swin-U,0.806 +- 0.022,83.0 +- 1.4,0.753 +- 0.089,75.0 +- 9.3,0.792 +- 0.019,80.7 +- 2.0,0.779 +- 0.035,79.0 +- 4.0
 val,Method A (composites),E3-A,pending,pending,pending,pending,pending,pending,pending,pending
 val,"Method B (segment, crop)",E4-B,pending,pending,pending,pending,pending,pending,pending,pending
-val,A - plain (paired),E3-A - plain,pending,pending,pending,pending,pending,pending,pending,pending
-val,B - plain (paired),E4-B - plain,pending,pending,pending,pending,pending,pending,pending,pending
-test,plain unified model,(G1 backbone not chosen),hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2
+val,A - plain (paired),E3-A - E2-swin-U,pending,pending,pending,pending,pending,pending,pending,pending
+val,B - plain (paired),E4-B - E2-swin-U,pending,pending,pending,pending,pending,pending,pending,pending
+test,plain unified model,E2-swin-U,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2
 test,Method A (composites),E3-A,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2
 test,"Method B (segment, crop)",E4-B,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2
-test,A - plain (paired),E3-A - plain,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2
-test,B - plain (paired),E4-B - plain,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2
+test,A - plain (paired),E3-A - E2-swin-U,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2
+test,B - plain (paired),E4-B - E2-swin-U,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2

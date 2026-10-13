@@ -1,0 +1,41 @@
+{
+  "recorded_at": "2026-10-12T22:20:06.383889+00:00",
+  "platform": "kaggle",
+  "gpu": "Tesla T4",
+  "gpus": [
+    "Tesla T4",
+    "Tesla T4"
+  ],
+  "driver": "580.178.04",
+  "python": "3.13.15",
+  "torch": "2.11.0+cu128",
+  "torchvision": "0.26.0+cu128",
+  "opencv": "4.12.0",
+  "numpy": "2.1.3",
+  "cuda": "12.8",
+  "torch_pin_honoured": true,
+  "torch_install": "preinstalled",
+  "dataset_layout": {
+    "kind": "tree",
+    "source": "/kaggle/input/datasets/nattatatatan/csci935-dhan-shomadhan/Dhan-Shomadhan",
+    "source_top_level": [
+      "'Dhan-Shomadhan_picture_Information.csv'",
+      "'Field Background  '",
+      "'White Background '"
+    ],
+    "data_root_top_level": [
+      "'Dhan-Shomadhan_picture_Information.csv'",
+      "'Field Background  '",
+      "'White Background '"
+    ],
+    "differs_from_original_names": [],
+    "inputs": {
+      "code_dir": "/kaggle/input/datasets/nattatatatan/csci935-code",
+      "data_kind": "tree",
+      "data_source": "/kaggle/input/datasets/nattatatatan/csci935-dhan-shomadhan/Dhan-Shomadhan",
+      "runs_zip": "None",
+      "runs_dir": "None",
+      "choices": "/kaggle/input/datasets/nattatatatan/csci935-code/choices.json"
+    }
+  }
+}

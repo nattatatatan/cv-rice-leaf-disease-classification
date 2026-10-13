@@ -31,3 +31,8 @@ Dhan-Shomadhan/_work/figures/pseudo_mask_qc_*.png
 Dhan-Shomadhan/_work/figures/annotations_overview.png
 # Blind realism-check sheet (9 MB of photos, regenerated deterministically by `prepare`; the answer key in _work/results is tracked).
 Dhan-Shomadhan/_work/figures/composites_realism_check.png
+
+# Local hand-off folders (Kaggle outputs, code-dataset staging)
+kaggle_output/
+csci935-code/
+csci935-code.zip

@@ -12,6 +12,32 @@
         },
         "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr"
       }
+    },
+    "convnext_tiny": {
+      "value": 0.0001,
+      "evidence": {
+        "experiment": "E2-cnx-U",
+        "split": 0,
+        "split_sha256": "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+        "val_mixed_macro_f1": {
+          "1e-4": 0.8097466050213932,
+          "3e-4": 0.7878466657343928
+        },
+        "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr"
+      }
+    },
+    "swin_t": {
+      "value": 0.0003,
+      "evidence": {
+        "experiment": "E2-swin-U",
+        "split": 0,
+        "split_sha256": "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+        "val_mixed_macro_f1": {
+          "1e-4": 0.7730299114866666,
+          "3e-4": 0.8032132419863718
+        },
+        "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr"
+      }
     }
   },
   "input_mode": {
@@ -182,6 +208,210 @@
               -0.07473785473785455
             ],
             "splits_ahead": 1
+          }
+        }
+      }
+    }
+  },
+  "backbone": {
+    "value": "swin_t",
+    "evidence": {
+      "rule": "G1 (phase 04): choose the backbone with the highest validation mixed macro-F1 (mean over the 5 splits; std with ddof=1), among ResNet50 (E1-U), ConvNeXt-T and Swin-T. If the top two are within one std of each other, prefer the one with the higher mean validation field macro-F1 (field is the harder, more valuable domain). The top two are 'within one std' when their gap in mean is at most the larger of their two stds.",
+      "metric": "validation mixed macro-F1 (mean over the 5 splits; std with ddof=1)",
+      "decided_by": "within one std -> higher val field macro-F1",
+      "ranking": [
+        "convnext_tiny",
+        "swin_t",
+        "resnet50"
+      ],
+      "top_two_gap": 0.008410004651068115,
+      "tolerance_one_std": 0.019063845852122674,
+      "lr": {
+        "backbone": "swin_t",
+        "value": 0.0003,
+        "source": "choices.json lr[backbone], chosen by the split-0 sweep"
+      },
+      "candidates": {
+        "resnet50": {
+          "experiment": "E1-U",
+          "run_folder": "E0-rect",
+          "config_fingerprint": "63380991647ac0b5568bf5453af99f9362f5271e435c70e5f50123290c1198b3",
+          "split_sha256": [
+            "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+            "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+            "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+            "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+            "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa"
+          ],
+          "val_mixed_macro_f1": {
+            "mean": 0.7671911401005594,
+            "std": 0.021076003698026393,
+            "per_split": [
+              0.7735882221227048,
+              0.7785819664155389,
+              0.7602640429212437,
+              0.7343823227694519,
+              0.7891391462738577
+            ]
+          },
+          "val_field_macro_f1": {
+            "mean": 0.6832687259988781,
+            "std": 0.02720323945342519,
+            "per_split": [
+              0.682562091503268,
+              0.7042252484357748,
+              0.6708805668016194,
+              0.645161701044054,
+              0.7135140222096743
+            ]
+          }
+        },
+        "convnext_tiny": {
+          "experiment": "E2-cnx-U",
+          "run_folder": "E2-cnx-U",
+          "config_fingerprint": "7b328a708c2d9e7b15ff63e7088b996d9cee0f44d3cbaff03280ed28512b283e",
+          "split_sha256": [
+            "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+            "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+            "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+            "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+            "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa"
+          ],
+          "val_mixed_macro_f1": {
+            "mean": 0.800530299878852,
+            "std": 0.011770610089557421,
+            "per_split": [
+              0.8097466050213932,
+              0.815579283889735,
+              0.7959669105037651,
+              0.7944123043997212,
+              0.7869463955796455
+            ]
+          },
+          "val_field_macro_f1": {
+            "mean": 0.7390193766051082,
+            "std": 0.03843747926729644,
+            "per_split": [
+              0.7985631982770224,
+              0.6973450249665083,
+              0.7514721444133208,
+              0.7213333333333333,
+              0.7263831820353561
+            ]
+          }
+        },
+        "swin_t": {
+          "experiment": "E2-swin-U",
+          "run_folder": "E2-swin-U",
+          "config_fingerprint": "a02460e3fe8457a4774a67affd1fda28084a828d925e2268a45115862918755a",
+          "split_sha256": [
+            "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+            "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+            "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+            "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+            "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa"
+          ],
+          "val_mixed_macro_f1": {
+            "mean": 0.7921202952277839,
+            "std": 0.019063845852122674,
+            "per_split": [
+              0.8032132419863718,
+              0.7975844998874926,
+              0.7804573106205499,
+              0.7656647942358508,
+              0.8136816294086545
+            ]
+          },
+          "val_field_macro_f1": {
+            "mean": 0.7528742670743979,
+            "std": 0.08872607308833906,
+            "per_split": [
+              0.7990138745556702,
+              0.804001983568547,
+              0.6419649122807017,
+              0.6749827688651218,
+              0.8444077961019489
+            ]
+          }
+        }
+      },
+      "paired_differences": {
+        "convnext_tiny_minus_resnet50": {
+          "val_mixed_macro_f1": {
+            "mean": 0.03333915977829258,
+            "std": 0.022370929150766723,
+            "per_split": [
+              0.036158382898688335,
+              0.0369973174741961,
+              0.03570286758252139,
+              0.06002998163026929,
+              -0.002192750694212209
+            ],
+            "splits_ahead": 4
+          },
+          "val_field_macro_f1": {
+            "mean": 0.05575065060623006,
+            "std": 0.05105304656631255,
+            "per_split": [
+              0.11600110677375441,
+              -0.006880223469266533,
+              0.08059157761170133,
+              0.07617163228927926,
+              0.01286915982568182
+            ],
+            "splits_ahead": 4
+          }
+        },
+        "swin_t_minus_resnet50": {
+          "val_mixed_macro_f1": {
+            "mean": 0.02492915512722449,
+            "std": 0.00547993529462144,
+            "per_split": [
+              0.029625019863666946,
+              0.019002533471953686,
+              0.020193267699306183,
+              0.03128247146639884,
+              0.02454248313479679
+            ],
+            "splits_ahead": 5
+          },
+          "val_field_macro_f1": {
+            "mean": 0.06960554107551982,
+            "std": 0.0673616157649953,
+            "per_split": [
+              0.11645178305240222,
+              0.09977673513277219,
+              -0.02891565452091771,
+              0.029821067821067748,
+              0.13089377389227463
+            ],
+            "splits_ahead": 4
+          }
+        },
+        "swin_t_minus_convnext_tiny": {
+          "val_mixed_macro_f1": {
+            "mean": -0.008410004651068092,
+            "std": 0.021181335827390936,
+            "per_split": [
+              -0.006533363035021389,
+              -0.017994784002242414,
+              -0.015509599883215208,
+              -0.02874751016387045,
+              0.026735233829008997
+            ],
+            "splits_ahead": 1
+          },
+          "val_field_macro_f1": {
+            "mean": 0.01385489046928976,
+            "std": 0.09808942121758388,
+            "per_split": [
+              0.00045067627864781024,
+              0.10665695860203872,
+              -0.10950723213261904,
+              -0.04635056446821151,
+              0.11802461406659281
+            ],
+            "splits_ahead": 3
           }
         }
       }

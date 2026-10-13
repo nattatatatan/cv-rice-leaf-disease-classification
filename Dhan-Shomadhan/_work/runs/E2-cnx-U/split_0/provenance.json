@@ -1,0 +1,7 @@
+{
+  "copied_from": "sweep/E2-cnx-U_lr1e-4/split_0",
+  "reason": "choose-lr: the sweep run at the chosen lr is the same training as split 0 of this run (identical config fingerprint and split sha256), so it was copied instead of retrained",
+  "config_fingerprint": "7b328a708c2d9e7b15ff63e7088b996d9cee0f44d3cbaff03280ed28512b283e",
+  "split_sha256": "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+  "lr": 0.0001
+}
