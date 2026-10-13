@@ -4938,20 +4938,34 @@ def table_required(results: dict) -> Table:
     )
 
 
-def table_domains(results: dict) -> Table:
-    """Domain-wise and cross-domain experiments on the test split (only the subsets each row is about)."""
+DOMAIN_EXPERIMENTS = ("E1-WW", "E1-FF", "E1-WF", "E1-U", "E2-cnx-WF", "E2-swin-WF")
+OPTIONAL_DOMAIN_EXPERIMENTS = ("E3-A-WF",)  # Tier 4: a row only once it has run
+
+
+def table_domains(results: dict, choices) -> Table:
+    """Domain-wise and cross-domain experiments on the test split (only the subsets each row is about). E3-A-WF is a
+    Method A test number, so like the test rows of table_methods it stays hidden until gate G2 froze the recommendation."""
+    recommended = choices.raw("recommended")
     rows = []
-    for exp_id in ("E1-WW", "E1-FF", "E1-WF", "E1-U", "E2-cnx-WF", "E2-swin-WF"):
+    for exp_id in (*DOMAIN_EXPERIMENTS, *(e for e in OPTIONAL_DOMAIN_EXPERIMENTS if e in results)):
         base = EXPERIMENTS[exp_id]
+        found = results.get(exp_id)
+        backbone = found.config.backbone if found is not None else base.backbone
+        train_on = " + ".join(base.train_domains) + (" + composites" if base.use_composites else "")
         subsets = set(base.test_subsets) | ({"domain_balanced"} if "mixed" in base.test_subsets else set())
-        rows.append([exp_id, base.backbone, " + ".join(base.train_domains), *score_cells(results.get(exp_id), "test", subsets)])
+        cells = score_cells(found, "test", subsets)
+        if base.use_composites and recommended is None:
+            cells = [HIDDEN_UNTIL_G2 if cell != "-" else cell for cell in cells]
+        rows.append([exp_id, backbone, train_on, *cells])
     return Table(
         "table_domains",
         "Domain-wise and cross-domain experiments, test split",
         ("Experiment", "Backbone", "Train on", *SCORE_HEADER),
         rows,
         "W->W is E1-WW, F->F is E1-FF, W->F is E1-WF (field is its main result, white the reference), U is E1-U. "
-        "'-' marks subsets that a row is not about. Mean +- std over the 5 splits. Rows that are not complete yet read 'pending'.",
+        "E3-A-WF (when run) trains on white images plus composites: field images are only their backgrounds, so it is not "
+        "pure W->F; its test numbers are hidden until gate G2. '-' marks subsets that a row is not about. Mean +- std over "
+        "the 5 splits. Rows that are not complete yet read 'pending'.",
     )
 
 GATE_METRIC = "validation mixed macro-F1 (mean over the 5 splits; std with ddof=1)"
@@ -5420,7 +5434,9 @@ def summarize(data_root, out=print) -> None:
     data_root = Path(data_root)
     choices = load_choices(data_root)
     results = load_experiments(data_root, (*ANALYSIS_EXPERIMENTS, *METHOD_EXPERIMENTS, SEGMENTER_EXPERIMENT), choices)
-    tables = (table_input_mode(results), table_required(results), table_domains(results), table_methods(results, choices),
+    optional = [exp_id for exp_id in OPTIONAL_DOMAIN_EXPERIMENTS if (runs_dir(data_root) / exp_id).is_dir()]
+    results.update(load_experiments(data_root, optional, choices))
+    tables = (table_input_mode(results), table_required(results), table_domains(results, choices), table_methods(results, choices),
               table_segmenter(results.get(SEGMENTER_EXPERIMENT), data_root))
     for table in tables:
         for path in write_table(data_root, table):

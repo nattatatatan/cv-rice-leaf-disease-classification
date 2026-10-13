@@ -41,14 +41,15 @@ Steps, each with its reason:
 ### T5.3 Composite source for training (`extra_sources` hook from T3.2)
 - [x] `CompositeSource(split_k, n_per_epoch, seed)`: generates composites **on the fly** with a fresh rng per epoch (`seed * 1000 + epoch`), so each epoch sees new variations at no storage cost.
 - [x] Default `n_per_epoch` = number of white training images (~538), roughly tripling the "field-like" samples per epoch. Composites pass through the same train augmentation as real images.
-- [ ] Hyperparameter: on split 0 val only, compare `n_per_epoch` in {0.5x, 1x} white-train count. Record the choice in `choices.json`. (Code done; the Colab run is open: `run --exp E3-A --sweep-composites`, then `choose-composites`, which writes `composite_n_factor`; see the notebook `30_copy_paste.ipynb`, section T5.3. Needs gate G1 first.)
+- [x] Hyperparameter: on split 0 val only, compare `n_per_epoch` in {0.5x, 1x} white-train count. Record the choice in `choices.json`. (`run --exp E3-A --sweep-composites`, then `choose-composites`, which writes `composite_n_factor`; see the notebook `30_copy_paste.ipynb`, section T5.3.)
+  - Result (batch4, Kaggle T4 x2, recipe v2): 0.5x (269 per epoch) val mixed F1 0.790 vs 1x (538) 0.773 -> **0.5x**.
 
 ### T5.4 Experiments
-- [ ] `E3-A`: G1 backbone, G0 input mode, `train_domains = {white, field}`, `use_composites = True`, all 5 splits.
-- [ ] `E3-A-WF` (Tier 4): white train + composites only (no real field images as training samples). It tests whether synthesis closes the W->F gap from E1-WF/E2-*-WF. State clearly in the report that field images are still used as backgrounds and their class is used to choose them, so this is "white + field backgrounds", not pure W->F.
+- [x] `E3-A`: G1 backbone, G0 input mode, `train_domains = {white, field}`, `use_composites = True`, all 5 splits. (batch4)
+- [x] `E3-A-WF` (Tier 4, batch4-wf; `table_domains` row, test hidden until gate G2): white train + composites only (no real field images as training samples). It tests whether synthesis closes the W->F gap from E1-WF/E2-*-WF. State clearly in the report that field images are still used as backgrounds and their class is used to choose them, so this is "white + field backgrounds", not pure W->F.
 - [ ] Add to `findings.md`: E3-A vs plain G1 model on field / white / mixed val and test, with the paired per-split difference.
 
 ## Phase acceptance
 - [ ] Pseudo-mask QC reviewed and the reject list committed.
 - [ ] Composite example figure looks plausible to Nattan.
-- [ ] E3-A has 5 complete splits; `summarize` includes it.
+- [x] E3-A has 5 complete splits; `summarize` includes it.

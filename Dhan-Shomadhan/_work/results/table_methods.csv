@@ -1,8 +1,8 @@
 Part,Method,Experiment,White macro-F1,White accuracy (%),Field macro-F1,Field accuracy (%),Mixed macro-F1,Mixed accuracy (%),Domain-balanced macro-F1,Domain-balanced accuracy (%)
 val,plain unified model,E2-swin-U,0.806 +- 0.022,83.0 +- 1.4,0.753 +- 0.089,75.0 +- 9.3,0.792 +- 0.019,80.7 +- 2.0,0.779 +- 0.035,79.0 +- 4.0
-val,Method A (composites),E3-A,pending,pending,pending,pending,pending,pending,pending,pending
+val,Method A (composites),E3-A,0.791 +- 0.013,81.5 +- 1.6,0.765 +- 0.049,77.2 +- 5.1,0.785 +- 0.015,80.2 +- 1.2,0.778 +- 0.021,79.3 +- 2.2
 val,"Method B (segment, crop)",E4-B,pending,pending,pending,pending,pending,pending,pending,pending
-val,A - plain (paired),E3-A - E2-swin-U,pending,pending,pending,pending,pending,pending,pending,pending
+val,A - plain (paired),E3-A - E2-swin-U,-0.015 +- 0.025,-1.6 +- 2.2,+0.012 +- 0.099,+2.1 +- 9.4,-0.007 +- 0.017,-0.5 +- 1.5,-0.002 +- 0.038,+0.3 +- 3.7
 val,B - plain (paired),E4-B - E2-swin-U,pending,pending,pending,pending,pending,pending,pending,pending
 test,plain unified model,E2-swin-U,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2
 test,Method A (composites),E3-A,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2,hidden until gate g2

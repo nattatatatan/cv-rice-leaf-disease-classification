@@ -1,0 +1,7 @@
+{
+  "copied_from": "sweep/E3-A_n0.5/split_0",
+  "reason": "choose-composites: the sweep run at the chosen composites-per-epoch factor is the same training as split 0 of this run (identical config fingerprint and split sha256), so it was copied instead of retrained",
+  "config_fingerprint": "5c2d15ad61c6aff926ef42ea2bda984905ce247ff9930dcab62dfff4b432b045",
+  "split_sha256": "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+  "n_factor": 0.5
+}

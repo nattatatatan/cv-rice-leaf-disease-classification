@@ -1,0 +1,501 @@
+{
+ "format": 1,
+ "exp_id": "E3-A-WF",
+ "requested_exp_id": "E3-A-WF",
+ "split": 2,
+ "seed": 2,
+ "split_sha256": "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+ "config_fingerprint": "0e4a2e9e457369867e6bcddc47e10f32d8dda4abfb74cececcaf8bae8ba5402b",
+ "wall_time_s": 1078.31,
+ "train_time_s": 1054.49,
+ "seconds_per_epoch": 32.952,
+ "device": "cuda",
+ "backbone": "swin_t",
+ "input_mode": "rect",
+ "lr": 0.0003,
+ "parameters": 27523199,
+ "train_domains": [
+  "white"
+ ],
+ "select_domains": [
+  "white"
+ ],
+ "test_subsets": [
+  "field",
+  "white"
+ ],
+ "n_train": 809,
+ "n_val": 164,
+ "n_test": 162,
+ "epochs_run": 32,
+ "best_epoch": 29,
+ "best_val_select_macro_f1": 0.8324776934845237,
+ "stopped_early": false,
+ "batch_size": 32,
+ "grad_accum": 1,
+ "oom_fallback": false,
+ "fast": false,
+ "overrides": {},
+ "val": {
+  "white": {
+   "n": 115,
+   "accuracy": 0.8521739130434782,
+   "macro_f1": 0.8324776934845237,
+   "per_class": {
+    "Brown Spot": {
+     "precision": 0.6875,
+     "recall": 0.7857142857142857,
+     "f1": 0.7333333333333333,
+     "support": 14
+    },
+    "Leaf Scald": {
+     "precision": 0.8333333333333334,
+     "recall": 0.7142857142857143,
+     "f1": 0.7692307692307693,
+     "support": 21
+    },
+    "Rice Blast": {
+     "precision": 0.8333333333333334,
+     "recall": 0.8620689655172413,
+     "f1": 0.847457627118644,
+     "support": 29
+    },
+    "Rice Tungro": {
+     "precision": 0.8823529411764706,
+     "recall": 0.8333333333333334,
+     "f1": 0.8571428571428571,
+     "support": 18
+    },
+    "Sheath Blight": {
+     "precision": 0.9411764705882353,
+     "recall": 0.9696969696969697,
+     "f1": 0.9552238805970149,
+     "support": 33
+    }
+   },
+   "confusion_matrix": [
+    [
+     11,
+     0,
+     3,
+     0,
+     0
+    ],
+    [
+     5,
+     15,
+     0,
+     1,
+     0
+    ],
+    [
+     0,
+     1,
+     25,
+     1,
+     2
+    ],
+    [
+     0,
+     2,
+     1,
+     15,
+     0
+    ],
+    [
+     0,
+     0,
+     1,
+     0,
+     32
+    ]
+   ]
+  },
+  "field": {
+   "n": 49,
+   "accuracy": 0.7142857142857143,
+   "macro_f1": 0.7210301394511921,
+   "per_class": {
+    "Brown Spot": {
+     "precision": 0.8571428571428571,
+     "recall": 0.6666666666666666,
+     "f1": 0.75,
+     "support": 9
+    },
+    "Leaf Scald": {
+     "precision": 0.625,
+     "recall": 0.5,
+     "f1": 0.5555555555555556,
+     "support": 10
+    },
+    "Rice Blast": {
+     "precision": 0.5714285714285714,
+     "recall": 0.6666666666666666,
+     "f1": 0.6153846153846154,
+     "support": 12
+    },
+    "Rice Tungro": {
+     "precision": 0.8,
+     "recall": 0.8888888888888888,
+     "f1": 0.8421052631578947,
+     "support": 9
+    },
+    "Sheath Blight": {
+     "precision": 0.8,
+     "recall": 0.8888888888888888,
+     "f1": 0.8421052631578947,
+     "support": 9
+    }
+   },
+   "confusion_matrix": [
+    [
+     6,
+     1,
+     2,
+     0,
+     0
+    ],
+    [
+     0,
+     5,
+     3,
+     2,
+     0
+    ],
+    [
+     1,
+     1,
+     8,
+     0,
+     2
+    ],
+    [
+     0,
+     1,
+     0,
+     8,
+     0
+    ],
+    [
+     0,
+     0,
+     1,
+     0,
+     8
+    ]
+   ]
+  },
+  "mixed": {
+   "n": 164,
+   "accuracy": 0.8109756097560976,
+   "macro_f1": 0.7998879637948404,
+   "per_class": {
+    "Brown Spot": {
+     "precision": 0.7391304347826086,
+     "recall": 0.7391304347826086,
+     "f1": 0.7391304347826086,
+     "support": 23
+    },
+    "Leaf Scald": {
+     "precision": 0.7692307692307693,
+     "recall": 0.6451612903225806,
+     "f1": 0.7017543859649122,
+     "support": 31
+    },
+    "Rice Blast": {
+     "precision": 0.75,
+     "recall": 0.8048780487804879,
+     "f1": 0.7764705882352941,
+     "support": 41
+    },
+    "Rice Tungro": {
+     "precision": 0.8518518518518519,
+     "recall": 0.8518518518518519,
+     "f1": 0.8518518518518519,
+     "support": 27
+    },
+    "Sheath Blight": {
+     "precision": 0.9090909090909091,
+     "recall": 0.9523809523809523,
+     "f1": 0.9302325581395349,
+     "support": 42
+    }
+   },
+   "confusion_matrix": [
+    [
+     17,
+     1,
+     5,
+     0,
+     0
+    ],
+    [
+     5,
+     20,
+     3,
+     3,
+     0
+    ],
+    [
+     1,
+     2,
+     33,
+     1,
+     4
+    ],
+    [
+     0,
+     3,
+     1,
+     23,
+     0
+    ],
+    [
+     0,
+     0,
+     2,
+     0,
+     40
+    ]
+   ]
+  },
+  "domain_balanced": {
+   "accuracy": 0.7832298136645963,
+   "macro_f1": 0.7767539164678579
+  }
+ },
+ "test": {
+  "white": {
+   "n": 115,
+   "accuracy": 0.8869565217391304,
+   "macro_f1": 0.8623251243962443,
+   "per_class": {
+    "Brown Spot": {
+     "precision": 0.8888888888888888,
+     "recall": 0.6153846153846154,
+     "f1": 0.7272727272727273,
+     "support": 13
+    },
+    "Leaf Scald": {
+     "precision": 0.8181818181818182,
+     "recall": 0.8571428571428571,
+     "f1": 0.8372093023255814,
+     "support": 21
+    },
+    "Rice Blast": {
+     "precision": 0.8928571428571429,
+     "recall": 0.8333333333333334,
+     "f1": 0.8620689655172413,
+     "support": 30
+    },
+    "Rice Tungro": {
+     "precision": 0.8181818181818182,
+     "recall": 1.0,
+     "f1": 0.9,
+     "support": 18
+    },
+    "Sheath Blight": {
+     "precision": 0.9705882352941176,
+     "recall": 1.0,
+     "f1": 0.9850746268656716,
+     "support": 33
+    }
+   },
+   "confusion_matrix": [
+    [
+     8,
+     1,
+     3,
+     1,
+     0
+    ],
+    [
+     1,
+     18,
+     0,
+     1,
+     1
+    ],
+    [
+     0,
+     3,
+     25,
+     2,
+     0
+    ],
+    [
+     0,
+     0,
+     0,
+     18,
+     0
+    ],
+    [
+     0,
+     0,
+     0,
+     0,
+     33
+    ]
+   ]
+  },
+  "field": {
+   "n": 47,
+   "accuracy": 0.6808510638297872,
+   "macro_f1": 0.6818664307828394,
+   "per_class": {
+    "Brown Spot": {
+     "precision": 1.0,
+     "recall": 0.7142857142857143,
+     "f1": 0.8333333333333334,
+     "support": 7
+    },
+    "Leaf Scald": {
+     "precision": 0.42857142857142855,
+     "recall": 0.3,
+     "f1": 0.35294117647058826,
+     "support": 10
+    },
+    "Rice Blast": {
+     "precision": 0.625,
+     "recall": 0.8333333333333334,
+     "f1": 0.7142857142857143,
+     "support": 12
+    },
+    "Rice Tungro": {
+     "precision": 0.6666666666666666,
+     "recall": 0.6666666666666666,
+     "f1": 0.6666666666666666,
+     "support": 9
+    },
+    "Sheath Blight": {
+     "precision": 0.8,
+     "recall": 0.8888888888888888,
+     "f1": 0.8421052631578947,
+     "support": 9
+    }
+   },
+   "confusion_matrix": [
+    [
+     5,
+     1,
+     0,
+     1,
+     0
+    ],
+    [
+     0,
+     3,
+     4,
+     2,
+     1
+    ],
+    [
+     0,
+     2,
+     10,
+     0,
+     0
+    ],
+    [
+     0,
+     0,
+     2,
+     6,
+     1
+    ],
+    [
+     0,
+     1,
+     0,
+     0,
+     8
+    ]
+   ]
+  },
+  "mixed": {
+   "n": 162,
+   "accuracy": 0.8271604938271605,
+   "macro_f1": 0.8119467899429218,
+   "per_class": {
+    "Brown Spot": {
+     "precision": 0.9285714285714286,
+     "recall": 0.65,
+     "f1": 0.7647058823529411,
+     "support": 20
+    },
+    "Leaf Scald": {
+     "precision": 0.7241379310344828,
+     "recall": 0.6774193548387096,
+     "f1": 0.7,
+     "support": 31
+    },
+    "Rice Blast": {
+     "precision": 0.7954545454545454,
+     "recall": 0.8333333333333334,
+     "f1": 0.813953488372093,
+     "support": 42
+    },
+    "Rice Tungro": {
+     "precision": 0.7741935483870968,
+     "recall": 0.8888888888888888,
+     "f1": 0.8275862068965517,
+     "support": 27
+    },
+    "Sheath Blight": {
+     "precision": 0.9318181818181818,
+     "recall": 0.9761904761904762,
+     "f1": 0.9534883720930233,
+     "support": 42
+    }
+   },
+   "confusion_matrix": [
+    [
+     13,
+     2,
+     3,
+     2,
+     0
+    ],
+    [
+     1,
+     21,
+     4,
+     3,
+     2
+    ],
+    [
+     0,
+     5,
+     35,
+     2,
+     0
+    ],
+    [
+     0,
+     0,
+     2,
+     24,
+     1
+    ],
+    [
+     0,
+     1,
+     0,
+     0,
+     41
+    ]
+   ]
+  },
+  "domain_balanced": {
+   "accuracy": 0.7839037927844588,
+   "macro_f1": 0.7720957775895418
+  }
+ },
+ "composites": {
+  "n_factor": 0.5,
+  "n_per_epoch": 270,
+  "recipe": "a1a37be370d7",
+  "scale": 0.5
+ }
+}

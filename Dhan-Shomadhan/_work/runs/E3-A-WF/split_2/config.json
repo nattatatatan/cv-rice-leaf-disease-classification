@@ -1,0 +1,57 @@
+{
+ "format": 1,
+ "requested_exp_id": "E3-A-WF",
+ "experiment": {
+  "exp_id": "E3-A-WF",
+  "backbone": "swin_t",
+  "train_domains": [
+   "white"
+  ],
+  "select_domains": [
+   "white"
+  ],
+  "test_subsets": [
+   "field",
+   "white"
+  ],
+  "input_mode": "rect",
+  "use_composites": true,
+  "seg_crop": false,
+  "kind": "classifier",
+  "alias_of_winner": "",
+  "stage1_epochs": 2,
+  "stage1_lr": 0.001,
+  "epochs": 30,
+  "lr": 0.0003,
+  "weight_decay": 0.05,
+  "warmup_epochs": 1,
+  "label_smoothing": 0.1,
+  "batch_size": 32,
+  "grad_accum": 1,
+  "clip_norm": 1.0,
+  "patience": 10,
+  "dropout": 0.2,
+  "pretrained": true,
+  "size_div": 1,
+  "note": "white + composites; field images are only backgrounds"
+ },
+ "split": 2,
+ "seed": 2,
+ "seed_offset": 0,
+ "limit": null,
+ "choices_used": {
+  "backbone": "swin_t",
+  "input_mode": "rect",
+  "lr[swin_t]": 0.0003,
+  "composite_n_factor": 0.5
+ },
+ "notes": [],
+ "overrides": {},
+ "seg_boxes_sha256": null,
+ "weights": "Swin_T_Weights.IMAGENET1K_V1",
+ "input_size": [
+  448,
+  224
+ ],
+ "config_fingerprint": "0e4a2e9e457369867e6bcddc47e10f32d8dda4abfb74cececcaf8bae8ba5402b"
+}

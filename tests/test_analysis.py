@@ -573,6 +573,23 @@ def test_table_methods_shows_test_numbers_only_after_g2(gs, g2_root):
     assert "Left out because of a cut line: Method B." in findings
 
 
+def test_table_domains_adds_e3_a_wf_once_run_and_hides_its_test_numbers_until_g2(gs, g2_root):
+    root = g2_root
+    add_run(gs, root, "E0-rect", 0.78)
+    add_run(gs, root, "E3-A", 0.84)
+    gs.summarize(root, out=lambda _: None)
+    assert "| E3-A-WF" not in read_results(gs, root, "table_domains.md")  # optional row, not run yet
+    add_run(gs, root, "E3-A-WF", 0.70, 0.55)
+    gs.summarize(root, out=lambda _: None)
+    row = next(line for line in read_results(gs, root, "table_domains.md").splitlines() if line.startswith("| E3-A-WF"))
+    assert row.startswith("| E3-A-WF | resnet50 | white + composites | hidden until gate g2 |")
+    assert row.endswith("| - | - | - | - |")  # mixed and balanced are not what a W->F row is about
+    gs.run_gate(root, "g2", out=lambda _: None, cut=("B",))
+    gs.summarize(root, out=lambda _: None)
+    row = next(line for line in read_results(gs, root, "table_domains.md").splitlines() if line.startswith("| E3-A-WF"))
+    assert "hidden" not in row and "| 0.520 +- 0.016 |" in row  # test field = val 0.55 - 0.03
+
+
 def add_segmenter(gs, root, *, eval_sections=True, stale_split=None):
     """Synthetic S-seg runs (metrics.json as `run_seg_split` writes it) and, optionally, their eval sections."""
     config = gs.EXPERIMENTS["S-seg"]
