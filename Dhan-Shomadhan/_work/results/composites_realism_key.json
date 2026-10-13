@@ -12,7 +12,7 @@
    "column": 1,
    "kind": "composite",
    "class": "Rice Tungro",
-   "leaf": "rt_wb_58.jpg",
+   "leaf": "rt_wb_61.jpg",
    "background": "rtf_68.jpg"
   },
   {
@@ -96,7 +96,7 @@
    "column": 3,
    "kind": "composite",
    "class": "Rice Tungro",
-   "leaf": "rt_wb_29.jpg",
+   "leaf": "rt_wb_30.jpg",
    "background": "rtf_57.jpg"
   },
   {
@@ -105,7 +105,7 @@
    "column": 4,
    "kind": "composite",
    "class": "Rice Blast",
-   "leaf": "rb_wb_64.jpg",
+   "leaf": "rb_wb_65.jpg",
    "background": "rbf_5.jpg"
   },
   {
@@ -114,7 +114,7 @@
    "column": 5,
    "kind": "composite",
    "class": "Sheath Blight",
-   "leaf": "sb_wb_127.jpg",
+   "leaf": "sb_wb_128.jpg",
    "background": "sbf_27.jpg"
   },
   {
@@ -123,7 +123,7 @@
    "column": 6,
    "kind": "composite",
    "class": "Leaf Scald",
-   "leaf": "ls_wb_124.jpg",
+   "leaf": "ls_wb_125.jpg",
    "background": "lsf_72.jpg"
   },
   {
@@ -140,7 +140,7 @@
    "column": 8,
    "kind": "composite",
    "class": "Brown Spot",
-   "leaf": "bs_wb_78.jpg",
+   "leaf": "bs_wb_79.jpg",
    "background": "bsf_1.jpg"
   },
   {
@@ -149,7 +149,7 @@
    "column": 1,
    "kind": "composite",
    "class": "Leaf Scald",
-   "leaf": "ls_wb_127.jpg",
+   "leaf": "ls_wb_128.jpg",
    "background": "lsf_40.jpg"
   },
   {
@@ -191,7 +191,7 @@
    "column": 6,
    "kind": "composite",
    "class": "Brown Spot",
-   "leaf": "bs_wb_70.jpg",
+   "leaf": "bs_wb_71.jpg",
    "background": "bsf_43.jpg"
   },
   {
@@ -224,7 +224,7 @@
    "column": 2,
    "kind": "composite",
    "class": "Rice Blast",
-   "leaf": "rb_wb_64.jpg",
+   "leaf": "rb_wb_65.jpg",
    "background": "rbf_45.jpg"
   },
   {
@@ -233,7 +233,7 @@
    "column": 3,
    "kind": "composite",
    "class": "Rice Tungro",
-   "leaf": "rt_wb_28.jpg",
+   "leaf": "rt_wb_3.jpg",
    "background": "rtf_15.jpg"
   },
   {
@@ -301,7 +301,7 @@
    "column": 3,
    "kind": "composite",
    "class": "Sheath Blight",
-   "leaf": "sb_wb_73.jpg",
+   "leaf": "sb_wb_74.jpg",
    "background": "sbf_45.jpg"
   },
   {

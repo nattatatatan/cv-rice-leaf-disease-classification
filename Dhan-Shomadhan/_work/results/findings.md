@@ -7,3 +7,17 @@ Sections between `<!-- auto:NAME:begin -->` and `<!-- auto:NAME:end -->` markers
 
 Gate G0 picked the rect input (448x224) with the rule fixed in phase 04: highest mean validation mixed macro-F1, and if the top two are within one std, prefer rect. Validation mixed macro-F1 (mean +- std over 5 splits) was squash 0.780 +- 0.017, rect 0.767 +- 0.021 and pad 0.741 +- 0.027. Squash leads rect by 0.013, less than one std (0.021), so rect was preferred because it keeps the leaf geometry at no extra cost. The paired squash-minus-rect validation difference is +0.013 +- 0.019 on mixed and +0.025 +- 0.021 on field macro-F1, with squash ahead on field in 5 of 5 splits; this is recorded as a finding, not as a reason to revisit the choice.
 <!-- auto:g0:end -->
+
+## Composite realism check (human, blind) - T5.2
+
+Nattan reviewed `composites_realism_check.png` (20 composites + 20 real field train images, shuffled 5x8 grid, split 0, seed 7;
+composite recipe of commit d149b7a, before the white reject list existed) without the key. 12 images were flagged as composites
+and all 12 were composites (precision 12/12); 8 of the 20 composites were missed (recall 12/20 = 60%), including positions 3, 11, 12
+and 13. The composites are therefore identifiable more often than not. Tells reported:
+
+- the pasted leaf does not match the scene's lighting (brightness/colour context);
+- the pasted leaf is spatially detached from the plants around it, e.g. a leaf entering from the top edge (position 5);
+- a visible remnant of the white paper background around the leaf (position 14).
+
+Consequence: before Method A trains, composite placement and harmonisation are revised (T5.2 steps 3-6) and the blind check is
+repeated.
