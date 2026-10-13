@@ -573,6 +573,15 @@ def test_table_methods_shows_test_numbers_only_after_g2(gs, g2_root):
     assert "Left out because of a cut line: Method B." in findings
 
 
+def test_g2_findings_reads_the_plain_method_with_an_article(gs, g2_root):
+    root = g2_root
+    add_run(gs, root, "E0-rect", 0.84)
+    add_run(gs, root, "E3-A", 0.84)
+    gs.run_gate(root, "g2", out=lambda _: None, cut=("B",))
+    gs.summarize(root, out=lambda _: None)
+    assert "Gate G2 recommends the plain unified model (E1-U)," in read_results(gs, root, "findings.md")
+
+
 def test_table_domains_adds_e3_a_wf_once_run_and_hides_its_test_numbers_until_g2(gs, g2_root):
     root = g2_root
     add_run(gs, root, "E0-rect", 0.78)

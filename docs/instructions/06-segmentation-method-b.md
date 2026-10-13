@@ -59,10 +59,10 @@ Prerequisites: 05 T5.1-T5.3 done. T6.1 (annotation) is manual and can start on d
 
 - [x] Candidates: plain G1 unified model, `E3-A`, `E4-B`. (`gate g2`; `--cut A` / `--cut B` leaves out a method dropped by a cut line, otherwise every candidate must be complete.)
 - [x] Rule: highest **mean val mixed macro-F1**. If the top two are within one std, pick the higher **val field** macro-F1. If still within one std, pick the simpler (plain < A < B).
-- [ ] Write `{"recommended": ..., "evidence": {...}}` to `choices.json`. Freeze it. (Code done: `gate g2` writes it and refuses a different outcome later unless `--force`; `table_methods` shows test rows only after it exists. The decision itself is open.) Then, and only then, open the test-set table for the recommended method. Its test results answer scenarios (a), (b), (c).
-- [ ] If the decision is ambiguous, or the recommended method differs from what the test numbers would suggest, **report the val-based choice anyway** and discuss the discrepancy in 6.3. Flipping the choice after seeing test numbers is test-set selection.
+- [x] Write `{"recommended": ..., "evidence": {...}}` to `choices.json`. Freeze it. (`gate g2 --cut B`, 2026-10-13: **E2-swin-U, the plain unified model**; within one std on val mixed and on val field -> simpler method.) Then, and only then, open the test-set table for the recommended method. Its test results answer scenarios (a), (b), (c).
+- [x] (Not needed: test agrees with val, see `findings.md`.) If the decision is ambiguous, or the recommended method differs from what the test numbers would suggest, **report the val-based choice anyway** and discuss the discrepancy in 6.3. Flipping the choice after seeing test numbers is test-set selection.
 
 ## Phase acceptance
 - [ ] `FIELD_ANNOTATIONS` embedded; segmenter metrics table and figure produced.
 - [ ] E4-B complete over 5 splits.
-- [ ] `choices.json.recommended` set; `findings.md` explains why, with numbers.
+- [x] `choices.json.recommended` set; `findings.md` explains why, with numbers.

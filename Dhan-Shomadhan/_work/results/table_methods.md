@@ -4,13 +4,13 @@ Mean +- std over the 5 splits (std with ddof=1). Plain is the unified model of t
 
 | Part | Method | Experiment | White macro-F1 | White accuracy (%) | Field macro-F1 | Field accuracy (%) | Mixed macro-F1 | Mixed accuracy (%) | Domain-balanced macro-F1 | Domain-balanced accuracy (%) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| val | plain unified model | E2-swin-U | 0.806 +- 0.022 | 83.0 +- 1.4 | 0.753 +- 0.089 | 75.0 +- 9.3 | 0.792 +- 0.019 | 80.7 +- 2.0 | 0.779 +- 0.035 | 79.0 +- 4.0 |
+| val | plain unified model (recommended) | E2-swin-U | 0.806 +- 0.022 | 83.0 +- 1.4 | 0.753 +- 0.089 | 75.0 +- 9.3 | 0.792 +- 0.019 | 80.7 +- 2.0 | 0.779 +- 0.035 | 79.0 +- 4.0 |
 | val | Method A (composites) | E3-A | 0.791 +- 0.013 | 81.5 +- 1.6 | 0.765 +- 0.049 | 77.2 +- 5.1 | 0.785 +- 0.015 | 80.2 +- 1.2 | 0.778 +- 0.021 | 79.3 +- 2.2 |
 | val | Method B (segment, crop) | E4-B | pending | pending | pending | pending | pending | pending | pending | pending |
 | val | A - plain (paired) | E3-A - E2-swin-U | -0.015 +- 0.025 | -1.6 +- 2.2 | +0.012 +- 0.099 | +2.1 +- 9.4 | -0.007 +- 0.017 | -0.5 +- 1.5 | -0.002 +- 0.038 | +0.3 +- 3.7 |
 | val | B - plain (paired) | E4-B - E2-swin-U | pending | pending | pending | pending | pending | pending | pending | pending |
-| test | plain unified model | E2-swin-U | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 |
-| test | Method A (composites) | E3-A | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 |
-| test | Method B (segment, crop) | E4-B | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 |
-| test | A - plain (paired) | E3-A - E2-swin-U | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 |
-| test | B - plain (paired) | E4-B - E2-swin-U | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 |
+| test | plain unified model (recommended) | E2-swin-U | 0.798 +- 0.053 | 82.7 +- 4.9 | 0.675 +- 0.072 | 67.6 +- 6.0 | 0.763 +- 0.033 | 78.3 +- 3.6 | 0.736 +- 0.036 | 75.1 +- 3.4 |
+| test | Method A (composites) | E3-A | 0.776 +- 0.014 | 80.5 +- 1.8 | 0.680 +- 0.037 | 68.8 +- 4.5 | 0.750 +- 0.013 | 77.1 +- 2.1 | 0.728 +- 0.018 | 74.6 +- 2.6 |
+| test | Method B (segment, crop) | E4-B | pending | pending | pending | pending | pending | pending | pending | pending |
+| test | A - plain (paired) | E3-A - E2-swin-U | -0.022 +- 0.049 | -2.2 +- 4.5 | +0.005 +- 0.074 | +1.2 +- 7.3 | -0.013 +- 0.032 | -1.2 +- 3.7 | -0.008 +- 0.038 | -0.5 +- 4.1 |
+| test | B - plain (paired) | E4-B - E2-swin-U | pending | pending | pending | pending | pending | pending | pending | pending |

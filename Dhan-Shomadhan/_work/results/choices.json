@@ -433,5 +433,124 @@
       },
       "rule": "higher validation mixed macro-F1 on split 0; a tie goes to 1x (the default)"
     }
+  },
+  "recommended": {
+    "value": "E2-swin-U",
+    "evidence": {
+      "rule": "G2 (phase 06): recommend the method with the highest validation mixed macro-F1 (mean over the 5 splits; std with ddof=1), among the plain unified model of the G1 backbone, Method A (E3-A) and Method B (E4-B). If the top two are within one std of each other, prefer the one with the higher mean validation field macro-F1; if their field means are also within one std, prefer the simpler method (plain < A < B). The top two are 'within one std' when their gap in mean is at most the larger of their two stds.",
+      "metric": "validation mixed macro-F1 (mean over the 5 splits; std with ddof=1)",
+      "method": "plain",
+      "method_label": "plain unified model",
+      "decided_by": "within one std on mixed and on field -> simpler method",
+      "ranking": [
+        "plain",
+        "A"
+      ],
+      "top_two_gap": 0.006700702848786988,
+      "tolerance_one_std": 0.019063845852122674,
+      "field_gap": 0.012045174128123115,
+      "field_tolerance_one_std": 0.08872607308833906,
+      "cut": [
+        "B"
+      ],
+      "candidates": {
+        "plain": {
+          "experiment": "E2-swin-U",
+          "run_folder": "E2-swin-U",
+          "config_fingerprint": "a02460e3fe8457a4774a67affd1fda28084a828d925e2268a45115862918755a",
+          "split_sha256": [
+            "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+            "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+            "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+            "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+            "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa"
+          ],
+          "val_mixed_macro_f1": {
+            "mean": 0.7921202952277839,
+            "std": 0.019063845852122674,
+            "per_split": [
+              0.8032132419863718,
+              0.7975844998874926,
+              0.7804573106205499,
+              0.7656647942358508,
+              0.8136816294086545
+            ]
+          },
+          "val_field_macro_f1": {
+            "mean": 0.7528742670743979,
+            "std": 0.08872607308833906,
+            "per_split": [
+              0.7990138745556702,
+              0.804001983568547,
+              0.6419649122807017,
+              0.6749827688651218,
+              0.8444077961019489
+            ]
+          }
+        },
+        "A": {
+          "experiment": "E3-A",
+          "run_folder": "E3-A",
+          "config_fingerprint": "5c2d15ad61c6aff926ef42ea2bda984905ce247ff9930dcab62dfff4b432b045",
+          "split_sha256": [
+            "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+            "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+            "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+            "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+            "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa"
+          ],
+          "val_mixed_macro_f1": {
+            "mean": 0.785419592378997,
+            "std": 0.01511990376346331,
+            "per_split": [
+              0.7895659881418985,
+              0.7731210412818752,
+              0.7990013117232486,
+              0.7661700618222357,
+              0.7992395589257271
+            ]
+          },
+          "val_field_macro_f1": {
+            "mean": 0.764919441202521,
+            "std": 0.04895493098383134,
+            "per_split": [
+              0.7407264957264957,
+              0.7605009178464556,
+              0.8224134053081421,
+              0.6992002063983488,
+              0.801756180733163
+            ]
+          }
+        }
+      },
+      "paired_differences": {
+        "A_minus_plain": {
+          "val_mixed_macro_f1": {
+            "mean": -0.0067007028487868995,
+            "std": 0.01668022724043447,
+            "per_split": [
+              -0.013647253844473295,
+              -0.024463458605617383,
+              0.018544001102698715,
+              0.0005052675863849165,
+              -0.01444207048292745
+            ],
+            "splits_ahead": 2
+          },
+          "val_field_macro_f1": {
+            "mean": 0.012045174128123115,
+            "std": 0.09941281778644817,
+            "per_split": [
+              -0.05828737882917445,
+              -0.04350106572209145,
+              0.18044849302744037,
+              0.024217437533227026,
+              -0.04265161536878592
+            ],
+            "splits_ahead": 2
+          }
+        }
+      }
+    }
   }
 }

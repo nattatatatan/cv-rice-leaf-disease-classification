@@ -33,3 +33,29 @@ accuracy below 26/40 (the one-sided binomial p < 0.05 threshold against guessing
 cleanly than v1 (5 false alarms instead of none). Method A (E3-A) trained on v2. All evaluation uses real images only, so
 detectable composites cannot inflate a reported number; they can only make the extra training samples less useful (or teach
 a paste cue that real test images never trigger).
+
+## Method A (composites) - T5.4
+
+Recipe v2, 0.5x composites per epoch (269; the split-0 sweep gave val mixed F1 0.790 at 0.5x vs 0.773 at 1x), Swin-T, rect,
+Kaggle T4 x2. Mean +- std over the 5 splits (ddof=1); paired = per-split difference.
+
+- **E3-A vs the plain unified model (E2-swin-U), with real field images in training.** No gain. Validation: mixed 0.785 vs
+  0.792 (paired -0.007 +- 0.017), field 0.765 vs 0.753 (+0.012 +- 0.099). Test, opened after gate G2 froze plain: mixed
+  0.750 vs 0.763 (-0.013 +- 0.032), field 0.680 vs 0.675 (+0.005 +- 0.074), white 0.776 vs 0.798 (-0.022 +- 0.049). Test
+  agrees with validation, so there is no val/test discrepancy to discuss. One visible effect: E3-A's spread over splits is
+  about half of plain's (test mixed std 0.013 vs 0.033), which may be worth a sentence but is five splits only.
+- **E3-A-WF vs E2-swin-WF, no real field images as training samples.** Large gain. Test field macro-F1 0.647 +- 0.084 vs
+  0.300 +- 0.027 (paired +0.347 +- 0.063, ahead on 5 of 5 splits), white unchanged (0.799 vs 0.809, -0.010 +- 0.042). That
+  is within 0.028 +- 0.032 of the unified model trained on real field images (0.675). Caveat for the report: field images
+  are still used as composite backgrounds and their class chooses the background, so this is "white + field backgrounds",
+  not pure W->F.
+- **Reading.** Composites carry most of the field signal when real field leaves are absent, but add nothing once the model
+  already sees about 240 real field images per split (778 training images, 538 of them white). Recipe v2 still failed the blind realism check (above), so a more
+  realistic recipe might help E3-A; we did not iterate further, because repeated recipe tries scored on the same validation
+  splits would make a chance win likely.
+
+<!-- auto:g2:begin -->
+## G2 recommended method
+
+Gate G2 recommends the plain unified model (E2-swin-U), by the rule fixed in phase 06: highest mean validation mixed macro-F1; if the top two are within one std, the higher validation field macro-F1; if that is also within one std, the simpler method. Validation mixed / field macro-F1 (mean +- std over 5 splits): plain unified model (E2-swin-U) 0.792 +- 0.019 / 0.753 +- 0.089; Method A (composites) (E3-A) 0.785 +- 0.015 / 0.765 +- 0.049. Left out because of a cut line: Method B. Decided by: within one std on mixed and on field -> simpler method. Paired A - plain on validation: mixed -0.007 +- 0.017 (2 of 5 splits ahead), field +0.012 +- 0.099.
+<!-- auto:g2:end -->

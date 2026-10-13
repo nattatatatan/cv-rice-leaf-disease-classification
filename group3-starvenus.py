@@ -5412,7 +5412,7 @@ def g2_findings(result: dict) -> str:
 
     named = lambda m: f"{G2_METHOD_LABELS[m]} ({ev['candidates'][m]['experiment']})"  # noqa: E731
     sentences = [
-        f"Gate G2 recommends {named(ev['method'])}, by the rule fixed in phase 06: highest mean validation mixed macro-F1; "
+        f"Gate G2 recommends {'the ' if ev['method'] == 'plain' else ''}{named(ev['method'])}, by the rule fixed in phase 06: highest mean validation mixed macro-F1; "
         "if the top two are within one std, the higher validation field macro-F1; if that is also within one std, the simpler method.",
         "Validation mixed / field macro-F1 (mean +- std over 5 splits): "
         + "; ".join(f"{named(m)} {f1(m, 'val_mixed_macro_f1')} / {f1(m, 'val_field_macro_f1')}" for m in ev["ranking"]) + ".",

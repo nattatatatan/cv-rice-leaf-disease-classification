@@ -47,7 +47,7 @@ Steps, each with its reason:
 ### T5.4 Experiments
 - [x] `E3-A`: G1 backbone, G0 input mode, `train_domains = {white, field}`, `use_composites = True`, all 5 splits. (batch4)
 - [x] `E3-A-WF` (Tier 4, batch4-wf; `table_domains` row, test hidden until gate G2): white train + composites only (no real field images as training samples). It tests whether synthesis closes the W->F gap from E1-WF/E2-*-WF. State clearly in the report that field images are still used as backgrounds and their class is used to choose them, so this is "white + field backgrounds", not pure W->F.
-- [ ] Add to `findings.md`: E3-A vs plain G1 model on field / white / mixed val and test, with the paired per-split difference.
+- [x] Add to `findings.md`: E3-A vs plain G1 model on field / white / mixed val and test, with the paired per-split difference.
 
 ## Phase acceptance
 - [ ] Pseudo-mask QC reviewed and the reject list committed.

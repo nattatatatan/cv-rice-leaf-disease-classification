@@ -10,4 +10,4 @@ W->W is E1-WW, F->F is E1-FF, W->F is E1-WF (field is its main result, white the
 | E1-U | resnet50 | white + field | 0.802 +- 0.062 | 82.9 +- 5.2 | 0.687 +- 0.048 | 68.8 +- 4.6 | 0.772 +- 0.049 | 78.8 +- 4.6 | 0.744 +- 0.048 | 75.8 +- 4.3 |
 | E2-cnx-WF | convnext_tiny | white | 0.805 +- 0.044 | 83.4 +- 4.4 | 0.442 +- 0.060 | 47.2 +- 4.8 | - | - | - | - |
 | E2-swin-WF | swin_t | white | 0.809 +- 0.031 | 83.6 +- 3.7 | 0.300 +- 0.027 | 33.4 +- 3.0 | - | - | - | - |
-| E3-A-WF | swin_t | white + composites | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | hidden until gate g2 | - | - | - | - |
+| E3-A-WF | swin_t | white + composites | 0.799 +- 0.052 | 82.3 +- 4.8 | 0.647 +- 0.084 | 65.5 +- 7.2 | - | - | - | - |
