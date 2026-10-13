@@ -182,6 +182,7 @@ should halve the quota use too (check the quota counter after the first session)
 | `... cannot run the pinned torch 2.11 ... P100` | Accelerator is P100. Session options > Accelerator > GPU T4 x2, run again. |
 | `no internet` | Session options > Internet > On (needs phone verification). |
 | `group3-starvenus.py not found under /kaggle/input` | `csci935-code` is not attached or lacks the file. The message lists what is mounted. |
+| `prepare: done in ... s` printed but the cell never finishes | Known bug on 4-vCPU Linux (Kaggle): `prepare`'s worker pool is created with `fork` and the workers deadlock, so the process never exits. All outputs are already written. Interrupt the cell, run `!pkill -f "group3-starvenus.py"`, then continue with the next cells. A proper fix (spawn/forkserver pools, runner kills leftover workers) is pending. |
 | `the dataset images were not found` / `expected 1106` | `csci935-dhan-shomadhan` is not attached, or the upload is incomplete. |
 | `THE TORCH PIN COULD NOT BE HONOURED` | The pinned torch could not be installed; the run continues with the preinstalled one. Numbers may differ slightly from Colab; see `env.json`. |
 | `choices.json has no lr.resnet50` | Put the committed `choices.json` in `csci935-code` (new version). |
