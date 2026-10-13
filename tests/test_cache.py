@@ -111,6 +111,29 @@ def test_undecodable_source_names_the_file(gs, indexed):
         gs.build_cache(root, records, workers=1)
 
 
+def test_worker_processes_are_spawned_never_forked(gs, monkeypatch):
+    """Forked workers inherit OpenCV's thread-pool lock and deadlock on Linux (the 2026-10-13 Kaggle hang)."""
+    seen = {}
+
+    class FakeExecutor:
+        def __init__(self, max_workers, mp_context, initializer):
+            seen["method"] = mp_context.get_start_method()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def map(self, func, tasks, chunksize):
+            return map(func, tasks)
+
+    monkeypatch.setattr(gs, "pool_is_safe", lambda: True)
+    monkeypatch.setattr(gs, "ProcessPoolExecutor", FakeExecutor)
+    assert list(gs.run_parallel(abs, [-1, -2], workers=2)) == [1, 2] and seen["method"] == "spawn"
+    assert gs.worker_context().get_start_method() == "spawn"
+
+
 def test_run_parallel_falls_back_inline_when_pool_is_unsafe(gs, monkeypatch):
     monkeypatch.setattr(gs, "pool_is_safe", lambda: False)
     assert list(gs.run_parallel(abs, [-1, -2, 3], workers=4)) == [1, 2, 3]

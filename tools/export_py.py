@@ -97,6 +97,8 @@ class EmbeddedFile:
 # To embed another file, add a row here and read the constant in a notebook cell.
 EMBEDDED_FILES = (
     EmbeddedFile("annotations/duplicate_groups.json", "DUPLICATE_GROUPS"),
+    # Phase 05 (T5.1): the reviewed white pseudo-mask rejects; they decide which leaves Method A pastes.
+    EmbeddedFile("annotations/white_rejects.json", "WHITE_REJECTS"),
     # Phase 06 (T6.1): hand-annotated salient-leaf polygons. Skipped until the file exists.
     EmbeddedFile("annotations/field_salient_leaf.json", "FIELD_ANNOTATIONS", required=False),
 )

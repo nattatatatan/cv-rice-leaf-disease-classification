@@ -155,6 +155,26 @@ def test_reject_list_ignores_comments_and_blank_lines_and_validates_names(gs, wh
         gs.load_white_rejects(root, records)
 
 
+def test_the_full_dataset_uses_the_embedded_reject_list_and_checks_it(gs, white_root, monkeypatch):
+    """On the real dataset the list comes from WHITE_REJECTS (it travels in the .py); a local file is then ignored.
+    A tiny tree stands in for the full dataset by declaring its own counts the expected ones."""
+    root, records = white_root
+    gs.white_rejects_path(root).parent.mkdir(parents=True, exist_ok=True)
+    gs.white_rejects_path(root).write_text(f"{records[2].filename}\n")
+    monkeypatch.setattr(gs, "EXPECTED_COUNTS", gs.class_domain_counts(records))
+    monkeypatch.setattr(gs, "WHITE_REJECTS", {"note": "test", "rejects": {records[0].filename: "shadow"}})
+    assert gs.load_white_rejects(root, records) == {records[0].filename}
+    assert gs.white_rejects_source(records) == "embedded WHITE_REJECTS"
+    monkeypatch.setattr(gs, "WHITE_REJECTS", {"note": "test", "rejects": {"bs_wb_999.jpg": "typo"}})
+    with pytest.raises(gs.DatasetError, match=r"WHITE_REJECTS .* not white images of the index: \['bs_wb_999.jpg'\]"):
+        gs.load_white_rejects(root, records)
+
+
+def test_the_embedded_reject_list_is_the_reviewed_one(gs):
+    assert len(gs.WHITE_REJECTS["rejects"]) == 33
+    assert all(name.endswith(".jpg") and "_wb_" in name for name in gs.WHITE_REJECTS["rejects"])
+
+
 def test_area_table_is_per_class_over_accepted_leaves(gs, white_root):
     root, records = white_root
     areas = {r.filename: 0.05 * (1 + i % 5) for i, r in enumerate(records)}
@@ -163,7 +183,7 @@ def test_area_table_is_per_class_over_accepted_leaves(gs, white_root):
     assert [r[1] for r in rows] == [1, 2, 2, 2, 2, 9], "one leaf of the first class is rejected"
     assert rows[1][2] == pytest.approx(10.0)  # two leaves of 10%
     text = gs.white_mask_area_markdown(records, areas, {records[0].filename})
-    assert text.startswith("| Class | Leaves | Mean area (%)") and "| **All** | 9 |" in text and "rejected in white_rejects.txt: 1" in text
+    assert text.startswith("| Class | Leaves | Mean area (%)") and "| **All** | 9 |" in text and "rejected: 1)" in text
     gs.build_white_masks(root, records, workers=1)
     path = gs.write_white_mask_area(root, records, set())
     assert path == root / "_work" / "results" / "white_mask_area.md" and "| Brown Spot | 2 |" in path.read_text()
@@ -210,7 +230,7 @@ def test_old_sheets_are_removed_and_prepare_reports(gs, white_root):
     lines = []
     result = gs.prepare_pseudo_masks(root, records, workers=1, out=lines.append)
     assert not stale.exists() and result["built"] == 10 and len(result["sheets"]) == 1
-    assert "10 white pseudo-masks: built 10" in lines[0] and "white_rejects.txt" in lines[1]
+    assert "10 white pseudo-masks: built 10" in lines[0] and "0 rejected (_work/masks/white_rejects.txt)" in lines[0]
     lines.clear()
     assert gs.prepare_pseudo_masks(root, records, workers=1, out=lines.append)["built"] == 0
     assert "up to date 10" in lines[0]

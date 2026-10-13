@@ -13,6 +13,7 @@ import shutil
 import stat
 import sys
 import textwrap
+import time
 import types
 import zipfile
 from pathlib import Path
@@ -68,7 +69,8 @@ def test_batch_cells_follow_the_documented_order():
     nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     ids = [c["id"] for c in nb["cells"]]
     order = ["settings", "setup-config", "setup-inputs", "setup-install", "setup-dataset", "setup-restore", "setup-env", "smoke",
-             "setup-restore-caches", "batch2", "batch3-sweeps", "batch3-core", "batch3-wf", "batch-generic", "finish"]
+             "setup-restore-caches", "batch2", "batch3-sweeps", "batch3-core", "batch3-wf", "batch4", "batch4-wf", "batch-generic",
+             "finish"]
     assert [i for i in ids if i in order] == order
     assert ids[0] == "runner-intro" and ids.index("settings") == 1  # BATCHES_TO_RUN is the first thing in the notebook
 
@@ -653,6 +655,10 @@ FAKE_SCRIPT = textwrap.dedent('''
             for lr in ("1e-4", "3e-4"):
                 write_split(work / "runs" / "sweep" / f"{exp}_lr{lr}", 0, float(lr))
             print(f"sweep {exp} done")
+        elif "--sweep-composites" in rest:
+            for factor in ("0.5", "1"):
+                write_split(work / "runs" / "sweep" / f"{exp}_n{factor}", 0)
+            print(f"composite sweep {exp} done")
         else:
             split = int(opt("--splits"))
             fail = os.environ.get("FAKE_FAIL", "")
@@ -673,6 +679,13 @@ FAKE_SCRIPT = textwrap.dedent('''
         data.setdefault("lr", {})[backbone] = {"value": 3e-4, "evidence": {}}
         path.write_text(json.dumps(data))
         print(f"choose-lr: {backbone} ok")
+    elif cmd == "choose-composites":
+        path = work / "results" / "choices.json"
+        data = json.loads(path.read_text())
+        data["composite_n_factor"] = {"value": 1.0, "evidence": {}}
+        path.write_text(json.dumps(data))
+        write_split(work / "runs" / "E3-A", 0)  # the winning sweep run becomes split 0
+        print("choose-composites: 1x")
     with open(data_root.parent / "calls.jsonl", "a") as log:
         log.write(json.dumps({"cmd": cmd, "args": rest, "device": device, "cvd": os.environ.get("CUDA_VISIBLE_DEVICES"),
                               "order": os.environ.get("CUDA_DEVICE_ORDER"), "start": started, "end": time.time()}) + "\\n")
@@ -699,6 +712,38 @@ def test_stream_prefixes_and_fails_loudly(lib, tmp_path, capsys):
     assert "[X] a" in runner.cfg.log_path.read_text()
     with pytest.raises(lib.RunnerError, match="exit code 3"):
         runner.stream([sys.executable, "-c", "import sys; sys.exit(3)"])
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="process groups are POSIX only")
+def test_stream_ends_when_the_command_exits_even_if_a_leftover_child_holds_the_pipe(lib, tmp_path, capsys):
+    """The 2026-10-13 Kaggle hang: the command was finished but a deadlocked worker kept stdout open, so a loop over the
+    pipe never ended. `stream` must return soon after the command exits and kill the leftover."""
+    runner = make_runner(lib, tmp_path, gpus=1)
+    leftover = "import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); print('child', p.pid)"
+    started = time.monotonic()
+    runner.stream([sys.executable, "-c", leftover], prefix="[L] ")
+    assert time.monotonic() - started < 30
+    out = capsys.readouterr().out
+    assert "left processes holding its output; stopping them" in out
+    pid = int(next(line for line in out.splitlines() if line.startswith("[L] child")).split()[-1])
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and pid_alive(pid):
+        time.sleep(0.1)
+    assert not pid_alive(pid), "the leftover child was killed"
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:  # a killed child that nobody reaped yet is a zombie: dead for our purpose
+        with open(f"/proc/{pid}/stat") as handle:
+            return handle.read().split()[2] != "Z"
+    except OSError:
+        return True
 
 
 def test_script_command_line_and_gpu_pinning(lib, tmp_path):
@@ -817,6 +862,48 @@ def test_batch3_core_skips_sweeps_whose_lr_is_known_and_needs_the_resnet_choice(
     runner.cfg.choices_path.write_text(json.dumps({"input_mode": {"value": "rect"}}))
     with pytest.raises(lib.RunnerError, match="lr.resnet50"):
         runner.show_choices("input_mode", "lr.resnet50")
+
+
+BATCH4_CHOICES = {"input_mode": {"value": "rect"}, "backbone": {"value": "swin_t"},
+                  "lr": {n: {"value": 1e-4} for n in ("resnet50", "convnext_tiny", "swin_t")}}
+
+
+def test_batch4_sweeps_composites_then_chooses_then_spreads_the_splits_over_both_gpus(lib, tmp_path, fake_env):
+    runner = make_runner(lib, tmp_path, gpus=2, script_body=FAKE_SCRIPT)
+    runner.cfg.choices_path.parent.mkdir(parents=True, exist_ok=True)
+    runner.cfg.choices_path.write_text(json.dumps(BATCH4_CHOICES))
+    assert lib.run_selected(runner, "batch4", ["batch4"]) is True
+    made = calls(runner)
+    kinds = [("sweep" if "--sweep-composites" in c["args"] else c["cmd"]) for c in made]
+    assert kinds[:2] == ["sweep", "choose-composites"] and kinds[2:] == ["run"] * 5
+    runs = made[2:]
+    assert {c["cvd"] for c in runs} == {"0", "1"}, "splits are spread over both GPUs"
+    assert sorted(int(c["args"][c["args"].index("--splits") + 1]) for c in runs) == [0, 1, 2, 3, 4]
+    assert json.loads(runner.cfg.choices_path.read_text())["composite_n_factor"]["value"] == 1.0
+    names = zipfile.ZipFile(runner.cfg.out_zip).namelist()
+    assert "runs/sweep/E3-A_n0.5/split_0/metrics.json" in names and "results/choices.json" in names
+    assert all(f"runs/E3-A/split_{s}/metrics.json" in names for s in range(5))
+
+
+def test_batch4_skips_the_sweep_once_the_factor_is_chosen_and_batch4_wf_needs_it(lib, tmp_path, fake_env):
+    runner = make_runner(lib, tmp_path, gpus=2, script_body=FAKE_SCRIPT)
+    runner.cfg.choices_path.parent.mkdir(parents=True, exist_ok=True)
+    runner.cfg.choices_path.write_text(json.dumps(BATCH4_CHOICES))
+    with pytest.raises(lib.RunnerError, match="composite_n_factor"):
+        lib.plan_batch4_wf(runner)
+    runner.cfg.choices_path.write_text(json.dumps({**BATCH4_CHOICES, "composite_n_factor": {"value": 0.5}}))
+    lib.plan_batch4(runner)
+    lib.plan_batch4_wf(runner)
+    made = calls(runner)
+    assert not [c for c in made if "--sweep-composites" in c["args"] or c["cmd"] == "choose-composites"]
+    assert sorted({c["args"][c["args"].index("--exp") + 1] for c in made}) == ["E3-A", "E3-A-WF"] and len(made) == 10
+
+
+def test_run_splits_parallel_with_one_gpu_is_run_batch(lib, tmp_path, fake_env):
+    runner = make_runner(lib, tmp_path, gpus=1, script_body=FAKE_SCRIPT)
+    runner.run_splits_parallel("E3-A", (0, 1))
+    made = calls(runner)
+    assert len(made) == 2 and all(c["cvd"] is None for c in made)
 
 
 def test_run_selected_skips_unlisted_and_syncs_even_when_the_batch_fails(lib, tmp_path, fake_env, monkeypatch, capsys):

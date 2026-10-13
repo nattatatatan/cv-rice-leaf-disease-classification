@@ -98,51 +98,85 @@ def test_all_randomness_comes_from_the_generator(gs):
 def test_params_follow_the_documented_ranges(gs):
     rng = np.random.default_rng(0)
     draws = [gs.draw_composite_params(rng) for _ in range(500)]
-    assert all(abs(p.angle) <= 25 and 0.55 <= p.length_fraction <= 0.95 for p in draws)
-    assert all(0.25 <= p.center[0] <= 0.75 and 0.25 <= p.center[1] <= 0.75 for p in draws)
-    assert all(0 <= p.blur_sigma <= 4 and 1.5 <= p.feather_sigma <= 3 and 0.3 <= p.l_blend <= 0.7 for p in draws)
-    assert all(all(0.95 <= g <= 1.05 for g in p.gains) for p in draws)
+    assert all(0.6 <= p.length_fraction <= 1.0 and 0.2 <= p.base[0] <= 0.8 and 1.0 <= p.base[1] <= 1.12 for p in draws)
+    assert all(abs(p.lean_jitter) <= 6 and abs(p.lean_fallback) <= 35 and abs(p.bend) <= 0.08 for p in draws)
+    assert all(0 <= p.blur_sigma <= 4 and 0.4 <= p.leaf_sigma <= 1.4 and 1.5 <= p.feather_sigma <= 3 for p in draws)
+    assert all(0.7 <= p.l_blend <= 1.0 and 0.65 <= p.contrast <= 0.9 and 0.4 <= p.ab_blend <= 0.7 for p in draws)
+    assert all(all(0.97 <= g <= 1.03 for g in p.gains) for p in draws)
     assert 0.2 < np.mean([p.shadow for p in draws]) < 0.4, "shadow with p = 0.3"
     assert gs.draw_composite_params(np.random.default_rng(3)) == gs.draw_composite_params(np.random.default_rng(3))
 
 
 def fixed_params(gs, **changes):
-    base = gs.CompositeParams(angle=0.0, length_fraction=0.8, center=(0.5, 0.5), blur_sigma=0.0, l_blend=0.5,
-                              gains=(1.0, 1.0, 1.0), feather_sigma=2.0, shadow=False, shadow_angle=0.0,
-                              shadow_offset=10.0, shadow_sigma=6.0, shadow_strength=0.4)
+    base = gs.CompositeParams(length_fraction=0.8, base=(0.5, 1.0), lean_jitter=0.0, lean_fallback=0.0, bend=0.0,
+                              blur_sigma=0.0, leaf_sigma=0.0, l_blend=0.7, contrast=1.0, ab_blend=0.5, gains=(1.0, 1.0, 1.0),
+                              feather_sigma=2.0, shadow=False, shadow_angle=0.0, shadow_offset=10.0, shadow_sigma=6.0,
+                              shadow_strength=0.4)
     return gs.replace(base, **changes)
 
 
-def test_geometry_leaf_length_and_position(gs):
+def test_the_leaf_grows_up_from_its_base_on_the_bottom_edge(gs):
+    """v2 step 3: the base sits on (or below) the bottom edge at the drawn x, the leaf rises length x frame height."""
     leaf, mask, bg = sample_arrays()
-    bg = np.full_like(bg, 120)
-    for length, center in ((0.55, (0.3, 0.3)), (0.95, (0.5, 0.5)), (0.7, (0.7, 0.6))):
-        _, out = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, length_fraction=length, center=center))
+    bg = np.full_like(bg, 120)  # no texture: the background gives no direction, the fallback lean (0) is used
+    for length, base_x in ((0.6, 0.3), (0.8, 0.5), (1.0, 0.7)):
+        _, out = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, length_fraction=length, base=(base_x, 1.0)))
         ys, xs = np.nonzero(out)
-        extent = ys.max() - ys.min() + 1
-        assert extent == pytest.approx(length * H, rel=0.06), "leaf length is a fraction of the background height"
-        assert (xs.min() + xs.max()) / 2 == pytest.approx(center[0] * W, abs=0.08 * W)
-        assert (ys.min() + ys.max()) / 2 == pytest.approx(center[1] * H, abs=0.08 * H)
+        assert ys.max() >= H - 3, "the base touches the bottom edge"
+        assert ys.max() - ys.min() + 1 == pytest.approx(min(length, 1.0) * H, rel=0.08), "leaf length is a fraction of the frame height"
+        assert xs[ys >= H - 6].mean() == pytest.approx(base_x * W, abs=0.06 * W)
+    _, low = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, length_fraction=0.6, base=(0.5, 1.12)))
+    assert np.nonzero(low)[0].min() > H - 0.6 * H, "a base below the frame shows less of the leaf"
 
 
-def test_rotation_turns_the_leaf(gs):
+def test_the_lean_follows_the_background_leaves(gs):
+    """Diagonal stripes leaning 20 degrees left (or right) from the bottom: the straight path along them wins. The base
+    sits near the side the stripes lean away from, because a lean that would put the tip outside the frame is never used."""
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    for true, base_x in ((20.0, 0.85), (-20.0, 0.15)):
+        lean = np.deg2rad(true)
+        phase = (xx * np.cos(lean) - yy * np.sin(lean)) / 14.0  # constant along (-sin, -cos): up and to the left for a positive lean
+        bg = np.stack([60 + 50 * (np.sin(phase) > 0)] * 3, axis=-1).astype(np.uint8)
+        found, score = gs.follow_background_lean(bg, (base_x * W, H), 0.5 * H, 35.0)
+        assert found == pytest.approx(true, abs=5.0) and score > 0.6
+    flat, flat_score = gs.follow_background_lean(np.full_like(bg, 120), (0.5 * W, H), 0.8 * H, 35.0)
+    assert flat_score < gs.COMPOSITE_LEAN_MIN_SCORE, "a plain background gives no direction"
+
+
+def test_the_fallback_lean_turns_the_leaf(gs):
     leaf, mask, bg = sample_arrays()
     bg = np.full_like(bg, 120)
-    straight = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, angle=0.0))[1]
-    tilted = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, angle=20.0))[1]
+    straight = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, lean_fallback=0.0))[1]
+    leaning = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, lean_fallback=20.0))[1]
 
-    def tilt(m):
+    def slope(m):  # dx/dy of the leaf axis; positive lean (counter-clockwise) moves the tip left, i.e. x grows with y
         ys, xs = np.nonzero(m)
         return np.polyfit(ys, xs, 1)[0]
 
-    assert abs(tilt(tilted) - tilt(straight)) > 0.25, "a 20 degree rotation changes the slope of the leaf axis"
+    assert abs(slope(straight)) < 0.1 and slope(leaning) == pytest.approx(np.tan(np.deg2rad(20.0)), abs=0.12)
+
+
+def test_bend_moves_the_tip_sideways_and_keeps_the_base(gs):
+    leaf, mask, bg = sample_arrays()
+    bg = np.full_like(bg, 120)
+    straight = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs))[1]
+    bent = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, bend=0.08))[1]
+
+    def centre(m, rows):
+        ys, xs = np.nonzero(m)
+        top = ys.min()
+        pick = (ys >= top + rows[0]) & (ys < top + rows[1])
+        return xs[pick].mean()
+
+    assert centre(bent, (60, 90)) - centre(straight, (60, 90)) > 0.04 * H, "the upper leaf moves right"
+    assert abs(np.nonzero(bent)[1][np.nonzero(bent)[0] >= H - 6].mean() - np.nonzero(straight)[1][np.nonzero(straight)[0] >= H - 6].mean()) < 3
 
 
 def test_background_outside_the_leaf_is_only_defocused(gs):
     leaf, mask, bg = sample_arrays()
     image, out = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, blur_sigma=0.0))
     far = cv2.dilate(out, np.ones((61, 61), np.uint8)) == 0
-    assert np.array_equal(image[far], bg[far]), "step 4 with sigma 0 and no shadow: nothing changes away from the leaf"
+    assert far.any() and np.array_equal(image[far], bg[far]), "step 4 with sigma 0 and no shadow: nothing changes away from the leaf"
     blurred, _ = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, blur_sigma=4.0))
     assert cv2.Laplacian(blurred[far.astype(bool)].reshape(-1, 1, 3), cv2.CV_64F).var() < cv2.Laplacian(bg[far].reshape(-1, 1, 3), cv2.CV_64F).var()
 
@@ -165,6 +199,33 @@ def test_leaf_brightness_moves_toward_the_background_and_hue_survives(gs):
     assert 25 < np.median(hsv) < 70, "the leaf stays green (OpenCV hue 25-70)"
 
 
+def test_the_leaf_follows_the_local_light_of_the_vegetation(gs):
+    """Left half of the field in shade, right half in sun: the same leaf is darker on the left."""
+    leaf, mask, _ = sample_arrays()
+    bg = np.empty((H, W, 3), np.uint8)
+    bg[:, : W // 2] = (40, 80, 30)
+    bg[:, W // 2 :] = (120, 200, 90)
+
+    def leaf_l(base_x):
+        image, out = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, base=(base_x, 1.0), l_blend=1.0))
+        lab = cv2.cvtColor(image.astype(np.float32) / 255, cv2.COLOR_RGB2LAB)
+        return float(lab[..., 0][cv2.erode(out, np.ones((9, 9), np.uint8)) > 0].mean())
+
+    assert leaf_l(0.25) + 15 < leaf_l(0.75)
+
+
+def test_contrast_softens_the_leaf_detail(gs):
+    leaf, mask, bg = sample_arrays()
+    bg = np.full_like(bg, 120)
+
+    def detail(contrast):
+        image, out = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, contrast=contrast))
+        lab = cv2.cvtColor(image.astype(np.float32) / 255, cv2.COLOR_RGB2LAB)
+        return float(lab[..., 0][cv2.erode(out, np.ones((15, 15), np.uint8)) > 0].std())
+
+    assert detail(0.65) < 0.8 * detail(1.0)
+
+
 def test_feathered_edge_is_soft_and_has_no_paper_fringe(gs):
     leaf, mask, _ = sample_arrays()
     bg = np.full((H, W, 3), (90, 60, 40), np.uint8)  # dark brown, so that a light paper fringe would stand out
@@ -175,15 +236,52 @@ def test_feathered_edge_is_soft_and_has_no_paper_fringe(gs):
     assert grad.max() < 60, "an edge ramp, not a step"
 
 
-def test_a_leaf_cut_by_the_photo_tapers_to_a_point(gs):
-    leaf, mask, bg = sample_arrays()
-    bg = np.full_like(bg, 120)
+def test_paper_inside_a_sloppy_mask_is_cut_away(gs):
+    """A mask 10 px too wide on one side (the paper strip v1 pasted, realism check image 14) loses that strip."""
+    leaf, mask, _ = sample_arrays()
+    sloppy = cv2.dilate(mask, np.ones((1, 21), np.uint8))
+    bg = np.full((H, W, 3), (90, 60, 40), np.uint8)
+    image, out = gs.composite_arrays(leaf, sloppy, bg, np.random.default_rng(0), fixed_params(gs))
+    lab = cv2.cvtColor(image.astype(np.float32) / 255, cv2.COLOR_RGB2LAB)
+    paper = cv2.cvtColor(np.float32([[[205, 207, 212]]]) / 255, cv2.COLOR_RGB2LAB)[0, 0]
+    near_paper = np.linalg.norm(lab - paper, axis=2) < 15
+    assert (near_paper & (out > 0)).sum() < 0.002 * (out > 0).sum(), "no paper-coloured pixels inside the pasted leaf"
+
+
+def test_edge_colours_come_from_inside_the_leaf(gs):
+    rgb = np.full((40, 40, 3), 230, np.uint8)
+    alpha = np.zeros((40, 40), np.float32)
+    alpha[5:35, 10:30] = 1.0
+    rgb[8:32, 13:27] = (40, 140, 50)  # the inside (more than 3 px from the edge) is green, the 3 px rim is paper-light
+    out = gs.decontaminate_edge(rgb, alpha, 3)
+    assert np.array_equal(out[alpha > 0.5].reshape(-1, 3).max(axis=0), [40, 140, 50])
+    assert np.array_equal(gs.decontaminate_edge(rgb, alpha, 0), rgb)
+
+
+def test_the_tip_tapers_and_the_base_runs_out_of_the_frame(gs):
+    """A strip cut off at both ends by the white photo (the common case in the dataset)."""
+    mask = np.zeros((H, W), np.uint8)
+    mask[:, 120:180] = 255
+    leaf = np.full((H, W, 3), 205, np.uint8)
+    leaf[mask > 0] = (50, 130, 40)
+    bg = np.full((H, W, 3), 120, np.uint8)
     _, out = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, length_fraction=0.7))
-    ys, xs = np.nonzero(out)
+    ys, _ = np.nonzero(out)
     widths = [(out[y] > 0).sum() for y in range(ys.min(), ys.max() + 1)]
-    assert widths[0] < 0.4 * max(widths) and widths[-1] < 0.4 * max(widths), "both cut ends narrow instead of ending flat"
-    middle = widths[len(widths) // 2]
-    assert middle > 0.7 * max(widths)
+    assert widths[0] < 0.4 * max(widths), "the tip narrows instead of ending flat"
+    assert widths[-1] > 0.5 * max(widths), "the base is not tapered: it continues below the frame"
+
+
+def test_the_wider_end_becomes_the_base(gs):
+    """A wedge (wide at the top of the white photo) is turned so that its wide end is at the bottom of the composite."""
+    mask = np.zeros((H, W), np.uint8)
+    cv2.fillPoly(mask, [np.array([[100, 40], [200, 40], [152, 600], [148, 600]], np.int32)], 255)
+    leaf = np.full((H, W, 3), 205, np.uint8)
+    leaf[mask > 0] = (50, 130, 40)
+    _, out = gs.composite_arrays(leaf, mask, np.full((H, W, 3), 120, np.uint8), np.random.default_rng(0), fixed_params(gs))
+    ys, _ = np.nonzero(out)
+    top, bottom = (out[ys.min() + 20] > 0).sum(), (out[ys.max() - 5] > 0).sum()
+    assert bottom > 2 * top
 
 
 def test_shadow_darkens_the_background_next_to_the_leaf_only_when_asked(gs):
@@ -193,7 +291,7 @@ def test_shadow_darkens_the_background_next_to_the_leaf_only_when_asked(gs):
     on, mask_on = gs.composite_arrays(leaf, mask, bg, np.random.default_rng(0), fixed_params(gs, shadow=True, shadow_strength=0.5))
     assert np.array_equal(mask_off, mask_on)
     near = (cv2.dilate(mask_on, np.ones((25, 25), np.uint8)) > 0) & (mask_on == 0)
-    assert on[near].mean() < off[near].mean() - 1 and np.array_equal(on[mask_on > 0], off[mask_on > 0]) or on[near].mean() < off[near].mean()
+    assert on[near].mean() < off[near].mean() - 1
 
 
 def test_half_resolution_composites_are_the_same_picture_at_half_the_size(gs):

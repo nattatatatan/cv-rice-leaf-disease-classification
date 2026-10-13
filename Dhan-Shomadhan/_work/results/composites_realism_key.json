@@ -2,7 +2,7 @@
  "note": "ANSWER KEY of composites_realism_check.png. Do not open it before you have written down your guesses.",
  "grid": "5 rows x 8 columns, position = (row - 1) * 8 + column",
  "split": 0,
- "seed": 7,
+ "seed": 2,
  "composites": 20,
  "real": 20,
  "items": [
@@ -10,10 +10,9 @@
    "position": 1,
    "row": 1,
    "column": 1,
-   "kind": "composite",
+   "kind": "real",
    "class": "Rice Tungro",
-   "leaf": "rt_wb_61.jpg",
-   "background": "rtf_68.jpg"
+   "filename": "rtf_61.jpg"
   },
   {
    "position": 2,
@@ -21,101 +20,102 @@
    "column": 2,
    "kind": "real",
    "class": "Rice Tungro",
-   "filename": "rtf_75.jpg"
+   "filename": "rtf_1.jpg"
   },
   {
    "position": 3,
    "row": 1,
    "column": 3,
    "kind": "composite",
-   "class": "Leaf Scald",
-   "leaf": "ls_wb_22.jpg",
-   "background": "lsf_53.jpg"
+   "class": "Sheath Blight",
+   "leaf": "sb_wb_200.jpg",
+   "background": "sbf_63.jpg"
   },
   {
    "position": 4,
    "row": 1,
    "column": 4,
    "kind": "real",
-   "class": "Leaf Scald",
-   "filename": "lsf_0.jpg"
+   "class": "Sheath Blight",
+   "filename": "sbf_13.jpg"
   },
   {
    "position": 5,
    "row": 1,
    "column": 5,
    "kind": "composite",
-   "class": "Brown Spot",
-   "leaf": "bs_wb_6.jpg",
-   "background": "bsf_34.jpg"
+   "class": "Rice Blast",
+   "leaf": "rb_wb_156.jpg",
+   "background": "rbf_73.jpg"
   },
   {
    "position": 6,
    "row": 1,
    "column": 6,
-   "kind": "real",
-   "class": "Rice Blast",
-   "filename": "rbf_54.jpg"
+   "kind": "composite",
+   "class": "Rice Tungro",
+   "leaf": "rt_wb_41.jpg",
+   "background": "rtf_19.jpg"
   },
   {
    "position": 7,
    "row": 1,
    "column": 7,
    "kind": "real",
-   "class": "Leaf Scald",
-   "filename": "lsf_9.jpg"
+   "class": "Brown Spot",
+   "filename": "bsf_1.jpg"
   },
   {
    "position": 8,
    "row": 1,
    "column": 8,
-   "kind": "real",
-   "class": "Rice Blast",
-   "filename": "rbf_63.jpg"
+   "kind": "composite",
+   "class": "Rice Tungro",
+   "leaf": "rt_wb_89.jpg",
+   "background": "rtf_43.jpg"
   },
   {
    "position": 9,
    "row": 2,
    "column": 1,
    "kind": "composite",
-   "class": "Leaf Scald",
-   "leaf": "ls_wb_138.jpg",
-   "background": "lsf_55.jpg"
+   "class": "Rice Blast",
+   "leaf": "rb_wb_4.jpg",
+   "background": "rbf_27.jpg"
   },
   {
    "position": 10,
    "row": 2,
    "column": 2,
    "kind": "real",
-   "class": "Rice Tungro",
-   "filename": "rtf_13.jpg"
+   "class": "Rice Blast",
+   "filename": "rbf_63.jpg"
   },
   {
    "position": 11,
    "row": 2,
    "column": 3,
    "kind": "composite",
-   "class": "Rice Tungro",
-   "leaf": "rt_wb_30.jpg",
-   "background": "rtf_57.jpg"
+   "class": "Leaf Scald",
+   "leaf": "ls_wb_69.jpg",
+   "background": "lsf_4.jpg"
   },
   {
    "position": 12,
    "row": 2,
    "column": 4,
-   "kind": "composite",
+   "kind": "real",
    "class": "Rice Blast",
-   "leaf": "rb_wb_65.jpg",
-   "background": "rbf_5.jpg"
+   "filename": "rbf_42.jpg"
   },
   {
    "position": 13,
    "row": 2,
    "column": 5,
    "kind": "composite",
-   "class": "Sheath Blight",
-   "leaf": "sb_wb_128.jpg",
-   "background": "sbf_27.jpg"
+   "class": "Rice Tungro",
+   "leaf": "rt_wb_60.jpg",
+   "background": "rtf_13.jpg"
   },
   {
    "position": 14,
@@ -123,50 +123,50 @@
    "column": 6,
    "kind": "composite",
    "class": "Leaf Scald",
-   "leaf": "ls_wb_125.jpg",
-   "background": "lsf_72.jpg"
+   "leaf": "ls_wb_59.jpg",
+   "background": "lsf_23.jpg"
   },
   {
    "position": 15,
    "row": 2,
    "column": 7,
-   "kind": "real",
-   "class": "Leaf Scald",
-   "filename": "lsf_63.jpg"
+   "kind": "composite",
+   "class": "Sheath Blight",
+   "leaf": "sb_wb_143.jpg",
+   "background": "sbf_45.jpg"
   },
   {
    "position": 16,
    "row": 2,
    "column": 8,
    "kind": "composite",
-   "class": "Brown Spot",
-   "leaf": "bs_wb_79.jpg",
-   "background": "bsf_1.jpg"
+   "class": "Leaf Scald",
+   "leaf": "ls_wb_123.jpg",
+   "background": "lsf_52.jpg"
   },
   {
    "position": 17,
    "row": 3,
    "column": 1,
-   "kind": "composite",
-   "class": "Leaf Scald",
-   "leaf": "ls_wb_128.jpg",
-   "background": "lsf_40.jpg"
+   "kind": "real",
+   "class": "Rice Blast",
+   "filename": "rbf_36.jpg"
   },
   {
    "position": 18,
    "row": 3,
    "column": 2,
    "kind": "real",
-   "class": "Brown Spot",
-   "filename": "bsf_17.jpg"
+   "class": "Sheath Blight",
+   "filename": "sbf_38.jpg"
   },
   {
    "position": 19,
    "row": 3,
    "column": 3,
    "kind": "real",
-   "class": "Sheath Blight",
-   "filename": "sbf_15.jpg"
+   "class": "Leaf Scald",
+   "filename": "lsf_8.jpg"
   },
   {
    "position": 20,
@@ -180,61 +180,60 @@
    "position": 21,
    "row": 3,
    "column": 5,
-   "kind": "composite",
-   "class": "Rice Tungro",
-   "leaf": "rt_wb_96.jpg",
-   "background": "rtf_40.jpg"
+   "kind": "real",
+   "class": "Leaf Scald",
+   "filename": "lsf_1.jpg"
   },
   {
    "position": 22,
    "row": 3,
    "column": 6,
-   "kind": "composite",
-   "class": "Brown Spot",
-   "leaf": "bs_wb_71.jpg",
-   "background": "bsf_43.jpg"
+   "kind": "real",
+   "class": "Sheath Blight",
+   "filename": "sbf_42.jpg"
   },
   {
    "position": 23,
    "row": 3,
    "column": 7,
-   "kind": "real",
-   "class": "Brown Spot",
-   "filename": "bsf_15.jpg"
+   "kind": "composite",
+   "class": "Rice Blast",
+   "leaf": "rb_wb_53.jpg",
+   "background": "rbf_60.jpg"
   },
   {
    "position": 24,
    "row": 3,
    "column": 8,
    "kind": "real",
-   "class": "Rice Blast",
-   "filename": "rbf_24.jpg"
+   "class": "Brown Spot",
+   "filename": "bsf_22.jpg"
   },
   {
    "position": 25,
    "row": 4,
    "column": 1,
    "kind": "real",
-   "class": "Sheath Blight",
-   "filename": "sbf_46.jpg"
+   "class": "Rice Tungro",
+   "filename": "rtf_40.jpg"
   },
   {
    "position": 26,
    "row": 4,
    "column": 2,
    "kind": "composite",
-   "class": "Rice Blast",
-   "leaf": "rb_wb_65.jpg",
-   "background": "rbf_45.jpg"
+   "class": "Brown Spot",
+   "leaf": "bs_wb_72.jpg",
+   "background": "bsf_26.jpg"
   },
   {
    "position": 27,
    "row": 4,
    "column": 3,
    "kind": "composite",
-   "class": "Rice Tungro",
-   "leaf": "rt_wb_3.jpg",
-   "background": "rtf_15.jpg"
+   "class": "Sheath Blight",
+   "leaf": "sb_wb_196.jpg",
+   "background": "sbf_48.jpg"
   },
   {
    "position": 28,
@@ -242,32 +241,34 @@
    "column": 4,
    "kind": "composite",
    "class": "Sheath Blight",
-   "leaf": "sb_wb_171.jpg",
-   "background": "sbf_20.jpg"
+   "leaf": "sb_wb_31.jpg",
+   "background": "sbf_22.jpg"
   },
   {
    "position": 29,
    "row": 4,
    "column": 5,
    "kind": "real",
-   "class": "Sheath Blight",
-   "filename": "sbf_37.jpg"
+   "class": "Brown Spot",
+   "filename": "bsf_14.jpg"
   },
   {
    "position": 30,
    "row": 4,
    "column": 6,
-   "kind": "real",
-   "class": "Rice Tungro",
-   "filename": "rtf_17.jpg"
+   "kind": "composite",
+   "class": "Rice Blast",
+   "leaf": "rb_wb_40.jpg",
+   "background": "rbf_34.jpg"
   },
   {
    "position": 31,
    "row": 4,
    "column": 7,
-   "kind": "real",
+   "kind": "composite",
    "class": "Brown Spot",
-   "filename": "bsf_14.jpg"
+   "leaf": "bs_wb_38.jpg",
+   "background": "bsf_21.jpg"
   },
   {
    "position": 32,
@@ -275,59 +276,58 @@
    "column": 8,
    "kind": "real",
    "class": "Leaf Scald",
-   "filename": "lsf_67.jpg"
+   "filename": "lsf_33.jpg"
   },
   {
    "position": 33,
    "row": 5,
    "column": 1,
-   "kind": "composite",
-   "class": "Sheath Blight",
-   "leaf": "sb_wb_151.jpg",
-   "background": "sbf_38.jpg"
+   "kind": "real",
+   "class": "Rice Blast",
+   "filename": "rbf_21.jpg"
   },
   {
    "position": 34,
    "row": 5,
    "column": 2,
    "kind": "composite",
-   "class": "Rice Blast",
-   "leaf": "rb_wb_127.jpg",
-   "background": "rbf_31.jpg"
+   "class": "Brown Spot",
+   "leaf": "bs_wb_39.jpg",
+   "background": "bsf_16.jpg"
   },
   {
    "position": 35,
    "row": 5,
    "column": 3,
-   "kind": "composite",
-   "class": "Sheath Blight",
-   "leaf": "sb_wb_74.jpg",
-   "background": "sbf_45.jpg"
+   "kind": "real",
+   "class": "Rice Tungro",
+   "filename": "rtf_46.jpg"
   },
   {
    "position": 36,
    "row": 5,
    "column": 4,
    "kind": "real",
-   "class": "Rice Tungro",
-   "filename": "rtf_28.jpg"
+   "class": "Leaf Scald",
+   "filename": "lsf_5.jpg"
   },
   {
    "position": 37,
    "row": 5,
    "column": 5,
    "kind": "composite",
-   "class": "Rice Blast",
-   "leaf": "rb_wb_145.jpg",
-   "background": "rbf_72.jpg"
+   "class": "Rice Tungro",
+   "leaf": "rt_wb_74.jpg",
+   "background": "rtf_37.jpg"
   },
   {
    "position": 38,
    "row": 5,
    "column": 6,
-   "kind": "real",
-   "class": "Sheath Blight",
-   "filename": "sbf_13.jpg"
+   "kind": "composite",
+   "class": "Leaf Scald",
+   "leaf": "ls_wb_47.jpg",
+   "background": "lsf_30.jpg"
   },
   {
    "position": 39,
@@ -335,16 +335,16 @@
    "column": 7,
    "kind": "composite",
    "class": "Brown Spot",
-   "leaf": "bs_wb_10.jpg",
-   "background": "bsf_43.jpg"
+   "leaf": "bs_wb_84.jpg",
+   "background": "bsf_23.jpg"
   },
   {
    "position": 40,
    "row": 5,
    "column": 8,
    "kind": "real",
-   "class": "Rice Blast",
-   "filename": "rbf_25.jpg"
+   "class": "Sheath Blight",
+   "filename": "sbf_25.jpg"
   }
  ]
 }

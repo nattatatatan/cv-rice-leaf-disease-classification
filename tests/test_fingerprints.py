@@ -85,9 +85,10 @@ def test_fingerprints_of_the_rows_that_are_not_run_yet_are_pinned(gs, exp_id):
 
 # Phase 06 rows (not run yet; pinned so that a later change to the segmenter recipe, the box post-processing or the
 # registry is a conscious decision: once batch5 has run, a changed pin means S-seg and E4-B must be retrained).
-# S-seg is pinned for a data root without white_rejects.txt (the reject list is part of its fingerprint).
+# S-seg is pinned for a data root that is not the full dataset and has no reject file (the reject list is part of its
+# fingerprint). Its pin moved on 2026-10-13 with composite recipe v2 (P9); S-seg had never run (Method B was cut, P8).
 PHASE06_GOLDEN = {
-    "S-seg": "02fb65325a37c4ff1ddad8e5424ddef1c95dc3ecbfc12f8e18c37a94efd2ba9c",
+    "S-seg": "39bfd4735140a8dc8192820555906fedd85aaa3709bce07a61c90442b44406a4",
     "E4-B": "5dd53f380c4b87ba1fdde35a4ad18babe141066aaa3407c5c08a52e908ad0754",
 }
 

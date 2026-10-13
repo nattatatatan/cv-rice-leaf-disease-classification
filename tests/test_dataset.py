@@ -151,6 +151,15 @@ def test_workers_give_the_same_batches_as_the_main_process(gs, cached):
     assert not torch.equal(epoch_batches(0, sampler0, inline, 0)[0], epoch_batches(0, sampler0, inline, 1)[0])
 
 
+def test_loader_workers_are_spawned(gs, cached, monkeypatch):
+    """The DataLoader workers use the same start method as the process pools (never fork, see phase 02)."""
+    root, records = cached
+    ds = gs.LeafDataset(root, records, gs.ImageTransform("rect", train=False, size_div=4), seed=0)
+    monkeypatch.setattr(gs, "pool_is_safe", lambda: True)
+    loader = gs.make_loader(ds, 3, num_workers=2)
+    assert loader.num_workers == 2 and loader.multiprocessing_context.get_start_method() == "spawn"
+
+
 class DummySource:
     def __init__(self, n):
         self.n = n

@@ -21,3 +21,9 @@ and 13. The composites are therefore identifiable more often than not. Tells rep
 
 Consequence: before Method A trains, composite placement and harmonisation are revised (T5.2 steps 3-6) and the blind check is
 repeated.
+
+Recipe v2 (decision P9, 2026-10-13) answers each tell: the leaf base sits on or below the bottom edge and the leaf leans along the
+background's leaves (no leaf hangs in from the top or floats mid-frame); lightness follows the local light of the surrounding
+vegetation, with the leaf's detail contrast, colourfulness and healthy colour pulled toward it; paper-coloured pixels near the mask
+edge are cut and the rim recoloured from inside. A development sample of the same 20 leaf/background pairs (not the check images)
+showed none of the three tells. The blind check is repeated on v2 with a new seed (`REALISM_SEED` = 2): result pending.

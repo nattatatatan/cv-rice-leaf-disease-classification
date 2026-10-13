@@ -76,11 +76,13 @@ dataset is applied last. For the first Batch 3 session you do not need a `runs.z
 It is the only line you edit: the first code cell of the notebook (cell 2).
 
 ```python
-BATCHES_TO_RUN = ["batch3-core"]
+BATCHES_TO_RUN = ["batch4"]
 ```
 
 | Entry | What it runs |
 |---|---|
+| `"batch4"` | Method A: the split-0 composites-per-epoch comparison (0.5x and 1x, one GPU), `choose-composites`, then `E3-A` on all 5 splits (one split per GPU at a time; split 0 is the reused sweep run) |
+| `"batch4-wf"` | optional: `E3-A-WF` (white + composites, tested on field), one split per GPU at a time. Needs `batch4` first. |
 | `"batch3-core"` | ConvNeXt-T and Swin-T LR sweeps (one per GPU), `choose-lr` for each (one after the other), then `E2-cnx-U` and `E2-swin-U` on all 5 splits (one experiment per GPU) |
 | `"batch3-wf"` | `E2-cnx-WF` and `E2-swin-WF` (one per GPU). Cut first if behind schedule. |
 | `"batch3"` | both of the above |
@@ -91,8 +93,8 @@ BATCHES_TO_RUN = ["batch3-core"]
 | `[]` | setup, smoke test and `prepare` only (a cheap check of the whole setup) |
 
 A full run executes: setup, smoke test, `download-weights` and `prepare`, the selected batches (in notebook order), then the
-final zip. A typo in the list is reported at the start of the run, not after an hour. Batch 4 cells (Method A, segmenter,
-Method B) will be added to the notebook later; until then use the `run:` / `parallel:` entries.
+final zip. A typo in the list is reported at the start of the run, not after an hour. Batch 3 and earlier are done and
+committed; their entries stay for reproducibility (finished splits are skipped).
 
 ## 6. Run it in the background
 
@@ -160,6 +162,11 @@ in the log and rescale. Add 10 to 15 minutes of setup per session (installs, dat
 | `batch3-core` (sweeps + both U rows) | 12 | about 3.6 h | about 1.8 h |
 | `batch3-wf` | 10 | about 2.2 h | about 1.1 h |
 | `batch3` (everything of Batch 3) | 22 | about 5.8 h | about 2.9 h |
+| `batch4` (composites sweep, then E3-A splits 1 to 4) | 2 + 4 | about 1.0 h | about 0.6 h (the sweep uses one GPU) |
+| `batch4-wf` (E3-A-WF, 5 splits) | 5 | about 0.8 h | about 0.4 h |
+
+Measured on Kaggle T4 for Batch 3: Swin-T about 5 to 6 min per split (early stopping, about 25 epochs). Batch 4 times assume
+composites add about 70% more training samples per epoch.
 
 Early stopping makes some runs shorter. Two GPUs halve the wall time of a batch; Kaggle's quota counts session time, so it
 should halve the quota use too (check the quota counter after the first session). Both fit comfortably in one 12 hour session.
@@ -182,7 +189,7 @@ should halve the quota use too (check the quota counter after the first session)
 | `... cannot run the pinned torch 2.11 ... P100` | Accelerator is P100. Session options > Accelerator > GPU T4 x2, run again. |
 | `no internet` | Session options > Internet > On (needs phone verification). |
 | `group3-starvenus.py not found under /kaggle/input` | `csci935-code` is not attached or lacks the file. The message lists what is mounted. |
-| `prepare: done in ... s` printed but the cell never finishes | Known bug on 4-vCPU Linux (Kaggle): `prepare`'s worker pool is created with `fork` and the workers deadlock, so the process never exits. All outputs are already written. Interrupt the cell, run `!pkill -f "group3-starvenus.py"`, then continue with the next cells. A proper fix (spawn/forkserver pools, runner kills leftover workers) is pending. |
+| A cell hangs with no new output for over 15 min | Should not happen any more: before 2026-10-13 `prepare` and `run` forked their worker processes and the workers could deadlock on Linux (fixed: workers are spawned, and the runner stops leftover workers). If it happens, interrupt the cell, run `!pkill -f "group3-starvenus.py"`, rerun the cell (finished work is reused) and tell the agent. |
 | `the dataset images were not found` / `expected 1106` | `csci935-dhan-shomadhan` is not attached, or the upload is incomplete. |
 | `THE TORCH PIN COULD NOT BE HONOURED` | The pinned torch could not be installed; the run continues with the preinstalled one. Numbers may differ slightly from Colab; see `env.json`. |
 | `choices.json has no lr.resnet50` | Put the committed `choices.json` in `csci935-code` (new version). |
@@ -195,7 +202,7 @@ should halve the quota use too (check the quota counter after the first session)
 2. Create `csci935-dhan-shomadhan` (the zip) and `csci935-code` (`group3-starvenus.py`, `requirements.txt`, `choices.json`), both Private.
 3. New Notebook > File > Import Notebook > `notebooks/runner.ipynb`; Input > add both datasets.
 4. Session options: Accelerator **GPU T4 x2**, Internet **On**.
-5. First cell: `BATCHES_TO_RUN = ["batch3-core"]`.
+5. First cell: `BATCHES_TO_RUN = ["batch4"]` (the current batch).
 6. Save Version > Save & Run All.
 7. Watch the first 15 minutes of the log: GPU names, `torch ... already match the pin` (or the install), `dataset OK: 1106`, `smoke PASSED`, then the first epoch times of the sweeps.
 8. When done: Output tab > `out.zip`, unpack as in section 8.

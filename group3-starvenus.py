@@ -50,6 +50,48 @@ DUPLICATE_GROUPS = [
 ]
 
 
+# ---- embedded:annotations/white_rejects.json ----
+# Embedded from annotations/white_rejects.json by tools/export_py.py. Edit that file, not this block.
+WHITE_REJECTS = {
+    "note": "T5.1 white pseudo-mask rejects: first pass by the agent, then Nattan's visual review of pseudo_mask_qc_*.png (MASK_V_MIN 20, MASK_CLOSE_KSIZE 45). 33 of 769 rejected (4.3%). A rejected leaf is never a composite source or a segmenter target. The review record is _work/results/white_mask_first_pass.txt.",
+    "rejects": {
+        "bs_wb_43.jpg": "train: torn, ragged leaf tip fragmented, tip lost",
+        "bs_wb_48.jpg": "train: two torn leaves joined, pale lesion strip left out of the mask",
+        "bs_wb_77.jpg": "test: pale yellow tip lost",
+        "bs_wb_89.jpg": "val: borderline, pale strip at the lower left lost",
+        "ls_wb_0.jpg": "train: dark blurred shadow/object at the lower right is included",
+        "ls_wb_1.jpg": "test: two leaves and a shadow merged on greenish paper",
+        "ls_wb_2.jpg": "test: cluttered close-up, fibres included",
+        "ls_wb_30.jpg": "train: leaf end broken, pale lower part lost (ghost loop)",
+        "ls_wb_4.jpg": "train: cluttered close-up, loose fibres included, lesion holes",
+        "ls_wb_6.jpg": "val: borderline, ragged torn leaf",
+        "rb_wb_1.jpg": "train: a second leaf and the dark shadow beside it are merged in",
+        "rb_wb_30.jpg": "train: very ragged torn edge",
+        "rb_wb_33.jpg": "train: mask loops along the torn edge, leaf split",
+        "rb_wb_46.jpg": "train: Nattan, visual review",
+        "rb_wb_49.jpg": "train: fibres/hairs attached to the leaf",
+        "rb_wb_58.jpg": "test: fibres attached (also flagged by Nattan)",
+        "rt_wb_16.jpg": "test: Nattan, visual review",
+        "rt_wb_17.jpg": "train: Nattan, visual review",
+        "rt_wb_18.jpg": "train: Nattan, visual review",
+        "rt_wb_2.jpg": "train: straw-coloured lower tip lost",
+        "rt_wb_26.jpg": "train: Nattan, visual review",
+        "rt_wb_45.jpg": "train: Nattan, visual review",
+        "rt_wb_46.jpg": "train: Nattan, visual review",
+        "rt_wb_67.jpg": "test: straw-coloured tail lost",
+        "sb_wb_111.jpg": "train: sun-bleached pale upper half lost (saturation equals paper)",
+        "sb_wb_112.jpg": "train: sun-bleached pale upper half lost",
+        "sb_wb_193.jpg": "train: pale upper half lost, only the lower leaf is masked",
+        "sb_wb_201.jpg": "train: leaf below a lesion gap lost",
+        "sb_wb_205.jpg": "test: second (crossing) leaf lost",
+        "sb_wb_30.jpg": "train: pale upper strip lost",
+        "sb_wb_5.jpg": "train: borderline, lesion notch at the leaf edge",
+        "sb_wb_6.jpg": "train: borderline, lesion notches at the leaf edge",
+        "sb_wb_70.jpg": "test: Nattan, visual review",
+    },
+}
+
+
 # ---- embedded:annotations/field_salient_leaf.json ----
 # Embedded from annotations/field_salient_leaf.json by tools/export_py.py. Edit that file, not this block.
 FIELD_ANNOTATIONS = {
@@ -752,10 +794,18 @@ def default_workers() -> int:
     return max(1, min(available, MAX_WORKERS))
 
 
+WORKER_START_METHOD = "spawn"  # never "fork": see the section text (forked OpenCV thread-pool locks deadlock)
+
+
+def worker_context():
+    """The multiprocessing context of every worker process (process pools and DataLoader workers)."""
+    return multiprocessing.get_context(WORKER_START_METHOD)
+
+
 def pool_is_safe() -> bool:
-    """True if worker processes can import the functions we send them: always under `fork`; under
-    `spawn` only when this file runs as the main script (children re-run it as `__mp_main__`)."""
-    return multiprocessing.get_start_method() == "fork" or __name__ == "__main__"
+    """True if spawned worker processes can import the functions we send them: only when this file runs as the
+    main script (children re-run it as `__mp_main__`)."""
+    return __name__ == "__main__"
 
 
 def _pool_init() -> None:
@@ -767,6 +817,7 @@ def run_parallel(func, tasks, *, workers: int, mp_context=None, chunksize: int =
     worthwhile, otherwise runs inline. ``func`` must be a picklable top-level function."""
     tasks = list(tasks)
     use_pool = workers > 1 and len(tasks) > 1 and (mp_context is not None or pool_is_safe())
+    mp_context = mp_context if mp_context is not None else worker_context()
     if not use_pool:
         for task in tasks:
             yield func(task)
@@ -1382,7 +1433,7 @@ def prepare_data(
     save_class_domain_counts(data_root, records)
     out(f"  report      dataset_counts.md, dataset_grid.png, class_domain_counts.png in {work_dir(data_root)}")
     elapsed = time.time() - start
-    out(f"prepare: done in {elapsed:.0f} s")
+    out(f"  data        done in {elapsed:.0f} s")
     return {
         "records": len(records),
         "cache": cache,
@@ -1832,13 +1883,14 @@ def default_num_workers() -> int:
 
 
 def usable_workers(requested: int) -> int:
-    """Workers that can really start: under `spawn` they re-import this file, which only works when it runs
+    """Workers that can really start: spawned workers re-import this file, which only works when it runs
     as the main script (the same rule as the cache's process pool)."""
     return requested if requested > 0 and pool_is_safe() else 0
 
 
 def make_loader(dataset, batch_size, *, sampler=None, num_workers=0, drop_last=False, pin_memory=False, mp_context=None):
     num_workers = usable_workers(num_workers) if mp_context is None else num_workers
+    mp_context = mp_context if mp_context is not None else worker_context()  # spawn, never fork (phase 02)
     kwargs = {}
     if num_workers > 0:
         kwargs.update(
@@ -2724,9 +2776,30 @@ def build_white_masks(data_root, records: list[Record], *, workers: int | None =
     return MaskStats(total=len(white), built=len(todo), reused=len(white) - len(todo))
 
 
+def white_rejects_source(records: list[Record]) -> str:
+    """Where `load_white_rejects` takes the list from, for log lines."""
+    return "embedded WHITE_REJECTS" if class_domain_counts(records) == EXPECTED_COUNTS else "_work/masks/white_rejects.txt"
+
+
+def embedded_white_rejects(records: list[Record]) -> set[str]:
+    """The embedded ``WHITE_REJECTS`` names, each checked to be a white image of the index."""
+    known = {r.filename for r in records if r.domain == "white"}
+    names = set(WHITE_REJECTS["rejects"])
+    unknown = sorted(names - known)
+    if unknown:
+        raise DatasetError(f"WHITE_REJECTS (annotations/white_rejects.json) names images that are not white images of the index: {unknown}")
+    return names
+
+
 def load_white_rejects(data_root, records: list[Record] | None = None) -> set[str]:
-    """Filenames in ``_work/masks/white_rejects.txt`` (one per line; blank lines and ``#`` comments are ignored).
-    With ``records`` every name must be a white image of the index, otherwise DatasetError names the line."""
+    """The rejected white pseudo-masks. On the full expected dataset: the embedded ``WHITE_REJECTS``. On any other tree
+    (tests, synthetic data): the filenames in ``_work/masks/white_rejects.txt`` (one per line; blank lines and ``#``
+    comments are ignored; no file, no rejects). With ``records`` every name must be a white image of the index,
+    otherwise DatasetError names it. Without ``records`` the index is read when it exists."""
+    if records is None and index_path(data_root).is_file():
+        records = load_index(data_root)
+    if records is not None and class_domain_counts(records) == EXPECTED_COUNTS:
+        return embedded_white_rejects(records)
     path = white_rejects_path(data_root)
     if not path.is_file():
         return set()
@@ -2770,7 +2843,7 @@ def white_mask_area_markdown(records: list[Record], areas: dict[str, float], rej
         lines.append(f"| {name if name != 'all' else '**All**'} | {n} | {cells} |")
     note = (
         f"\nFraction of a white-background image covered by the pseudo-mask of the leaf, over the accepted leaves "
-        f"(white images {sum(r.domain == 'white' for r in records)}, rejected in white_rejects.txt: {len(rejects)}). "
+        f"(white images {sum(r.domain == 'white' for r in records)}, rejected: {len(rejects)}). "
         f"Std with ddof=1.\n"
     )
     return "\n".join(lines) + "\n" + note
@@ -2863,35 +2936,51 @@ def prepare_pseudo_masks(data_root, records: list[Record], *, workers: int | Non
     sheets = save_mask_qc_sheets(data_root, records, rejects)
     out(
         f"  masks       {stats.total} white pseudo-masks: built {stats.built}, up to date {stats.reused}; "
-        f"{len(rejects)} rejected in white_rejects.txt; {len(sheets)} QC sheets, {area_path.name} ({time.time() - started:.0f} s)"
+        f"{len(rejects)} rejected ({white_rejects_source(records)}); {len(sheets)} QC sheets, {area_path.name} ({time.time() - started:.0f} s)"
     )
-    if not rejects and not white_rejects_path(data_root).is_file():
-        out("              review the sheets and list the failures in _work/masks/white_rejects.txt (T5.1)")
     return {"built": stats.built, "reused": stats.reused, "rejects": rejects, "sheets": sheets}
 
-COMPOSITE_ROTATION_DEG = 25.0  # step 3: leaf rotation, uniform in +-this
-COMPOSITE_LEAF_LENGTH = (0.55, 0.95)  # step 3: leaf length as a fraction of the background height
-COMPOSITE_CENTER = (0.25, 0.75)  # step 3: the leaf centre lies in the middle 50% of the frame (both axes)
-COMPOSITE_BLUR_SIGMA = (0.0, 4.0)  # step 4: background defocus (px at 1280 px scale)
-COMPOSITE_L_BLEND = (0.5, 0.7)  # step 5: how far the leaf's mean L moves toward the background's (spec: 0.3-0.7, upper half used)
-COMPOSITE_WB_GAIN = 0.05  # step 5: per-channel leaf gain in 1 +- this
-COMPOSITE_FEATHER_SIGMA = (1.5, 3.0)  # step 6: alpha blur (px)
+# Recipe v2 (2026-10-13, after the blind realism check of v1: 12 of 20 composites spotted, every guess right). Pixel
+# constants are at the 1280 px cache scale. The section text gives the reason for each step.
+COMPOSITE_EDGE_ERODE = 4  # step 2: px; the pseudo-mask edge still holds paper-coloured pixels (v1: 2, a light fringe stayed)
+COMPOSITE_EDGE_BAND = 3  # step 2: px inside the eroded edge whose colour is replaced by the nearest colour deeper inside
+COMPOSITE_PAPER_BAND = 12  # step 2: px from the mask edge in which paper-coloured pixels are cut away
+COMPOSITE_PAPER_DELTA_E = 12.0  # step 2: a pixel within this LAB distance of the photo's paper colour is paper
+COMPOSITE_CUT_FADE = 0.12  # step 2: taper length of the tip end, as a fraction of the leaf length
+COMPOSITE_LEAF_LENGTH = (0.6, 1.0)  # step 3: leaf length as a fraction of the background height
+COMPOSITE_BASE_X = (0.2, 0.8)  # step 3: x of the leaf base, as a fraction of the background width
+COMPOSITE_BASE_Y = (1.0, 1.12)  # step 3: y of the leaf base: on or below the bottom edge, the leaf grows up into the frame
+COMPOSITE_MAX_LEAN = 35.0  # step 3: degrees from vertical; the lean follows the background's leaves within this
+COMPOSITE_LEAN_JITTER = 6.0  # step 3: degrees added to the lean that follows the background, uniform in +-this
+COMPOSITE_LEAN_MIN_SCORE = 0.35  # step 3: below this alignment score the background gives no direction: a random lean
+COMPOSITE_BEND = 0.08  # step 3: sideways shift of the tip as a fraction of the leaf length, uniform in +-this
+COMPOSITE_BLUR_SIGMA = (0.0, 4.0)  # step 4: background defocus (px)
+COMPOSITE_LEAF_SIGMA = (0.4, 1.4)  # step 4: leaf softening (px), the camera blur a field photo has at that size
+COMPOSITE_L_BLEND = (0.7, 1.0)  # step 5: how far the leaf's L moves to the local lightness of the vegetation around it
+COMPOSITE_CONTRAST = (0.65, 0.9)  # step 5: factor on the leaf's own lightness detail (white photos show the veins harder)
+COMPOSITE_AB_BLEND = (0.4, 0.7)  # step 5: how far the leaf's healthy colour (a, b) and colourfulness move to that vegetation's
+COMPOSITE_CHROMA_MATCH_LIMITS = (0.6, 1.25)  # step 5: bounds of the colourfulness factor
+COMPOSITE_LIGHT_SIGMA = 0.06  # step 5: scale of "local" lightness, a Gaussian sigma as a fraction of the background height
+COMPOSITE_WB_GAIN = 0.03  # step 5: per-channel leaf gain in 1 +- this
 COMPOSITE_CHROMA_EPS = 15.0  # step 5: damping of the chroma rescaling that follows a lightness change
-COMPOSITE_CHROMA_LIMITS = (0.8, 2.0)  # step 5: the chroma factor stays within these bounds
-COMPOSITE_EDGE_ERODE = 2  # step 2: px; the pseudo-mask edge still holds paper-coloured pixels
-COMPOSITE_CUT_FADE = 0.12  # step 2: taper length at a cut end, as a fraction of the leaf length
+COMPOSITE_CHROMA_LIMITS = (0.8, 1.5)  # step 5: the chroma factor stays within these bounds
+COMPOSITE_FEATHER_SIGMA = (1.5, 3.0)  # step 6: alpha blur (px)
 COMPOSITE_SHADOW_P = 0.3  # step 7
 COMPOSITE_SHADOW_OFFSET = (6.0, 16.0)  # step 7: px
 COMPOSITE_SHADOW_SIGMA = (4.0, 9.0)  # step 7: px
 COMPOSITE_SHADOW_STRENGTH = (0.25, 0.5)  # step 7
 COMPOSITE_TRAIN_SCALE = 0.5  # CompositeSource composes at this fraction of the 1280 px cache (the network sees 448x224 anyway)
-COMPOSITE_RECIPE_VERSION = 1
+COMPOSITE_RECIPE_VERSION = 2
 COMPOSITE_CONSTANTS = {
-    "version": COMPOSITE_RECIPE_VERSION, "masks": MASK_RECIPE, "train_scale": COMPOSITE_TRAIN_SCALE, "rotation": COMPOSITE_ROTATION_DEG,
-    "length": COMPOSITE_LEAF_LENGTH, "center": COMPOSITE_CENTER, "blur": COMPOSITE_BLUR_SIGMA,
-    "l_blend": COMPOSITE_L_BLEND, "wb_gain": COMPOSITE_WB_GAIN, "feather": COMPOSITE_FEATHER_SIGMA,
-    "chroma": (COMPOSITE_CHROMA_EPS, COMPOSITE_CHROMA_LIMITS), "erode": COMPOSITE_EDGE_ERODE, "cut_fade": COMPOSITE_CUT_FADE, "shadow_p": COMPOSITE_SHADOW_P,
-    "shadow_offset": COMPOSITE_SHADOW_OFFSET, "shadow_sigma": COMPOSITE_SHADOW_SIGMA,
+    "version": COMPOSITE_RECIPE_VERSION, "masks": MASK_RECIPE, "train_scale": COMPOSITE_TRAIN_SCALE,
+    "rejects": hashlib.sha1("\n".join(sorted(WHITE_REJECTS["rejects"])).encode()).hexdigest()[:12],
+    "erode": COMPOSITE_EDGE_ERODE, "edge_band": COMPOSITE_EDGE_BAND, "paper": (COMPOSITE_PAPER_BAND, COMPOSITE_PAPER_DELTA_E),
+    "cut_fade": COMPOSITE_CUT_FADE, "length": COMPOSITE_LEAF_LENGTH, "base": (COMPOSITE_BASE_X, COMPOSITE_BASE_Y),
+    "lean": (COMPOSITE_MAX_LEAN, COMPOSITE_LEAN_JITTER, COMPOSITE_LEAN_MIN_SCORE), "bend": COMPOSITE_BEND,
+    "blur": COMPOSITE_BLUR_SIGMA, "leaf_sigma": COMPOSITE_LEAF_SIGMA, "l_blend": COMPOSITE_L_BLEND,
+    "contrast": COMPOSITE_CONTRAST, "ab_blend": (COMPOSITE_AB_BLEND, COMPOSITE_CHROMA_MATCH_LIMITS), "light_sigma": COMPOSITE_LIGHT_SIGMA, "wb_gain": COMPOSITE_WB_GAIN,
+    "chroma": (COMPOSITE_CHROMA_EPS, COMPOSITE_CHROMA_LIMITS), "feather": COMPOSITE_FEATHER_SIGMA,
+    "shadow_p": COMPOSITE_SHADOW_P, "shadow_offset": COMPOSITE_SHADOW_OFFSET, "shadow_sigma": COMPOSITE_SHADOW_SIGMA,
     "shadow_strength": COMPOSITE_SHADOW_STRENGTH,
 }
 COMPOSITE_RECIPE = hashlib.sha1(json.dumps(COMPOSITE_CONSTANTS, sort_keys=True).encode()).hexdigest()[:12]
@@ -2901,11 +2990,16 @@ COMPOSITE_RECIPE = hashlib.sha1(json.dumps(COMPOSITE_CONSTANTS, sort_keys=True).
 class CompositeParams:
     """Every random choice of one composite (drawn up front, in this order, from one generator)."""
 
-    angle: float
     length_fraction: float
-    center: tuple[float, float]  # (x, y) as fractions of the background width and height
+    base: tuple[float, float]  # (x, y) of the leaf base as fractions of the background width and height
+    lean_jitter: float  # degrees added to the lean that follows the background
+    lean_fallback: float  # degrees from vertical, used when the background gives no direction
+    bend: float  # sideways shift of the tip, as a fraction of the leaf length (positive: to the right)
     blur_sigma: float
+    leaf_sigma: float
     l_blend: float
+    contrast: float
+    ab_blend: float
     gains: tuple[float, float, float]
     feather_sigma: float
     shadow: bool
@@ -2918,11 +3012,16 @@ class CompositeParams:
 def draw_composite_params(rng: np.random.Generator) -> CompositeParams:
     u = rng.uniform
     return CompositeParams(
-        angle=float(u(-COMPOSITE_ROTATION_DEG, COMPOSITE_ROTATION_DEG)),
         length_fraction=float(u(*COMPOSITE_LEAF_LENGTH)),
-        center=(float(u(*COMPOSITE_CENTER)), float(u(*COMPOSITE_CENTER))),
+        base=(float(u(*COMPOSITE_BASE_X)), float(u(*COMPOSITE_BASE_Y))),
+        lean_jitter=float(u(-COMPOSITE_LEAN_JITTER, COMPOSITE_LEAN_JITTER)),
+        lean_fallback=float(u(-COMPOSITE_MAX_LEAN, COMPOSITE_MAX_LEAN)),
+        bend=float(u(-COMPOSITE_BEND, COMPOSITE_BEND)),
         blur_sigma=float(u(*COMPOSITE_BLUR_SIGMA)),
+        leaf_sigma=float(u(*COMPOSITE_LEAF_SIGMA)),
         l_blend=float(u(*COMPOSITE_L_BLEND)),
+        contrast=float(u(*COMPOSITE_CONTRAST)),
+        ab_blend=float(u(*COMPOSITE_AB_BLEND)),
         gains=tuple(float(g) for g in u(1 - COMPOSITE_WB_GAIN, 1 + COMPOSITE_WB_GAIN, size=3)),
         feather_sigma=float(u(*COMPOSITE_FEATHER_SIGMA)),
         shadow=bool(rng.random() < COMPOSITE_SHADOW_P),
@@ -2933,20 +3032,99 @@ def draw_composite_params(rng: np.random.Generator) -> CompositeParams:
     )
 
 
+def to_lab(rgb_float: np.ndarray) -> np.ndarray:
+    """float32 RGB in [0, 1] -> LAB (L 0-100, a and b about -128..127)."""
+    return cv2.cvtColor(np.ascontiguousarray(rgb_float, np.float32), cv2.COLOR_RGB2LAB)
+
+
+def paper_colour(leaf_rgb: np.ndarray, leaf_mask: np.ndarray, gap: int) -> np.ndarray | None:
+    """Median LAB colour of the paper: the pixels at least ``gap`` px away from the leaf mask (None if there are none)."""
+    near = cv2.dilate(leaf_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * gap + 1, 2 * gap + 1)))
+    outside = near == 0
+    if outside.sum() < 50:
+        return None
+    return np.median(to_lab(leaf_rgb[outside].reshape(-1, 1, 3).astype(np.float32) / 255.0).reshape(-1, 3), axis=0)
+
+
+def cut_paper(rgb: np.ndarray, alpha: np.ndarray, paper_lab: np.ndarray | None, band: float, delta_e: float) -> np.ndarray:
+    """``alpha`` without the paper-coloured pixels that lie within ``band`` px of its edge (then its largest component).
+    Pale lesions further inside the leaf are never touched; near the edge a lesion is tan or brown, not paper grey."""
+    if paper_lab is None or band < 1:
+        return alpha
+    inside = alpha > 0.5
+    distance = cv2.distanceTransform(inside.astype(np.uint8), cv2.DIST_L2, 3)
+    lab = to_lab(rgb.astype(np.float32) / 255.0)
+    paper = (np.linalg.norm(lab - paper_lab, axis=2) < delta_e) & inside & (distance <= band)
+    if not paper.any():
+        return alpha
+    kept = largest_component(((inside & ~paper) * 255).astype(np.uint8)) > 0
+    return alpha * kept
+
+
+def decontaminate_edge(rgb: np.ndarray, alpha: np.ndarray, band: float) -> np.ndarray:
+    """``rgb`` with every leaf pixel within ``band`` px of the alpha edge (and every pixel outside the leaf) recoloured
+    with the colour of the nearest pixel deeper inside: edge pixels are a mix of leaf and paper, so feathering them
+    would draw a light rim. Unchanged if the leaf is too thin to have an inside."""
+    if band < 1:
+        return rgb
+    distance = cv2.distanceTransform((alpha > 0.5).astype(np.uint8), cv2.DIST_L2, 3)
+    core = distance > band
+    if core.sum() < 10:
+        return rgb
+    # nearest core pixel of every pixel: labels number the zero pixels (the core) in raster order
+    _, labels = cv2.distanceTransformWithLabels((~core).astype(np.uint8), cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    core_colours = rgb[core]
+    out = core_colours[labels - 1]
+    out[core] = rgb[core]
+    return out
+
+
+def leaf_axis_angle(alpha: np.ndarray) -> float:
+    """Angle in degrees by which `rotate_patch` turns ``alpha``'s long axis upright (principal axis of its pixels)."""
+    ys, xs = np.nonzero(alpha > 0.5)
+    if len(xs) < 2:
+        return 0.0
+    cov = np.cov(np.stack([xs, ys]).astype(np.float64))
+    values, vectors = np.linalg.eigh(cov)
+    vx, vy = vectors[:, int(np.argmax(values))]
+    if vy < 0:
+        vx, vy = -vx, -vy
+    return float(-np.degrees(np.arctan2(vx, vy)))  # 0 for an upright leaf; positive turns a leaf leaning right upright
+
+
+def crop_to_alpha(rgb: np.ndarray, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    x, y, w, h = cv2.boundingRect((alpha > 0.02).astype(np.uint8))
+    if w == 0 or h == 0:
+        raise DatasetError("the leaf mask is empty")
+    return np.ascontiguousarray(rgb[y : y + h, x : x + w]), np.ascontiguousarray(alpha[y : y + h, x : x + w])
+
+
+def end_width(alpha: np.ndarray, top: bool, fraction: float = 0.08) -> float:
+    """Mean width (px) of an upright leaf over the first (``top``) or last ``fraction`` of its rows."""
+    rows = max(1, round(fraction * alpha.shape[0]))
+    part = alpha[:rows] if top else alpha[-rows:]
+    return float((part > 0.5).sum(axis=1).mean())
+
+
 def taper_cut_ends(alpha: np.ndarray, touches: tuple[bool, bool, bool, bool], fade: float) -> np.ndarray:
-    """Taper the leaf to a point over ``fade`` px at every side of the crop that touched the border of the white photo
-    (top, bottom, left, right), so that a leaf the photo cut off does not end in a straight edge inside the field
-    image. A pixel survives where its distance to the paper is at least ``(1 - ramp)`` times the half-width of the
-    leaf in that row (column), with ``ramp`` going 1 -> 0 over ``fade`` px toward the border."""
+    """Taper the leaf to a point over ``fade`` px at every side of the patch flagged in ``touches`` (top, bottom, left,
+    right), so that a leaf the photo cut off does not end in a straight edge inside the field image. A pixel survives
+    where its distance to the outside is at least ``(1 - ramp)`` times the half-width of the leaf in that row (column),
+    with ``ramp`` going 1 -> 0 over ``fade`` px toward that side."""
     if fade < 1.0 or not any(touches):
         return alpha
     height, width = alpha.shape
-    distance = cv2.distanceTransform((alpha > 0.5).astype(np.uint8), cv2.DIST_L2, 3)
+    inside = (alpha > 0.5).astype(np.uint8)
     keep = np.ones((height, width), bool)
     top, bottom, left, right = touches
     for sides, count, along_rows in (((top, bottom), height, True), ((left, right), width, False)):
         if not any(sides):
             continue
+        # distance to the leaf's own edge across the taper direction: a zero border on the two other sides, so that a
+        # leaf filling the whole patch width (a straight strip) still has an edge to measure from
+        pad = (0, 0, 1, 1) if along_rows else (1, 1, 0, 0)
+        padded = cv2.copyMakeBorder(inside, *pad, cv2.BORDER_CONSTANT, value=0)
+        distance = cv2.distanceTransform(padded, cv2.DIST_L2, 3)[pad[0] : pad[0] + height, pad[2] : pad[2] + width]
         index = np.arange(count, dtype=np.float32)
         ramp = np.ones(count, np.float32)
         if sides[0]:
@@ -2960,8 +3138,9 @@ def taper_cut_ends(alpha: np.ndarray, touches: tuple[bool, bool, bool, bool], fa
     return alpha * keep
 
 
-def rotate_patch(rgb: np.ndarray, alpha: np.ndarray, angle: float) -> tuple[np.ndarray, np.ndarray]:
-    """Rotate a leaf patch (uint8 RGB and float alpha) by ``angle`` degrees on a canvas that is large enough to hold it."""
+def rotate_patch(rgb: np.ndarray, alpha: np.ndarray, angle: float, point=None):
+    """Rotate a leaf patch (uint8 RGB and float alpha) by ``angle`` degrees (counter-clockwise on screen) on a canvas
+    that is large enough to hold it. Returns (rgb, alpha), plus the new position of ``point`` (x, y) when one is given."""
     height, width = alpha.shape
     radians = np.deg2rad(abs(angle))
     new_w = int(np.ceil(width * np.cos(radians) + height * np.sin(radians))) + 2
@@ -2971,7 +3150,77 @@ def rotate_patch(rgb: np.ndarray, alpha: np.ndarray, angle: float) -> tuple[np.n
     matrix[1, 2] += new_h / 2 - height / 2
     rotated_rgb = cv2.warpAffine(rgb, matrix, (new_w, new_h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
     rotated_alpha = cv2.warpAffine(alpha, matrix, (new_w, new_h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-    return rotated_rgb, rotated_alpha
+    if point is None:
+        return rotated_rgb, rotated_alpha
+    moved = matrix @ np.array([point[0], point[1], 1.0])
+    return rotated_rgb, rotated_alpha, (float(moved[0]), float(moved[1]))
+
+
+def bend_patch(rgb: np.ndarray, alpha: np.ndarray, bend: float) -> tuple[np.ndarray, np.ndarray, float]:
+    """Bend an upright leaf (base at the bottom row): row ``r`` moves sideways by ``bend * height * t**2``, where ``t``
+    goes 0 at the base to 1 at the tip. Returns (rgb, alpha, x of the base centre in the new patch)."""
+    height, width = alpha.shape
+    shift = bend * height
+    pad = int(np.ceil(abs(shift))) + 1
+    new_w = width + pad
+    left = pad if shift < 0 else 0  # the patch grows on the side the tip moves to
+    t = (height - 1 - np.arange(height, dtype=np.float32)) / max(1, height - 1)
+    offset = left + shift * t**2  # where column 0 of row r lands
+    map_x = np.arange(new_w, dtype=np.float32)[None, :] - offset[:, None]
+    map_y = np.repeat(np.arange(height, dtype=np.float32)[:, None], new_w, axis=1)
+    bent_rgb = cv2.remap(rgb, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    bent_alpha = cv2.remap(alpha, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    base_cols = np.nonzero(alpha[-1] > 0.5)[0]
+    base_x = (float(base_cols.mean()) if len(base_cols) else width / 2) + left
+    return bent_rgb, bent_alpha, base_x
+
+
+def follow_background_lean(bg_rgb: np.ndarray, base: tuple[float, float], length: float, max_lean: float) -> tuple[float, float]:
+    """(lean in degrees from vertical, score in [0, 1]) of the straight leaf from ``base`` (px) of ``length`` px that runs
+    most nearly along the leaves of the background. A structure tensor gives the dominant edge direction and how
+    clear it is (coherence) at a small scale; each candidate lean (steps of 5 degrees) is scored by the coherence-
+    weighted squared cosine between its direction and those edge directions at points along it. Positive leans to the
+    left (counter-clockwise), like `rotate_patch`."""
+    frame_h, frame_w = bg_rgb.shape[:2]
+    small_h = 160
+    factor = small_h / frame_h
+    grey = cv2.cvtColor(cv2.resize(bg_rgb, (max(8, round(frame_w * factor)), small_h), interpolation=cv2.INTER_AREA),
+                        cv2.COLOR_RGB2GRAY).astype(np.float32)
+    gx, gy = cv2.Sobel(grey, cv2.CV_32F, 1, 0), cv2.Sobel(grey, cv2.CV_32F, 0, 1)
+    jxx, jyy, jxy = (cv2.GaussianBlur(v, (0, 0), 3.0) for v in (gx * gx, gy * gy, gx * gy))
+    trace = jxx + jyy + 1e-6
+    coherence = np.sqrt((jxx - jyy) ** 2 + 4 * jxy**2) / trace
+    gradient_angle = 0.5 * np.arctan2(2 * jxy, jxx - jyy)
+    edge_x, edge_y = -np.sin(gradient_angle), np.cos(gradient_angle)  # edges run across the gradient
+    best = (0.0, -1.0)
+    for lean in np.arange(-max_lean, max_lean + 0.1, 5.0):
+        dx, dy = -np.sin(np.deg2rad(lean)), -np.cos(np.deg2rad(lean))
+        t = np.linspace(0.15, 0.9, 24)
+        px, py = (base[0] + t * length * dx) * factor, (base[1] + t * length * dy) * factor
+        inside = (px >= 0) & (px < grey.shape[1] - 1) & (py >= 0) & (py < grey.shape[0] - 1)
+        tip_x = (base[0] + 0.9 * length * dx) / frame_w
+        if inside.sum() < 6 or not 0.03 <= tip_x <= 0.97:
+            continue
+        xi, yi = px[inside].astype(int), py[inside].astype(int)
+        weight = coherence[yi, xi]
+        cos2 = (edge_x[yi, xi] * dx + edge_y[yi, xi] * dy) ** 2
+        score = float((weight * cos2).sum() / max(weight.sum(), 1e-6) * min(1.0, weight.mean() / 0.3))
+        if score > best[1]:
+            best = (float(lean), score)
+    return best
+
+
+def local_vegetation_lightness(bg_lab: np.ndarray, bg_rgb: np.ndarray, sigma: float) -> tuple[np.ndarray, np.ndarray]:
+    """(local mean L of the vegetation around every pixel, vegetation mask). Vegetation: yellow-green to green hue with
+    some saturation (leaves, not soil, water or sky). Where there is too little vegetation nearby, the local mean of
+    all pixels is used."""
+    hsv = cv2.cvtColor(np.ascontiguousarray(bg_rgb, np.float32), cv2.COLOR_RGB2HSV)
+    veg = ((hsv[..., 0] >= 40) & (hsv[..., 0] <= 160) & (hsv[..., 1] > 0.12) & (hsv[..., 2] > 0.12)).astype(np.float32)
+    lightness = bg_lab[..., 0]
+    weight = cv2.GaussianBlur(veg, (0, 0), sigma)
+    veg_mean = cv2.GaussianBlur(lightness * veg, (0, 0), sigma) / np.maximum(weight, 1e-6)
+    all_mean = cv2.GaussianBlur(lightness, (0, 0), sigma)
+    return np.where(weight > 0.05, veg_mean, all_mean), veg > 0
 
 
 def composite_arrays(leaf_rgb: np.ndarray, leaf_mask: np.ndarray, bg_rgb: np.ndarray, rng: np.random.Generator,
@@ -2981,34 +3230,48 @@ def composite_arrays(leaf_rgb: np.ndarray, leaf_mask: np.ndarray, bg_rgb: np.nda
     background's size. ``params`` (default: drawn from ``rng``) exists so that tests can fix single choices.
 
     ``scale`` is the resolution of the three inputs relative to the 1280 px cache (1.0 = cache resolution, 0.5 =
-    half): every constant in pixels (blur, erode, feather, shadow) is multiplied by it, so a half-resolution
-    composite is the same picture at a quarter of the cost. `CompositeSource` uses it for training."""
+    half): every constant in pixels is multiplied by it, so a half-resolution composite is the same picture at a
+    quarter of the cost. `CompositeSource` uses it for training."""
     p = params or draw_composite_params(rng)
-    p = replace(p, blur_sigma=p.blur_sigma * scale, feather_sigma=p.feather_sigma * scale,
+    p = replace(p, blur_sigma=p.blur_sigma * scale, leaf_sigma=p.leaf_sigma * scale, feather_sigma=p.feather_sigma * scale,
                 shadow_offset=p.shadow_offset * scale, shadow_sigma=p.shadow_sigma * scale)
     frame_h, frame_w = bg_rgb.shape[:2]
-    # 2: crop the leaf, pull the alpha edge inside the leaf, taper the ends the white photo cut off
+    # 2: crop the leaf, cut paper off its edge, recolour the edge from inside, pull the alpha edge inside the leaf
     x, y, w, h = cv2.boundingRect((leaf_mask > 0).astype(np.uint8))
     if w == 0 or h == 0:
         raise DatasetError("the leaf mask is empty")
+    paper_lab = paper_colour(leaf_rgb, leaf_mask, max(2, round(COMPOSITE_PAPER_BAND * scale)))
     erode = max(1, round(COMPOSITE_EDGE_ERODE * scale)) if COMPOSITE_EDGE_ERODE else 0
     eroded = cv2.erode(leaf_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * erode + 1, 2 * erode + 1))) if erode else leaf_mask
     alpha = (eroded[y : y + h, x : x + w] > 0).astype(np.float32)
     rgb = np.ascontiguousarray(leaf_rgb[y : y + h, x : x + w])
-    touches = (y == 0, y + h == leaf_mask.shape[0], x == 0, x + w == leaf_mask.shape[1])
-    alpha = taper_cut_ends(alpha, touches, COMPOSITE_CUT_FADE * max(h, w))
-    # 3: scale to the target length, rotate, place
-    fit = p.length_fraction * frame_h / max(h, w)
-    new_w, new_h = max(1, round(w * fit)), max(1, round(h * fit))
+    alpha = cut_paper(rgb, alpha, paper_lab, COMPOSITE_PAPER_BAND * scale, COMPOSITE_PAPER_DELTA_E)
+    if not (alpha > 0.5).any():
+        raise DatasetError("the leaf mask is empty after removing the paper")
+    rgb = decontaminate_edge(rgb, alpha, COMPOSITE_EDGE_BAND * scale)
+    # 3: upright, base (the wider end) down, tip tapered, scaled, bent, leaned, base on or below the bottom edge
+    rgb, alpha = rotate_patch(rgb, alpha, leaf_axis_angle(alpha))
+    rgb, alpha = crop_to_alpha(rgb, alpha)
+    if end_width(alpha, top=True) > end_width(alpha, top=False):
+        rgb, alpha = np.ascontiguousarray(rgb[::-1]), np.ascontiguousarray(alpha[::-1])
+    length = p.length_fraction * frame_h
+    fit = length / alpha.shape[0]
+    new_w, new_h = max(1, round(alpha.shape[1] * fit)), max(2, round(length))
     interpolation = cv2.INTER_AREA if fit < 1.0 else cv2.INTER_LINEAR
     rgb = cv2.resize(rgb, (new_w, new_h), interpolation=interpolation)
     alpha = cv2.resize(alpha, (new_w, new_h), interpolation=interpolation)
-    rgb, alpha = rotate_patch(rgb, alpha, p.angle)
+    alpha = taper_cut_ends(alpha, (True, False, False, False), COMPOSITE_CUT_FADE * new_h)
+    rgb, alpha, base_x = bend_patch(rgb, alpha, p.bend)
+    base = (p.base[0] * frame_w, p.base[1] * frame_h)
+    lean, score = follow_background_lean(bg_rgb, base, length, COMPOSITE_MAX_LEAN)
+    lean = float(np.clip(lean + p.lean_jitter if score >= COMPOSITE_LEAN_MIN_SCORE else p.lean_fallback, -COMPOSITE_MAX_LEAN, COMPOSITE_MAX_LEAN))
+    rgb, alpha, (bx, by) = rotate_patch(rgb, alpha, lean, point=(base_x, alpha.shape[0] - 0.5))
     patch_h, patch_w = alpha.shape
-    x0 = round(p.center[0] * frame_w - patch_w / 2)
-    y0 = round(p.center[1] * frame_h - patch_h / 2)
-    # 4: defocused background (the whole frame)
+    x0, y0 = round(base[0] - bx), round(base[1] - by)
+    # 4: defocused background (the whole frame); the leaf gets the softness of a field photo
     bg = cv2.GaussianBlur(bg_rgb, (0, 0), p.blur_sigma) if p.blur_sigma > 0.1 else bg_rgb
+    if p.leaf_sigma > 0.1:
+        rgb = cv2.GaussianBlur(rgb, (0, 0), p.leaf_sigma)
     # the region that can change: the patch plus room for the feather and the shadow
     margin = int(np.ceil(3 * max(p.feather_sigma, p.shadow_sigma if p.shadow else 0) + (p.shadow_offset if p.shadow else 0))) + 1
     rx0, ry0 = max(0, x0 - margin), max(0, y0 - margin)
@@ -3027,18 +3290,29 @@ def composite_arrays(leaf_rgb: np.ndarray, leaf_mask: np.ndarray, bg_rgb: np.nda
     # 6: feather
     alpha_roi = np.clip(cv2.GaussianBlur(alpha_roi, (0, 0), p.feather_sigma), 0.0, 1.0)
     bg_roi = bg[ry0:ry1, rx0:rx1].astype(np.float32) / 255.0
-    # 5: harmonise the leaf's brightness with the background around it, then the white-balance gain
+    # 5: harmonise the leaf with the vegetation around it: lightness follows the local light, the healthy colour moves
+    # toward the vegetation's, then the white-balance gain
     leaf_f = np.clip(leaf_roi.astype(np.float32) / 255.0 * np.asarray(p.gains, np.float32), 0.0, 1.0)
-    leaf_lab = cv2.cvtColor(leaf_f, cv2.COLOR_RGB2LAB)
+    leaf_lab = to_lab(leaf_f)
     weight = alpha_roi > 0.5
     if weight.any():
+        bg_lab = to_lab(bg_roi)
+        light, veg = local_vegetation_lightness(bg_lab, bg_roi, max(1.0, COMPOSITE_LIGHT_SIGMA * frame_h))
         leaf_l = float(leaf_lab[..., 0][weight].mean())
-        bg_l = float(cv2.cvtColor(bg_roi, cv2.COLOR_RGB2LAB)[..., 0].mean())
-        lightness = np.clip(leaf_lab[..., 0] + p.l_blend * (bg_l - leaf_l), 0.0, 100.0)
+        detail = p.contrast * (leaf_lab[..., 0] - leaf_l)
+        lightness = np.clip(leaf_l + detail + p.l_blend * (light - leaf_l), 0.0, 100.0)
         # chroma follows lightness (a brighter leaf keeps its saturation instead of turning grey); the hue is unchanged
         chroma_scale = np.clip((lightness + COMPOSITE_CHROMA_EPS) / (leaf_lab[..., 0] + COMPOSITE_CHROMA_EPS), *COMPOSITE_CHROMA_LIMITS)
         leaf_lab[..., 1:] *= chroma_scale[..., None]
         leaf_lab[..., 0] = lightness
+        healthy = weight & (leaf_lab[..., 1] < -5.0)  # green leaf tissue; lesions (a > -5) only follow the shift
+        background_veg = veg & ~weight
+        if healthy.sum() >= 0.25 * weight.sum() and background_veg.sum() >= 50:
+            veg_ab = bg_lab[..., 1:][background_veg]
+            ratio = np.linalg.norm(veg_ab, axis=1).mean() / max(1e-3, np.linalg.norm(leaf_lab[..., 1:][healthy], axis=1).mean())
+            leaf_lab[..., 1:] *= float(np.clip(ratio**p.ab_blend, *COMPOSITE_CHROMA_MATCH_LIMITS))  # colourfulness, lesions too
+            shift = p.ab_blend * (veg_ab.mean(axis=0) - leaf_lab[..., 1:][healthy].mean(axis=0))
+            leaf_lab[..., 1:] += shift.astype(np.float32)
         leaf_f = np.clip(cv2.cvtColor(leaf_lab, cv2.COLOR_LAB2RGB), 0.0, 1.0)
     # 7: soft shadow under the leaf
     if p.shadow:
@@ -3052,6 +3326,8 @@ def composite_arrays(leaf_rgb: np.ndarray, leaf_mask: np.ndarray, bg_rgb: np.nda
     out[ry0:ry1, rx0:rx1] = np.clip(blended * 255.0 + 0.5, 0, 255).astype(np.uint8)
     mask = np.zeros((frame_h, frame_w), np.uint8)
     mask[ry0:ry1, rx0:rx1] = (alpha_roi > 0.5).astype(np.uint8) * 255
+    if not mask.any():
+        raise DatasetError("the leaf was placed outside the frame")
     return out, mask
 
 class CompositeLeakError(DatasetError):
@@ -3240,6 +3516,7 @@ class CompositeSource:
         return self.load(index)
 
 COMPOSITE_FIGURE_SEED = 7
+REALISM_SEED = 2  # a new seed for every recipe version, so a reviewer never judges images seen before (v1: 7)
 EXAMPLES_PER_CLASS = 2
 REALISM_PER_CLASS = 4  # composites per class in the realism check; the same number of real images
 REALISM_ROWS, REALISM_COLUMNS = 5, 8
@@ -3300,7 +3577,7 @@ def save_composites_examples(data_root, split_seed: int = 0, path: Path | None =
     return path
 
 
-def realism_items(pool: CompositePool, seed: int = COMPOSITE_FIGURE_SEED) -> list[dict]:
+def realism_items(pool: CompositePool, seed: int = REALISM_SEED) -> list[dict]:
     """The 40 shuffled items of the realism check: ``REALISM_PER_CLASS`` composites and as many real field training
     images (never a background used by one of the composites) per class, in a random order."""
     rng = np.random.default_rng([seed, 99])
@@ -3337,7 +3614,7 @@ def realism_key(items: list[dict], split_seed: int, seed: int) -> dict:
 
 
 def save_realism_check(data_root, split_seed: int = 0, path: Path | None = None, key_path: Path | None = None,
-                       pool: CompositePool | None = None, seed: int = COMPOSITE_FIGURE_SEED) -> tuple[Path, Path]:
+                       pool: CompositePool | None = None, seed: int = REALISM_SEED) -> tuple[Path, Path]:
     """`composites_realism_check.png` (40 numbered, unlabelled images) and its answer key as JSON."""
     plt = pyplot()
     pool = pool or CompositePool(data_root, split_seed)
@@ -3766,7 +4043,7 @@ def seg_eval_set(items: list[tuple]) -> SegEvalSet:
 
 
 def white_mask_records(data_root, records: list[Record], filenames, rejects=None) -> list[Record]:
-    """White images among ``filenames`` (a split part) that have an accepted pseudo-mask (not in white_rejects.txt), in split order."""
+    """White images among ``filenames`` (a split part) that have an accepted pseudo-mask (not rejected, see `load_white_rejects`), in split order."""
     rejects = load_white_rejects(data_root, records) if rejects is None else rejects
     return [r for r in select_records(records, filenames, ("white",)) if r.filename not in rejects]
 
@@ -4308,8 +4585,8 @@ def seg_fingerprint_extra(cfg: ExperimentConfig, data_root=None) -> dict:
     """What the segmenter row and the Method B row add to their config fingerprint; ``{}`` for every other row, so their
     fingerprints are exactly what they were before phase 06."""
     if cfg.kind == "segmenter":
-        rejects = white_rejects_path(data_root) if data_root is not None else None
-        digest = hashlib.sha1(read_file_bytes(rejects)).hexdigest() if rejects is not None and rejects.is_file() else ""
+        rejects = sorted(load_white_rejects(data_root)) if data_root is not None else []
+        digest = hashlib.sha1("\n".join(rejects).encode()).hexdigest() if rejects else ""
         return {"segmenter": {"recipe": SEG_RECIPE, "composites": COMPOSITE_RECIPE, "rejects": digest}}
     if cfg.seg_crop:
         return {"seg_crop": {"recipe": BOX_RECIPE}}
@@ -5840,6 +6117,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     """Index, cache, near-duplicate audit, splits, tables and figures (phase 02), then the white pseudo-masks and QC sheets
     (T5.1), the composite figures (T5.2) and the annotation selection (T6.1).
     Idempotent."""
+    started = time.time()
     try:
         data_root = Path(args.data_root)
         prepare_data(data_root, workers=args.workers)
@@ -5850,6 +6128,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     except DatasetError as exc:
         print(f"prepare: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
+    print(f"prepare: done in {time.time() - started:.0f} s")  # the last line: every step above has finished
     return EXIT_OK
 
 
