@@ -26,4 +26,10 @@ Recipe v2 (decision P9, 2026-10-13) answers each tell: the leaf base sits on or 
 background's leaves (no leaf hangs in from the top or floats mid-frame); lightness follows the local light of the surrounding
 vegetation, with the leaf's detail contrast, colourfulness and healthy colour pulled toward it; paper-coloured pixels near the mask
 edge are cut and the rim recoloured from inside. A development sample of the same 20 leaf/background pairs (not the check images)
-showed none of the three tells. The blind check is repeated on v2 with a new seed (`REALISM_SEED` = 2): result pending.
+showed none of the three tells. The blind check was repeated on v2 with a new seed (`REALISM_SEED` = 2). Pass rule, stated before the check: overall
+accuracy below 26/40 (the one-sided binomial p < 0.05 threshold against guessing). Result: 18 flagged, 13 of them composites
+(precision 13/18 = 72%, v1 12/12), 13 of the 20 composites found (recall 65%, v1 60%), 5 real images flagged; 28/40 correct
+(one-sided p = 0.008; v1 32/40). **v2 fails the rule**: composites are still told apart more often than chance, although less
+cleanly than v1 (5 false alarms instead of none). Method A (E3-A) trained on v2. All evaluation uses real images only, so
+detectable composites cannot inflate a reported number; they can only make the extra training samples less useful (or teach
+a paste cue that real test images never trigger).
