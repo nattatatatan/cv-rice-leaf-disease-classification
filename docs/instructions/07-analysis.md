@@ -48,6 +48,7 @@ Prerequisites: runs exist (this phase grows incrementally; build `summarize` rig
 
 ### T7.5 Grad-CAM (Tier 4)
 - **Grad-CAM** colours the image regions that most increased the predicted class's score, computed from the gradients at the last convolutional (or Swin) stage. We use it to check whether the model looks at the leaf or at the background (a shortcut).
+- Checkpoints: the reported runs did not keep `best.pt`, so Kaggle batch `batch5-checkpoints` retrained E2-swin-U (plain) and E3-A (Method A) into `runs/retrain/<ID>/split_k/` with `best.pt` kept (`.pt` is gitignored; the other run files are committed). The retrain is deterministic: `predictions_test.csv` and `predictions_val.csv` are byte-identical to the reported runs on all 10 splits (only timings differ), so Grad-CAM explains exactly the reported models. `runs/retrain/` is in `IGNORED_RUN_FOLDERS`, never a result. Method B was cut at G2, so the comparison is plain vs A.
 - [ ] Implement with forward/backward hooks on `gradcam_target_layer` (T3.3); no extra packages.
 - [ ] `gradcam --exp ID --split k` writes overlays for the success/failure images above.
 - [ ] **Quantitative shortcut check**: on the 20 eval-annotated field images, compute the fraction of CAM energy inside the annotated salient-leaf polygon, for plain vs A vs B. If A or B moves the energy onto the leaf, that is direct evidence for the method's motivation. If not, that is an honest negative finding.

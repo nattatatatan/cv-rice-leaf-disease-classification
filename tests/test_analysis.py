@@ -190,19 +190,20 @@ def test_load_skips_incomplete_and_mismatched_runs_with_a_warning(gs, root, caps
     assert "E0-rect: skipped" in err and "E0-pad: skipped" in err
 
 
-def test_load_ignores_env_json_sweep_and_scratch_but_flags_unknown_folders(gs, root, capsys):
+def test_load_ignores_env_json_sweep_scratch_and_retrain_but_flags_unknown_folders(gs, root, capsys):
     choices = gs.load_choices(root)
     add_run(gs, root, "E0-rect", 0.8)
     runs = gs.runs_dir(root)
     (runs / "env.json").write_text("{}")
     (runs / "sweep" / "E0-rect_lr1e-4" / "split_0").mkdir(parents=True)
     (runs / "scratch" / "E0-rect_fast" / "split_0").mkdir(parents=True)
+    (runs / "retrain" / "E0-rect" / "split_0").mkdir(parents=True)
     (runs / "mystery" / "split_0").mkdir(parents=True)
     capsys.readouterr()
     results = gs.load_experiments(root, ["E0-rect"], choices)
     err = capsys.readouterr().err
     assert list(results) == ["E0-rect"]
-    assert "mystery" in err and "env.json" not in err and "sweep" not in err and "scratch" not in err
+    assert "mystery" in err and "env.json" not in err and "sweep" not in err and "scratch" not in err and "retrain" not in err
 
 
 def test_unresolvable_experiment_is_reported_not_raised(gs, root):

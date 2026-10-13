@@ -4687,7 +4687,7 @@ import re
 from typing import NamedTuple
 
 ANALYSIS_SPLITS = (0, 1, 2, 3, 4)  # every reported number is a mean +- std over these five splits
-IGNORED_RUN_FOLDERS = ("sweep", "scratch")  # under runs/: learning-rate sweeps and dev runs, never results
+IGNORED_RUN_FOLDERS = ("sweep", "scratch", "retrain")  # under runs/: learning-rate sweeps, dev runs and retrained copies with best.pt (Grad-CAM), never results
 SCORE_SUBSETS = ("white", "field", "mixed", "domain_balanced")
 SCORE_METRICS = ("macro_f1", "accuracy")
 PARTS = ("val", "test")
