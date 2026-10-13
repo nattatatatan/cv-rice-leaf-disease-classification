@@ -76,11 +76,12 @@ dataset is applied last. For the first Batch 3 session you do not need a `runs.z
 It is the only line you edit: the first code cell of the notebook (cell 2).
 
 ```python
-BATCHES_TO_RUN = ["batch4"]
+BATCHES_TO_RUN = ["batch5-checkpoints"]
 ```
 
 | Entry | What it runs |
 |---|---|
+| `"batch5-checkpoints"` | Grad-CAM (T7.5): `E2-swin-U` and `E3-A` again on all 5 splits into `runs/retrain/<EXP>/`, keeping `best.pt` (the 10 jobs share one queue over both GPUs). The reported runs are not touched. Needs `composite_n_factor` and `recommended` in the uploaded `choices.json`. |
 | `"batch4"` | Method A: the split-0 composites-per-epoch comparison (0.5x and 1x, one GPU), `choose-composites`, then `E3-A` on all 5 splits (one split per GPU at a time; split 0 is the reused sweep run) |
 | `"batch4-wf"` | optional: `E3-A-WF` (white + composites, tested on field), one split per GPU at a time. Needs `batch4` first. |
 | `"batch3-core"` | ConvNeXt-T and Swin-T LR sweeps (one per GPU), `choose-lr` for each (one after the other), then `E2-cnx-U` and `E2-swin-U` on all 5 splits (one experiment per GPU) |
@@ -93,7 +94,7 @@ BATCHES_TO_RUN = ["batch4"]
 | `[]` | setup, smoke test and `prepare` only (a cheap check of the whole setup) |
 
 A full run executes: setup, smoke test, `download-weights` and `prepare`, the selected batches (in notebook order), then the
-final zip. A typo in the list is reported at the start of the run, not after an hour. Batch 3 and earlier are done and
+final zip. A typo in the list is reported at the start of the run, not after an hour. Batch 4 and earlier are done and
 committed; their entries stay for reproducibility (finished splits are skipped).
 
 ## 6. Run it in the background
@@ -138,6 +139,9 @@ Notes:
 - Check `env.json` for `"torch_pin_honoured": true`. If it is `false` the notebook printed a loud warning at the start: the
   Kaggle torch differs from the pinned 2.11.0 and the numbers may differ slightly from Colab. The actual versions are recorded.
 - Then run locally: `python group3-starvenus.py gate g1` and `summarize`, and commit the runs and `choices.json`.
+- `batch5-checkpoints` lands in `Dhan-Shomadhan/_work/runs/retrain/` with the same rsync. Its `best.pt` files (about 1.1 GB)
+  are gitignored; the small files (metrics, configs, histories) are committed as the evidence that the retrained copies
+  match the reported runs.
 
 ## 9. Update `csci935-code` before the next batch
 
@@ -164,9 +168,11 @@ in the log and rescale. Add 10 to 15 minutes of setup per session (installs, dat
 | `batch3` (everything of Batch 3) | 22 | about 5.8 h | about 2.9 h |
 | `batch4` (composites sweep, then E3-A splits 1 to 4) | 2 + 4 | about 1.0 h | about 0.6 h (the sweep uses one GPU) |
 | `batch4-wf` (E3-A-WF, 5 splits) | 5 | about 0.8 h | about 0.4 h |
+| `batch5-checkpoints` (E2-swin-U and E3-A again, 5 splits each) | 10 | about 2 h | about 1.1 h |
 
 Measured on Kaggle T4 for Batch 3: Swin-T about 5 to 6 min per split (early stopping, about 25 epochs). Batch 4 times assume
-composites add about 70% more training samples per epoch.
+composites add about 70% more training samples per epoch. Measured in Batch 4 (T4 x2, two runs at once): E3-A 9 to 22 min
+per split, E3-A-WF 8 to 18 min; Batch 3's E2-swin-U took 5 to 10 min per split.
 
 Early stopping makes some runs shorter. Two GPUs halve the wall time of a batch; Kaggle's quota counts session time, so it
 should halve the quota use too (check the quota counter after the first session). Both fit comfortably in one 12 hour session.
@@ -202,7 +208,7 @@ should halve the quota use too (check the quota counter after the first session)
 2. Create `csci935-dhan-shomadhan` (the zip) and `csci935-code` (`group3-starvenus.py`, `requirements.txt`, `choices.json`), both Private.
 3. New Notebook > File > Import Notebook > `notebooks/runner.ipynb`; Input > add both datasets.
 4. Session options: Accelerator **GPU T4 x2**, Internet **On**.
-5. First cell: `BATCHES_TO_RUN = ["batch4"]` (the current batch).
+5. First cell: `BATCHES_TO_RUN = ["batch5-checkpoints"]` (the current batch).
 6. Save Version > Save & Run All.
 7. Watch the first 15 minutes of the log: GPU names, `torch ... already match the pin` (or the install), `dataset OK: 1106`, `smoke PASSED`, then the first epoch times of the sweeps.
 8. When done: Output tab > `out.zip`, unpack as in section 8.

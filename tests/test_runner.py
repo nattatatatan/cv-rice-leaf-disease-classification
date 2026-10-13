@@ -69,7 +69,8 @@ def test_batch_cells_follow_the_documented_order():
     nb = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
     ids = [c["id"] for c in nb["cells"]]
     order = ["settings", "setup-config", "setup-inputs", "setup-install", "setup-dataset", "setup-restore", "setup-env", "smoke",
-             "setup-restore-caches", "batch2", "batch3-sweeps", "batch3-core", "batch3-wf", "batch4", "batch4-wf", "batch-generic",
+             "setup-restore-caches", "batch2", "batch3-sweeps", "batch3-core", "batch3-wf", "batch4", "batch4-wf", "batch5-checkpoints",
+             "batch-generic",
              "finish"]
     assert [i for i in ids if i in order] == order
     assert ids[0] == "runner-intro" and ids.index("settings") == 1  # BATCHES_TO_RUN is the first thing in the notebook
@@ -665,10 +666,11 @@ FAKE_SCRIPT = textwrap.dedent('''
             if fail == f"{exp}:{split}":
                 print("boom", file=sys.stderr)
                 sys.exit(1)
-            if (work / "runs" / exp / f"split_{split}" / "metrics.json").exists():
+            root = Path(opt("--out-dir")) if "--out-dir" in rest else work / "runs"
+            if (root / exp / f"split_{split}" / "metrics.json").exists():
                 print(f"[{exp} split {split}] skipped")
             else:
-                write_split(work / "runs" / exp, split)
+                write_split(root / exp, split)
                 print(f"[{exp} split {split}] done on {os.environ.get('CUDA_VISIBLE_DEVICES')}")
     elif cmd == "choose-lr":
         backbone = opt("--backbone")
@@ -897,6 +899,35 @@ def test_batch4_skips_the_sweep_once_the_factor_is_chosen_and_batch4_wf_needs_it
     made = calls(runner)
     assert not [c for c in made if "--sweep-composites" in c["args"] or c["cmd"] == "choose-composites"]
     assert sorted({c["args"][c["args"].index("--exp") + 1] for c in made}) == ["E3-A", "E3-A-WF"] and len(made) == 10
+
+
+def test_batch5_retrains_into_runs_retrain_over_both_gpus_and_keeps_checkpoints(lib, tmp_path, fake_env):
+    runner = make_runner(lib, tmp_path, gpus=2, script_body=FAKE_SCRIPT)  # KEEP_CHECKPOINTS stays False
+    runner.cfg.choices_path.parent.mkdir(parents=True, exist_ok=True)
+    runner.cfg.choices_path.write_text(json.dumps(BATCH4_CHOICES))
+    with pytest.raises(lib.RunnerError, match="composite_n_factor"):
+        lib.plan_batch5_checkpoints(runner)
+    full = {**BATCH4_CHOICES, "composite_n_factor": {"value": 0.5}, "recommended": {"value": "E2-swin-U"}}
+    runner.cfg.choices_path.write_text(json.dumps(full))
+    assert lib.run_selected(runner, "batch5-checkpoints", ["batch5-checkpoints"]) is True
+    made = calls(runner)
+    assert len(made) == 10 and {c["cvd"] for c in made} == {"0", "1"}, "10 jobs in one queue over both GPUs"
+    assert all(c["args"][c["args"].index("--out-dir") + 1] == str(runner.cfg.runs_dir / "retrain") for c in made)
+    names = zipfile.ZipFile(runner.cfg.out_zip).namelist()
+    for exp in ("E2-swin-U", "E3-A"):
+        assert all(f"runs/retrain/{exp}/split_{s}/best.pt" in names for s in range(5)), exp
+    assert not any(n.startswith(("runs/E2-swin-U/", "runs/E3-A/")) for n in names), "the reported run folders are not touched"
+    assert lib.finished_splits(runner.cfg.out_dir / "runs") == {f"retrain/{e}": [0, 1, 2, 3, 4] for e in ("E2-swin-U", "E3-A")}
+    lib.plan_batch5_checkpoints(runner)  # a rerun after a disconnect skips the finished retrain splits
+    assert sum("skipped" in line for line in runner.cfg.log_path.read_text().splitlines()) >= 10
+
+
+def test_run_retrain_with_one_gpu_runs_one_job_after_the_other(lib, tmp_path, fake_env):
+    runner = make_runner(lib, tmp_path, gpus=1, script_body=FAKE_SCRIPT)
+    runner.run_retrain(("E3-A",), (0, 1))
+    made = calls(runner)
+    assert len(made) == 2 and all(c["cvd"] is None for c in made)
+    assert (runner.cfg.out_dir / "runs" / "retrain" / "E3-A" / "split_1" / "best.pt").is_file()
 
 
 def test_run_splits_parallel_with_one_gpu_is_run_batch(lib, tmp_path, fake_env):
