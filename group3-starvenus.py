@@ -5746,7 +5746,7 @@ def save_scenario_bars(data_root, results: dict, recommended: str | None, path: 
         ax.set_xticks(range(len(models)), [f"{m}\n{BACKBONE_LABELS.get(results[m].config.backbone, '')}"
                                            + ("\n(recommended)" if m == recommended else "") for m in models])
         ax.set_ylim(0, 1.0)
-        ax.set_ylabel("Test macro-F1 (mean +- std, 5 splits)")
+        ax.set_ylabel("Test macro-F1 (mean ± std, 5 splits)")
         ax.yaxis.grid(True, color="#DDDDDD", linewidth=0.6)
         tidy_axes(ax)
         ax.legend(frameon=False, ncol=3, loc="lower center", bbox_to_anchor=(0.5, 1.0), handlelength=1.2, columnspacing=1.2)
@@ -5781,7 +5781,7 @@ def save_domain_gap(data_root, results: dict, path: Path | None = None) -> Path 
                       fontsize=FIGURE_FONT - 0.5)
         ax.set_ylim(ypos[-1] + 0.7, -0.7)
         ax.set_xlim(0, 1.0)
-        ax.set_xlabel("Field test macro-F1 (mean +- std, 5 splits)")
+        ax.set_xlabel("Field test macro-F1 (mean ± std, 5 splits)")
         ax.xaxis.grid(True, color="#DDDDDD", linewidth=0.6)
         tidy_axes(ax)
         if any(exp_id == "E3-A-WF" for _, exp_id in rows):

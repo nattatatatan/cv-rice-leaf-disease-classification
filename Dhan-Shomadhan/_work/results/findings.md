@@ -84,6 +84,13 @@ Gate G2 recommends the plain unified model (E2-swin-U), by the rule fixed in pha
 - E3-A-WF: per-class field F1 Brown Spot 0.604, Leaf Scald 0.480, Rice Blast 0.660, Rice Tungro 0.628, Sheath Blight 0.865. Collapsed: none. Largest change against E1-FF: Rice Tungro (-0.008). Most frequent mistakes: Leaf Scald taken for Rice Blast in 10 of 51 images (20%); Brown Spot taken for Leaf Scald in 9 of 36 images (25%).
 <!-- auto:questions:end -->
 
+**E1-WF collapse is not a Mac numerics effect** (checked 2026-10-13). E1-WF ran on the M2 (MPS, fp32) and predicts almost every
+field image as Leaf Scald or Sheath Blight. Its split-0 checkpoint, re-run on the CPU on the 47 field test images, gives the
+same top class as the recorded MPS predictions for 46 of 47 images (CPU: 35 Sheath Blight, 9 Leaf Scald, 3 Brown Spot), so
+the collapse is genuine. Hypothesis, untested: ResNet50 normalises with BatchNorm, whose running statistics come from white
+photos only, while ConvNeXt-T and Swin-T use LayerNorm (per image); the shifted statistics on field images could push every
+input towards the same few classes, which would fit E1-WF (0.141) being far below E2-cnx-WF (0.442) and E2-swin-WF (0.300).
+
 <!-- auto:cases:begin -->
 ## Success, failure and challenging cases (T7.4)
 

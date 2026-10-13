@@ -16,8 +16,8 @@ All GPU runs happen on Colab or Kaggle via `python <group_name>.py run --exp <ID
 
 ## Batch 2 - E1 ResNet50 baseline and domain experiments
 
-- [ ] `E1-U` is an alias of the winning E0 row. Do not retrain; the registry points to the same run folder.
-- [ ] Run `E1-FF` and `E1-WF`. `E1-WW` is an alias of `E1-WF` (same data, same checkpoint selection on white val, so the same model; the table row reports its white test). Running `E1-WW` is a no-op that prints `skipped` x5.
+- [x] `E1-U` is an alias of the winning E0 row. Do not retrain; the registry points to the same run folder.
+- [x] Run `E1-FF` and `E1-WF`. `E1-WW` is an alias of `E1-WF` (same data, same checkpoint selection on white val, so the same model; the table row reports its white test). Running `E1-WW` is a no-op that prints `skipped` x5.
 
 | Row | Train | Checkpoint chosen on | Report on test |
 |---|---|---|---|
@@ -34,12 +34,12 @@ Questions these runs answer (write the answers into `_work/results/findings.md` 
 
 ## Batch 3 - E2 architecture comparison
 
-- [ ] LR sweeps on split 0 for ConvNeXt-T and Swin-T.
+- [x] LR sweeps on split 0 for ConvNeXt-T and Swin-T.
   - `choose-lr` copies the winning sweep run to split 0 of the real run folder (`E2-cnx-U`, `E2-swin-U`) when the config fingerprint and split sha256 match, with a `provenance.json`; the real run then skips split 0. The sweep copy stays in `runs/sweep/`.
-- [ ] Run `E2-cnx-U`, `E2-swin-U` (5 splits each).
-- [ ] Run `E2-cnx-WF`, `E2-swin-WF` (first to cut if behind schedule; see the README cut lines).
-- [ ] **Gate G1**: choose the backbone among {ResNet50 (E1-U), ConvNeXt-T, Swin-T} with the highest **mean val mixed macro-F1**. If the top two are within one std, prefer the one with higher **val field** macro-F1, because field is the harder and more valuable domain for the client. Write `{"backbone": ..., "lr": ...}` to `choices.json`.
-- [ ] Paired comparison: because all models share the same 5 splits, also report the mean +- std of the **per-split difference** (e.g. ConvNeXt minus ResNet50). Variation between splits largely cancels in the difference, so it shows whether a gap is consistent. The spec only requires mean +- std, so this is an extra column, not a replacement.
+- [x] Run `E2-cnx-U`, `E2-swin-U` (5 splits each).
+- [x] Run `E2-cnx-WF`, `E2-swin-WF` (first to cut if behind schedule; see the README cut lines).
+- [x] **Gate G1**: choose the backbone among {ResNet50 (E1-U), ConvNeXt-T, Swin-T} with the highest **mean val mixed macro-F1**. If the top two are within one std, prefer the one with higher **val field** macro-F1, because field is the harder and more valuable domain for the client. Write `{"backbone": ..., "lr": ...}` to `choices.json`.
+- [x] Paired comparison: because all models share the same 5 splits, also report the mean +- std of the **per-split difference** (e.g. ConvNeXt minus ResNet50). Variation between splits largely cancels in the difference, so it shows whether a gap is consistent. The spec only requires mean +- std, so this is an extra column, not a replacement.
 
 ## Batch 4 (Tier 4, only after results freeze is safe) - X-domain
 - [ ] If G1 picks a backbone other than ResNet50, rerun W->W and F->F with it, so scenarios (a)/(b) can also be answered by domain-specific models of the best architecture.
