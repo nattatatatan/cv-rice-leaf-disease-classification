@@ -34,6 +34,12 @@ cleanly than v1 (5 false alarms instead of none). Method A (E3-A) trained on v2.
 detectable composites cannot inflate a reported number; they can only make the extra training samples less useful (or teach
 a paste cue that real test images never trigger).
 
+Tells Nattan reported for v2 (after the check): no longer colour or brightness, but the **pose of the leaf**. A pasted leaf is
+a flat, whole leaf lying in the middle of the scene and standing out from the clump, whereas real field leaves come at varied
+angles and positions, overlap their neighbours and are partly hidden. Colour matching cannot fix this: the white-background
+photos are taken flat, so every pasted leaf brings its flat pose with it. Nattan's judgement is that someone not involved in
+the project would find v2 realistic; the checker knew how composites are made, so the check is a strict one.
+
 ## Method A (composites) - T5.4
 
 Recipe v2, 0.5x composites per epoch (269; the split-0 sweep gave val mixed F1 0.790 at 0.5x vs 0.773 at 1x), Swin-T, rect,
