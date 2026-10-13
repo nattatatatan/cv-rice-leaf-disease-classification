@@ -1,0 +1,87 @@
+{
+  "format": 1,
+  "devices": {
+    "cpu": {
+      "device": "cpu",
+      "precision": "fp32",
+      "input_mode": "rect",
+      "input_size": [
+        448,
+        224
+      ],
+      "batch_size": 1,
+      "warmup": 10,
+      "repeats": 50,
+      "torch_threads": 4,
+      "python": "3.12.13",
+      "platform": "macOS-26.5-arm64-arm-64bit",
+      "torch": "2.11.0",
+      "torchvision": "0.26.0",
+      "cpu_count": 8,
+      "gpu": null,
+      "cuda": null,
+      "measured": "model forward pass only (no image decoding or resizing), untrained weights, batch size 1",
+      "backbones": {
+        "resnet50": {
+          "median_ms": 63.24,
+          "q1_ms": 57.54,
+          "q3_ms": 70.14,
+          "parameters": 23518277
+        },
+        "convnext_tiny": {
+          "median_ms": 857.36,
+          "q1_ms": 846.06,
+          "q3_ms": 884.21,
+          "parameters": 27823973
+        },
+        "swin_t": {
+          "median_ms": 78.28,
+          "q1_ms": 75.61,
+          "q3_ms": 82.31,
+          "parameters": 27523199
+        }
+      }
+    },
+    "mps": {
+      "device": "mps",
+      "precision": "fp32",
+      "input_mode": "rect",
+      "input_size": [
+        448,
+        224
+      ],
+      "batch_size": 1,
+      "warmup": 10,
+      "repeats": 50,
+      "torch_threads": 4,
+      "python": "3.12.13",
+      "platform": "macOS-26.5-arm64-arm-64bit",
+      "torch": "2.11.0",
+      "torchvision": "0.26.0",
+      "cpu_count": 8,
+      "gpu": "Apple MPS",
+      "cuda": null,
+      "measured": "model forward pass only (no image decoding or resizing), untrained weights, batch size 1",
+      "backbones": {
+        "resnet50": {
+          "median_ms": 21.69,
+          "q1_ms": 20.06,
+          "q3_ms": 23.54,
+          "parameters": 23518277
+        },
+        "convnext_tiny": {
+          "median_ms": 48.88,
+          "q1_ms": 45.19,
+          "q3_ms": 54.91,
+          "parameters": 27823973
+        },
+        "swin_t": {
+          "median_ms": 59.7,
+          "q1_ms": 56.78,
+          "q3_ms": 62.05,
+          "parameters": 27523199
+        }
+      }
+    }
+  }
+}

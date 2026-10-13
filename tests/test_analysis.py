@@ -1,13 +1,15 @@
-"""Phase 04/07: aggregation over splits, gates G0 and G1, result tables and findings.
+"""Phase 04/07: aggregation over splits, gates G0 and G1, result tables, figures, cases and findings.
 
 Most tests build a synthetic data root (committed-split stand-ins, a choices.json and metrics.json files whose
 fingerprints are the ones the registry produces), so G1, which needs E2 runs that do not exist yet, is covered too.
 The last tests read the committed E0 runs and pin the numbers that gate G0 decided on.
 """
 
+import csv
 import json
 import math
 import shutil
+from collections import Counter
 
 import numpy as np
 import pytest
@@ -17,14 +19,33 @@ from conftest import REPO_ROOT
 SPREAD = np.array([-0.02, -0.01, 0.0, 0.01, 0.02])  # sample std (ddof=1) = 0.01581
 STD = float(np.std(SPREAD, ddof=1))
 ALL_LRS = {"resnet50": 1e-4, "convnext_tiny": 1e-4, "swin_t": 3e-4}
+CLASSES = ("Brown Spot", "Leaf Scald", "Rice Blast", "Rice Tungro", "Sheath Blight")
+KAGGLE_ENV = {"device": "cuda", "gpu": "Tesla T4", "torch": "2.11.0+cu128", "python": "3.13.15", "torch_home": "/kaggle/tmp/x/_work/weights",
+              "platform": "Linux-6.18-x86_64"}
+MAC_ENV = {"device": "mps", "gpu": "Apple MPS", "torch": "2.11.0", "python": "3.12.13", "torch_home": "Dhan-Shomadhan/_work/weights",
+           "platform": "macOS-26.5-arm64-arm-64bit"}
+
+
+def synthetic_confusion(n_per_class: int) -> list:
+    """Every class right except class 0 (Brown Spot), whose first image is taken for class 1 (Leaf Scald)."""
+    matrix = np.eye(5, dtype=int) * n_per_class
+    matrix[0, 0] -= 1
+    matrix[0, 1] += 1
+    return matrix.tolist()
+
+
+def per_class_block(f1, support):
+    """Class i has F1 f1 + 0.01 * (i - 2) (so their mean is f1), precision 0.02 above and recall 0.02 below it."""
+    return {cls: {"precision": f1 + 0.01 * (i - 2) + 0.02, "recall": f1 + 0.01 * (i - 2) - 0.02, "f1": f1 + 0.01 * (i - 2), "support": support}
+            for i, cls in enumerate(CLASSES)}
 
 
 def subset_block(mixed, field):
     white = mixed + 0.05
     return {
-        "mixed": {"n": 10, "accuracy": mixed + 0.02, "macro_f1": mixed},
-        "field": {"n": 5, "accuracy": field + 0.02, "macro_f1": field},
-        "white": {"n": 5, "accuracy": white + 0.02, "macro_f1": white},
+        "mixed": {"n": 10, "accuracy": mixed + 0.02, "macro_f1": mixed, "per_class": per_class_block(mixed, 2), "confusion_matrix": synthetic_confusion(2)},
+        "field": {"n": 5, "accuracy": field + 0.02, "macro_f1": field, "per_class": per_class_block(field, 1), "confusion_matrix": synthetic_confusion(1)},
+        "white": {"n": 5, "accuracy": white + 0.02, "macro_f1": white, "per_class": per_class_block(white, 1), "confusion_matrix": synthetic_confusion(1)},
         "domain_balanced": {"accuracy": (field + white) / 2 + 0.02, "macro_f1": (field + white) / 2},
     }
 
@@ -44,9 +65,24 @@ def root(gs, tmp_path):
     return root
 
 
-def add_run(gs, root, exp_id, mixed, field=None, **tweaks):
+def write_predictions(gs, folder, split_seed, rows):
+    """predictions_test.csv of one split. ``rows``: (filename, domain, true class, predicted class, top probability); the rest of
+    the probability goes to the next class."""
+    lines = []
+    for name, domain, true, pred, top in rows:
+        probs = [(1 - top) / 4] * 5
+        probs[CLASSES.index(pred)] = top
+        lines.append([name, domain, true, pred, *[f"{p:.6f}" for p in probs]])
+    gs.write_text_atomic(gs.split_dir(folder, split_seed) / "predictions_test.csv",
+                         gs.csv_text(["filename", "domain", "true", "pred", *[f"p{i}" for i in range(5)]], lines))
+
+
+def add_run(gs, root, exp_id, mixed, field=None, env=None, **tweaks):
     """Write complete synthetic runs for an experiment. ``mixed`` / ``field`` are the mean val mixed / field F1
-    (per-split values are mean + SPREAD); test values are val - 0.03."""
+    (per-split values are mean + SPREAD); test values are val - 0.03. Besides metrics.json each split gets the config.json,
+    env.json (``env`` overrides KAGGLE_ENV), history.csv and predictions_test.csv that a real run writes."""
+    import dataclasses
+
     field = mixed - 0.08 if field is None else field
     choices = gs.load_choices(root)
     resolved = gs.resolve_experiment(exp_id, choices)
@@ -55,11 +91,23 @@ def add_run(gs, root, exp_id, mixed, field=None, **tweaks):
         metrics = {
             "split": seed, "exp_id": resolved.config.exp_id, "split_sha256": gs.load_split(root, seed)["sha256"],
             "config_fingerprint": gs.expected_fingerprint(resolved.config), "fast": False, "overrides": {},
+            "train_time_s": 120.0 * (seed + 1), "seconds_per_epoch": 10.0 + seed, "epochs_run": 20 + seed, "parameters": 25_000_000,
             "val": subset_block(mixed + SPREAD[seed], field + SPREAD[seed]),
             "test": subset_block(mixed + SPREAD[seed] - 0.03, field + SPREAD[seed] - 0.03),
         }
         metrics.update(tweaks)
         gs.write_json(gs.split_dir(folder, seed) / "metrics.json", metrics)
+        config = {"format": 1, "requested_exp_id": exp_id, "experiment": dataclasses.asdict(resolved.config), "split": seed, "seed": seed,
+                  "seed_offset": 0, "limit": None, "choices_used": resolved.choices_used, "notes": [], "overrides": {},
+                  "weights": gs.BACKBONE_SPECS[resolved.config.backbone].weights,
+                  "input_size": list(gs.input_size(resolved.config.input_mode)), "config_fingerprint": metrics["config_fingerprint"]}
+        gs.write_json(gs.split_dir(folder, seed) / "config.json", config)
+        gs.write_json(gs.split_dir(folder, seed) / "env.json", {**KAGGLE_ENV, **(env or {})})
+        history = [{"epoch": e, "stage": "lp" if e <= 2 else "ft", "lr": 1e-3, "train_loss": 1.5 / e, "val_loss": 1.0, "val_macro_f1": 0.4 + 0.1 * e + 0.01 * seed,
+                    "val_accuracy": 0.5, "val_f1_white": 0.5, "val_f1_field": 0.4, "val_f1_mixed": 0.45, "best": int(e == 4), "seconds": 10.0}
+                   for e in range(1, 6)]
+        gs.write_text_atomic(gs.split_dir(folder, seed) / "history.csv", gs.history_csv(history))
+        write_predictions(gs, folder, seed, [(f"w{seed}.jpg", "white", "Brown Spot", "Brown Spot", 0.9), (f"f{seed}.jpg", "field", "Leaf Scald", "Rice Blast", 0.6)])
     return folder
 
 
@@ -439,10 +487,12 @@ def test_committed_results_files_are_current(gs, committed, tmp_path):
     (scratch / "_work" / "results").mkdir()
     shutil.copy(root / "_work" / "results" / "choices.json", scratch / "_work" / "results" / "choices.json")
     shutil.copy(root / "_work" / "results" / "findings.md", scratch / "_work" / "results" / "findings.md")
-    gs.summarize(scratch, out=lambda text: None)
+    shutil.copy(root / "_work" / "results" / "inference_benchmark.json", scratch / "_work" / "results" / "inference_benchmark.json")
+    gs.summarize(scratch, out=lambda text: None)  # no image cache in the scratch root: the contact sheets are skipped
     for name in ("table_input_mode.csv", "table_input_mode.md", "table_required.csv", "table_required.md",
                  "table_domains.csv", "table_domains.md", "table_methods.csv", "table_methods.md", "table_segmenter.csv",
-                 "table_segmenter.md", "findings.md"):
+                 "table_segmenter.md", "table_per_class.csv", "table_per_class.md", "table_hparams.csv", "table_hparams.md",
+                 "table_runtime.csv", "table_runtime.md", "cases.csv", "findings.md"):
         assert (scratch / "_work" / "results" / name).read_text() == (root / "_work" / "results" / name).read_text(), name
 
 
@@ -638,3 +688,399 @@ def test_table_segmenter_reads_the_eval_sections_and_marks_what_is_missing(gs, r
     assert "| IoU, eval annotations | 20 | 0.520 +- 0.016 | 0.500; 0.510; 0.520; 0.530; 0.540 |" in md
     assert "| Salient-leaf hit rate (%), eval annotations without the ambiguous ones | 15 | 90.0 +- 0.0 |" in md
     assert "| Fallbacks on the eval annotations (%) | 20 | 5.0 +- 0.0 |" in md
+
+
+# ---------------------------------------------------------------------------- phase 07: tables, figures, cases, findings (synthetic)
+
+
+def quiet(_text):
+    pass
+
+
+@pytest.fixture
+def rich_root(gs, g2_root):
+    """The plain, domain-wise, cross-domain and Method A rows all complete, E1-FF / E1-WF on the Mac, gate G2 run with B cut
+    (E3-A, the Method A run, is recommended). Per-class F1 of class i is the subset macro-F1 + 0.01 * (i - 2)."""
+    root = g2_root
+    add_run(gs, root, "E0-rect", 0.78, 0.70)
+    for exp_id, mixed, field, env in (
+        ("E1-FF", 0.60, 0.50, MAC_ENV), ("E1-WF", 0.50, 0.30, MAC_ENV), ("E2-cnx-U", 0.80, 0.71, None), ("E2-swin-U", 0.79, 0.69, None),
+        ("E2-cnx-WF", 0.40, 0.10, None), ("E2-swin-WF", 0.45, 0.25, None), ("E3-A", 0.84, 0.76, None), ("E3-A-WF", 0.70, 0.55, None),
+    ):
+        add_run(gs, root, exp_id, mixed, field, env=env)
+    gs.run_gate(root, "g2", out=quiet, cut=("B",))
+    return root
+
+
+def test_table_required_marks_the_recommended_row_and_adds_it(gs, rich_root):
+    gs.summarize(rich_root, out=quiet)
+    rows = [line for line in read_results(gs, rich_root, "table_required.md").splitlines() if line.startswith(("| E1", "| E2", "| E3"))]
+    assert [row.split("|")[1].strip() for row in rows] == ["E1-U", "E2-cnx-U", "E2-swin-U", "E3-A (recommended)"]
+    assert "| E3-A (recommended) | resnet50 | 0.860 +- 0.016 |" in rows[3]  # white test = val mixed 0.84 + 0.05 - 0.03
+
+
+def test_table_per_class_reads_the_recommended_method(gs, rich_root, root):
+    gs.summarize(rich_root, out=quiet)
+    md = read_results(gs, rich_root, "table_per_class.md")
+    assert md.splitlines()[0] == "# Per-class results of the recommended method (E3-A), test split"
+    assert "| field | Rice Blast | 5 | 0.750 +- 0.016 | 0.710 +- 0.016 | 0.730 +- 0.016 |" in md  # support 1 per split, F1 = test field 0.73
+    assert "| white | Brown Spot | 5 | 0.860 +- 0.016 | 0.820 +- 0.016 | 0.840 +- 0.016 |" in md  # F1 = test white 0.86 - 0.02
+    assert "| field | macro-F1 | 25 | - | - | 0.730 +- 0.016 |" in md
+    assert len([line for line in md.splitlines() if line.startswith(("| white", "| field"))]) == 12
+    header = read_results(gs, rich_root, "table_per_class.csv").splitlines()[0]
+    assert header == "Domain,Class,Support (5 splits),Precision,Recall,F1"
+
+
+def test_table_per_class_is_pending_until_the_recommendation_exists(gs, root):
+    add_run(gs, root, "E0-rect", 0.78)
+    gs.summarize(root, out=quiet)
+    md = read_results(gs, root, "table_per_class.md")
+    assert "not chosen yet" in md and "| white | Brown Spot | pending | pending | pending | pending |" in md
+
+
+def test_table_hparams_is_read_from_config_json_and_flags_differences(gs, rich_root):
+    gs.summarize(rich_root, out=quiet)
+    md = read_results(gs, rich_root, "table_hparams.md")
+    assert "Values are identical across the 5 splits of every experiment." in md
+    rows = {line.split("|")[1].strip(): [c.strip() for c in line.split("|")[1:-1]] for line in md.splitlines() if line.startswith("| E")}
+    header = [c.strip() for c in next(line for line in md.splitlines() if line.startswith("| Experiment")).split("|")[1:-1]]
+    cell = lambda exp, column: rows[exp][header.index(column)]  # noqa: E731
+    assert cell("E1-U", "Run folder") == "E0-rect" and cell("E1-WW", "Run folder") == "E1-WF"
+    assert cell("E2-swin-U", "Backbone") == "swin_t" and cell("E2-swin-U", "Learning rate") == "0.0003"
+    assert cell("E0-rect", "Input HxW") == "448x224" and cell("E3-A", "Train on") == "white + field + composites"
+    assert cell("E3-A-WF", "Checkpoint chosen on (val)") == "white"
+    assert cell("E2-cnx-U", "Batch size x accumulation") == "32 x 1" and cell("E0-squash", "Learning rate") == "pending"
+    assert "random crop of 60%-100% of the area" in md and "AdamW" in md
+    # a split whose config.json differs is shown and named, never averaged away
+    path = gs.split_dir(gs.runs_dir(rich_root) / "E2-cnx-U", 3) / "config.json"
+    data = json.loads(path.read_text())
+    data["experiment"]["lr"] = 0.005
+    gs.write_json(path, data)
+    gs.summarize(rich_root, out=quiet)
+    md = read_results(gs, rich_root, "table_hparams.md")
+    assert "varies: 0.0001 / 0.005" in md and "Not identical across the splits: E2-cnx-U (Learning rate)." in md
+    path.unlink()
+    gs.summarize(rich_root, out=quiet)
+    assert "config.json is missing for: E2-cnx-U." in read_results(gs, rich_root, "table_hparams.md")
+
+
+def benchmark_record(device, resnet, convnext, swin, **extra):
+    record = {"device": device, "precision": "fp32", "input_mode": "rect", "input_size": [448, 224], "batch_size": 1, "warmup": 10, "repeats": 50,
+              "platform": "macOS-26.5-arm64-arm-64bit", "cpu_count": 8, "gpu": None, "torch": "2.11.0", **extra,
+              "backbones": {name: {"median_ms": median, "q1_ms": median - 1.0, "q3_ms": median + 1.0, "parameters": 1}
+                            for name, median in (("resnet50", resnet), ("convnext_tiny", convnext), ("swin_t", swin))}}
+    return record
+
+
+def test_table_runtime_reads_metrics_env_and_the_benchmark_file(gs, rich_root):
+    gs.summarize(rich_root, out=quiet)
+    md = read_results(gs, rich_root, "table_runtime.md")
+    row = next(line for line in md.splitlines() if line.startswith("| E1-FF "))
+    assert row.startswith("| E1-FF | E1-FF | local macOS, mps (Apple MPS) | 6.0 +- 3.2 | 12.0 +- 1.6 | 22.0 +- 1.6 | 25.0 | not measured (run benchmark) |")
+    assert "| E2-swin-U | E2-swin-U | Kaggle, cuda (Tesla T4) | 6.0 +- 3.2 |" in md
+    assert "| E1-U | E0-rect | Kaggle, cuda (Tesla T4) |" in md and "| E0-squash | - | pending |" in md
+    assert "No benchmark file yet" in md
+    gs.write_json(gs.benchmark_path(rich_root), {"format": 1, "devices": {
+        "mps": benchmark_record("mps", 20.0, 50.0, 60.0), "cpu": benchmark_record("cpu", 63.24, 857.36, 78.28)}}, indent=2)
+    gs.summarize(rich_root, out=quiet)
+    md = read_results(gs, rich_root, "table_runtime.md")
+    assert "Inference ms/image, median (quartiles), cpu | Inference ms/image, median (quartiles), mps |" in md  # fixed device order
+    assert "| 25.0 | 63.2 (62.2-64.2) | 20.0 (19.0-21.0) |" in next(line for line in md.splitlines() if line.startswith("| E1-FF "))
+    assert "| 78.3 (77.3-79.3) | 60.0 (59.0-61.0) |" in next(line for line in md.splitlines() if line.startswith("| E2-swin-U "))
+    assert "Measured on - cpu: macOS-26.5-arm64-arm-64bit, 8 cores, no GPU, torch 2.11.0, rect input 448x224, fp32, median of 50 after 10 warm-up passes" in md
+
+
+def test_read_benchmark_handles_a_missing_or_unusable_file(gs, root, capsys):
+    assert gs.read_benchmark(root) == {}
+    path = gs.benchmark_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for bad in ("{not json", json.dumps({"format": 2, "devices": {}}), json.dumps({"format": 1}), json.dumps({"format": 1, "devices": {"cpu": 3}})):
+        path.write_text(bad)
+        assert gs.read_benchmark(root) == {}
+        assert "unusable" in capsys.readouterr().err
+    gs.write_json(path, {"format": 1, "devices": {"cuda": benchmark_record("cuda", 1, 2, 3), "cpu": benchmark_record("cpu", 4, 5, 6)}})
+    assert list(gs.read_benchmark(root)) == ["cpu", "cuda"]
+
+
+def test_run_benchmark_times_the_three_backbones_and_keeps_other_devices(gs, root):
+    other = benchmark_record("mps", 20.0, 50.0, 60.0)
+    gs.write_json(gs.benchmark_path(root), {"format": 1, "devices": {"mps": other}}, indent=2)
+    record = gs.run_benchmark(root, "cpu", out=quiet, warmup=1, repeats=3)
+    assert record["device"] == "cpu" and record["input_size"] == [448, 224] and record["input_mode"] == "rect" and record["batch_size"] == 1
+    assert record["precision"] == "fp32" and (record["warmup"], record["repeats"]) == (1, 3)
+    assert set(record["backbones"]) == set(gs.BACKBONES)
+    for entry in record["backbones"].values():
+        assert 0 < entry["q1_ms"] <= entry["median_ms"] <= entry["q3_ms"] and entry["parameters"] > 1e7
+    saved = json.loads(gs.benchmark_path(root).read_text())
+    assert list(saved["devices"]) == ["cpu", "mps"] and saved["devices"]["mps"] == other
+    assert gs.hardware_text((("Colab", "cuda", "Tesla T4", "2.11.0", "3.13.15"),), full=False) == "Colab, cuda (Tesla T4)"
+    assert gs.precision_of("cuda") != gs.precision_of("mps") == gs.precision_of("cpu") == "fp32"
+    assert gs.host_label({"torch_home": "/kaggle/tmp/w"}) == "Kaggle" and gs.host_label({"torch_home": "/content/w"}) == "Colab"
+    assert gs.host_label({"torch_home": "w", "platform": "macOS-26.5-arm64"}) == "local macOS"
+
+
+def test_benchmark_command_calls_run_benchmark_and_reports_failures(gs, root, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(gs, "run_benchmark", lambda data_root, device, **kwargs: calls.append((data_root, device)))
+    assert gs.run_cli(["--data-root", str(root), "benchmark", "--device", "cpu"]) == 0 and calls == [(root, "cpu")]
+
+    def fail(data_root, device, **kwargs):
+        raise gs.ExperimentError("no input_mode yet")
+
+    monkeypatch.setattr(gs, "run_benchmark", fail)
+    assert gs.run_cli(["--data-root", str(root), "benchmark", "--device", "cpu"]) == 1
+    assert "benchmark: FAIL - no input_mode yet" in capsys.readouterr().err
+
+
+# ---- figures
+
+
+def png_size_and_dpi(path):
+    from PIL import Image
+
+    with Image.open(path) as image:
+        return image.size, image.info.get("dpi")
+
+
+def test_summarize_writes_every_figure_at_300_dpi(gs, rich_root):
+    gs.summarize(rich_root, out=quiet)
+    figures = gs.figures_dir(rich_root)
+    expected = {"confusion_E3-A_white.png": 3.9, "confusion_E3-A_field.png": 3.9, "confusion_E1-WF_field.png": 3.9, "confusion_E2-swin-WF_field.png": 3.9,
+                "confusion_E3-A-WF_field.png": 3.9, "scenario_bars.png": 4.4, "domain_gap.png": 4.4, "training_curves_E3-A.png": 4.4}
+    for name, width in expected.items():
+        size, dpi = png_size_and_dpi(figures / name)
+        assert round(dpi[0]) == 300 and size[0] == round(width * 300), name
+    assert png_size_and_dpi(figures / "domain_gap.png")[0][1] < 4.5 * 300  # compact: well under a page
+    first = (figures / "confusion_E3-A_field.png").read_bytes()
+    gs.summarize(rich_root, out=quiet)
+    assert (figures / "confusion_E3-A_field.png").read_bytes() == first, "figures are reproducible"
+
+
+def test_figures_only_draw_what_the_runs_support(gs, g2_root):
+    add_run(gs, g2_root, "E0-rect", 0.78)
+    gs.summarize(g2_root, out=quiet)
+    names = sorted(p.name for p in gs.figures_dir(g2_root).glob("*.png"))
+    assert names == ["domain_gap.png", "scenario_bars.png"]  # E1-U is the only main model; no recommendation yet, no W->F rows
+
+
+def test_confusion_figure_sums_the_splits_and_shows_counts(gs, rich_root):
+    exp, _ = gs.load_experiment(rich_root, "E1-WF", gs.load_choices(rich_root))
+    matrix = gs.summed_confusion(exp, "field")
+    assert matrix.sum() == 25 and matrix[0].tolist() == [0, 5, 0, 0, 0] and matrix[3, 3] == 5
+    assert gs.largest_confusions(exp, "field") == "Brown Spot taken for Leaf Scald in 5 of 5 images (100%)"
+    path = gs.save_confusion(rich_root, exp, "white", rich_root / "x" / "c.png")
+    assert path.is_file()
+    assert gs.per_class_support(exp, "test", "white", "Rice Blast") == 5
+
+
+def test_training_curves_skip_a_missing_history(gs, rich_root):
+    exp, _ = gs.load_experiment(rich_root, "E3-A", gs.load_choices(rich_root))
+    (gs.split_dir(gs.runs_dir(rich_root) / "E3-A", 2) / "history.csv").unlink()
+    assert gs.read_history(rich_root, exp, 2) is None
+    history = gs.read_history(rich_root, exp, 1)
+    assert [row["stage"] for row in history] == ["lp", "lp", "ft", "ft", "ft"] and history[3]["best"] == 1.0
+    assert gs.save_training_curves(rich_root, exp, rich_root / "x" / "t.png").is_file()
+    for k in (0, 1, 3, 4):
+        (gs.split_dir(gs.runs_dir(rich_root) / "E3-A", k) / "history.csv").unlink()
+    assert gs.save_training_curves(rich_root, exp, rich_root / "x" / "none.png") is None
+
+
+# ---- cases
+
+
+def pooled_example():
+    return {
+        "a.jpg": {"domain": "white", "true": "Brown Spot", "tests": {0: (0, [0.90, 0.05, 0.02, 0.02, 0.01]), 2: (0, [0.80, 0.10, 0.05, 0.03, 0.02])}},
+        "b.jpg": {"domain": "field", "true": "Leaf Scald", "tests": {1: (2, [0.10, 0.20, 0.60, 0.05, 0.05]), 3: (2, [0.10, 0.10, 0.70, 0.05, 0.05])}},
+        "c.jpg": {"domain": "field", "true": "Rice Blast", "tests": {0: (2, [0.10, 0.10, 0.55, 0.10, 0.15]), 1: (1, [0.10, 0.60, 0.20, 0.05, 0.05]),
+                                                                     4: (2, [0.05, 0.10, 0.65, 0.10, 0.10])}},
+        "d.jpg": {"domain": "white", "true": "Rice Tungro", "tests": {2: (3, [0.10, 0.10, 0.10, 0.45, 0.25])}},
+    }
+
+
+@pytest.mark.parametrize("correct, confidence, expected", [
+    ([True], [0.95], "success"), ([True, True], [0.9, 0.5], "success"), ([True, True], [0.9, 0.49], "challenging"),
+    ([True, False], [0.9, 0.9], "challenging"), ([False, False], [0.9, 0.9], "failure"), ([False], [0.2], "failure"),
+    ([False, True, False], [0.9, 0.9, 0.9], "challenging"),
+])
+def test_classify_case(gs, correct, confidence, expected):
+    assert gs.classify_case(correct, confidence) == expected
+
+
+def test_case_rows_pool_the_splits(gs):
+    rows = {r["filename"]: r for r in gs.case_rows(pooled_example())}
+    assert list(rows) == ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
+    assert [rows[n]["category"] for n in rows] == ["success", "failure", "challenging", "challenging"]
+    assert (rows["a.jpg"]["tested"], rows["a.jpg"]["correct"]) == (2, 2) and rows["a.jpg"]["preds"] == ["Brown Spot", "", "Brown Spot", "", ""]
+    assert rows["b.jpg"]["modal_pred"] == "Rice Blast" and rows["b.jpg"]["wrong_pred"] == "Rice Blast"
+    assert rows["b.jpg"]["mean_p_modal"] == pytest.approx(0.65) and rows["b.jpg"]["mean_p_true"] == pytest.approx(0.15)
+    c = rows["c.jpg"]
+    assert (c["tested"], c["correct"], c["modal_pred"], c["wrong_pred"]) == (3, 2, "Rice Blast", "Leaf Scald")
+    assert c["preds"] == ["Rice Blast", "Leaf Scald", "", "", "Rice Blast"]
+    assert c["mean_p_modal"] == pytest.approx((0.55 + 0.20 + 0.65) / 3) and c["min_top_p"] == pytest.approx(0.55)
+    d = rows["d.jpg"]
+    assert d["category"] == "challenging" and d["correct"] == 1 and d["wrong_pred"] == "" and d["min_top_p"] == pytest.approx(0.45)
+    parsed = list(csv.DictReader(gs.cases_csv(list(rows.values())).splitlines()))
+    assert list(parsed[2]) == ["filename", "domain", "true", "tested", "correct", "category", "pred_split0", "pred_split1", "pred_split2", "pred_split3",
+                               "pred_split4", "modal_pred", "wrong_pred", "mean_p_modal", "mean_p_true", "min_top_p"]
+    assert parsed[2]["pred_split1"] == "Leaf Scald" and parsed[2]["pred_split2"] == "" and parsed[2]["mean_p_modal"] == "0.467"
+
+
+def case_row(name, domain, true, category, tested=1, correct=0, p=0.5):
+    return {"filename": name, "domain": domain, "true": true, "category": category, "tested": tested, "correct": correct, "mean_p_modal": p}
+
+
+def test_select_cases_is_balanced_deterministic_and_ordered(gs):
+    rows = [case_row(f"{d[0]}{c}_{i}.jpg", d, cls, "failure", tested=1 + (i % 3), p=0.5 + 0.01 * i)
+            for d in gs.DOMAINS for c, cls in enumerate(gs.CLASS_NAMES) if not (d == "field" and c == 4) for i in range(4)]
+    rows.append(case_row("other.jpg", "white", "Brown Spot", "success"))
+    picked = gs.select_cases(rows, "failure")
+    assert len(picked) == 10 and picked == gs.select_cases(list(reversed(rows)), "failure")
+    groups = [(r["domain"], r["true"]) for r in picked]
+    assert len(set(groups)) == 9 and ("field", "Sheath Blight") not in groups  # field has no Sheath Blight failures: that group is skipped
+    assert [g[0] for g in groups] == sorted((g[0] for g in groups), key=gs.DOMAINS.index), "white first, then field"
+    white = [r for r in picked if r["domain"] == "white"]
+    assert [r["true"] for r in white] == sorted((r["true"] for r in white), key=gs.CLASS_NAMES.index)
+    best = next(r for r in picked if (r["domain"], r["true"]) == ("white", "Leaf Scald"))
+    assert best["filename"] == "w1_2.jpg"  # failures: the group's most often tested image first
+    assert not [r for r in picked if r["category"] != "failure"]
+    assert len(gs.select_cases(rows, "failure", 12)) == 12 and len(gs.select_cases(rows, "challenging")) == 0
+
+
+def test_select_cases_orders_each_category_by_its_own_key(gs):
+    group = [case_row("a.jpg", "white", "Rice Blast", "success", 1, 1, 0.90), case_row("b.jpg", "white", "Rice Blast", "success", 3, 3, 0.80),
+             case_row("c.jpg", "white", "Rice Blast", "success", 3, 3, 0.95)]
+    assert gs.select_cases(group, "success", 1)[0]["filename"] == "c.jpg"  # most confident
+    group = [case_row("a.jpg", "white", "Rice Blast", "failure", 1, 0, 0.99), case_row("b.jpg", "white", "Rice Blast", "failure", 3, 0, 0.60),
+             case_row("c.jpg", "white", "Rice Blast", "failure", 3, 0, 0.80)]
+    assert gs.select_cases(group, "failure", 1)[0]["filename"] == "c.jpg"  # most tested, then most confidently wrong
+    group = [case_row("a.jpg", "white", "Rice Blast", "challenging", 3, 3, 0.4), case_row("b.jpg", "white", "Rice Blast", "challenging", 4, 3, 0.4),
+             case_row("c.jpg", "white", "Rice Blast", "challenging", 4, 2, 0.4)]
+    assert gs.select_cases(group, "challenging", 1)[0]["filename"] == "c.jpg"  # most tested, outcomes closest to half
+
+
+def test_case_label_reads_true_to_predicted(gs):
+    row = {"true": "Rice Blast", "modal_pred": "Leaf Scald", "mean_p_modal": 0.4667, "filename": "rbf_9.jpg", "correct": 1, "tested": 3, "wrong_pred": "Leaf Scald"}
+    assert gs.case_label(row) == "Rice Blast ->\nLeaf Scald (0.47)\nrbf_9.jpg  1/3 correct"
+    assert gs.case_label({**row, "modal_pred": "Rice Blast", "wrong_pred": "Leaf Scald"}).endswith("\nalso taken for Leaf Scald")
+
+
+def test_write_cases_reads_the_recommended_runs_and_draws_three_sheets(gs, rich_root, capsys):
+    from conftest import make_jpeg
+
+    gs.summarize(rich_root, out=quiet)
+    err = capsys.readouterr().err
+    assert "contact sheets skipped" in err  # no image cache in the synthetic root
+    rows = list(csv.DictReader(read_results(gs, rich_root, "cases.csv").splitlines()))
+    assert len(rows) == 10 and Counter(r["category"] for r in rows) == {"success": 5, "failure": 5}
+    failure = next(r for r in rows if r["filename"] == "f3.jpg")
+    assert (failure["domain"], failure["true"], failure["modal_pred"], failure["tested"], failure["correct"]) == ("field", "Leaf Scald", "Rice Blast", "1", "0")
+    assert failure["pred_split3"] == "Rice Blast" and failure["pred_split0"] == "" and failure["mean_p_modal"] == "0.600"
+    for name in [r["filename"] for r in rows]:
+        make_jpeg(gs.cache_dir(rich_root) / name, 40, 90, seed=len(name))
+    gs.summarize(rich_root, out=quiet)
+    for category in ("success", "failure", "challenging"):
+        size, dpi = png_size_and_dpi(gs.figures_dir(rich_root) / f"cases_{category}.png")
+        assert round(dpi[0]) == 300 and size[0] == round(5.8 * 300)
+    assert "contact sheets skipped" not in capsys.readouterr().err
+
+
+def test_write_cases_is_skipped_until_the_recommendation_exists(gs, root, capsys):
+    add_run(gs, root, "E0-rect", 0.78)
+    gs.summarize(root, out=quiet)
+    assert "cases: skipped" in capsys.readouterr().err
+    assert not (gs.results_dir(root) / "cases.csv").exists() and "auto:cases" not in read_results(gs, root, "findings.md")
+
+
+# ---- findings
+
+
+def test_domain_questions_findings_answer_each_question_with_numbers(gs, rich_root):
+    gs.summarize(rich_root, out=quiet)
+    text = read_results(gs, rich_root, "findings.md")
+    assert "<!-- auto:questions:begin -->\n## Domain transfer questions (phase 04)" in text
+    assert ("**1. Domain gap.** Field test macro-F1 is 0.470 +- 0.016 for E1-FF (ResNet50 trained on field images) and 0.270 +- 0.016 for E1-WF "
+            "(trained on white images only), so training on white alone lowers field macro-F1 by 0.200 "
+            "(paired E1-WF - E1-FF: -0.200 +- 0.000; E1-WF ahead in 0 of 5 splits).") in text
+    assert "E2-cnx-WF (white only, ConvNeXt-T) reaches 0.070 +- 0.016." in text and "With composites E3-A-WF reaches 0.520 +- 0.016" in text
+    assert "(paired E3-A-WF - E2-swin-WF: +0.300 +- 0.000; E3-A-WF ahead in 5 of 5 splits)" in text
+    assert "**2. Does white data help field?** Field test macro-F1 is 0.670 +- 0.016 for E1-U (white + field) and 0.470 +- 0.016 for E1-FF" in text
+    assert "the unified model is ahead by 0.200 (paired E1-U - E1-FF: +0.200 +- 0.000; E1-U ahead in 5 of 5 splits)." in text
+    assert "**3. Does field data hurt white?** White test macro-F1 is 0.800 +- 0.016 for E1-U (white + field) and 0.520 +- 0.016 for E1-WW" in text
+    assert "**4. Which classes collapse under W->F?**" in text and "below 50% of E1-FF's for that class" in text
+    assert "- E1-FF (field only, reference): per-class field F1 Brown Spot 0.450, Leaf Scald 0.460, Rice Blast 0.470, Rice Tungro 0.480, Sheath Blight 0.490." in text
+    wf = next(line for line in text.splitlines() if line.startswith("- E1-WF:"))
+    assert "Collapsed: none." in wf and "Largest change against E1-FF: Brown Spot (-0.200)." in wf
+    assert "Most frequent mistakes: Brown Spot taken for Leaf Scald in 5 of 5 images (100%)." in wf
+    assert "Collapsed: Brown Spot, Leaf Scald, Rice Blast, Rice Tungro, Sheath Blight." in next(line for line in text.splitlines() if line.startswith("- E2-cnx-WF:"))
+
+
+def test_domain_questions_say_what_is_not_available_yet(gs, root):
+    add_run(gs, root, "E0-rect", 0.78)
+    gs.summarize(root, out=quiet)
+    text = read_results(gs, root, "findings.md")
+    assert "**1. Domain gap.** Not available yet: E1-FF, E1-WF is not complete." in text
+    assert "**3. Does field data hurt white?** Not available yet: E1-U, E1-WW is not complete." in text
+    assert "**4. Which classes collapse under W->F?** Not available yet" in text
+
+
+def test_hardware_findings_group_the_runs_and_name_the_comparisons_that_cross(gs, rich_root):
+    gs.summarize(rich_root, out=quiet)
+    text = read_results(gs, rich_root, "findings.md")
+    assert "<!-- auto:hardware:begin -->\n## Hardware" in text
+    assert "- E1-WF (also E1-WW), E1-FF: local macOS, mps (Apple MPS), torch 2.11.0, Python 3.12.13, fp32" in text
+    assert "- E0-rect (also E1-U), E2-cnx-U, E2-cnx-WF, E2-swin-U, E2-swin-WF, E3-A, E3-A-WF: Kaggle, cuda (Tesla T4), torch 2.11.0+cu128, Python 3.13.15, " \
+           "mixed precision (fp16 autocast)" in text
+    assert "can include hardware and numerics effects" in text
+    assert "cross groups: E1-U vs E1-FF, E1-U vs E1-WW, E2-swin-WF vs E1-WF. Read those" in text
+
+
+def test_hardware_findings_for_one_group_and_for_none(gs, root):
+    add_run(gs, root, "E0-rect", 0.78)
+    gs.summarize(root, out=quiet)
+    assert "All runs share the same hardware, torch build and precision" in read_results(gs, root, "findings.md")
+    assert gs.hardware_findings({}, root) == ""  # nothing complete: no section
+
+
+def test_cases_findings_count_the_categories(gs, rich_root):
+    gs.summarize(rich_root, out=quiet)
+    text = read_results(gs, rich_root, "findings.md")
+    assert "<!-- auto:cases:begin -->\n## Success, failure and challenging cases (T7.4)" in text
+    assert "Pooled test predictions of E3-A over the 5 splits cover 10 distinct images; 10 of them were in the test part of only one split." in text
+    assert "5 consistent successes (right in every split they were tested in, top probability never below 0.5): 5 white, 0 field." in text
+    assert "5 consistent failures (wrong in every split they were tested in): 0 white, 5 field." in text
+    assert "0 challenging cases" in text and "Leaf Scald -> Rice Blast (5)" in text
+    assert "5 of the 5 failures were tested in one split only" in text
+
+
+def test_findings_keep_hand_written_failure_hypotheses(gs, rich_root):
+    gs.summarize(rich_root, out=quiet)
+    path = gs.results_dir(rich_root) / "findings.md"
+    notes = "\n## Failure hypotheses (Nattan)\n\n- f3.jpg: leaf is small in the frame\n"
+    path.write_text(path.read_text() + notes)
+    before = path.read_text()
+    gs.summarize(rich_root, out=quiet)
+    assert path.read_text() == before and path.read_text().endswith(notes)
+
+
+# ---- the committed runs
+
+
+def test_committed_phase_07_numbers(gs, committed):
+    root, _ = committed
+    rows = list(csv.DictReader((root / "_work" / "results" / "cases.csv").read_text().splitlines()))
+    assert len(rows) == 607 and Counter(r["category"] for r in rows) == {"success": 428, "failure": 119, "challenging": 60}
+    findings = (root / "_work" / "results" / "findings.md").read_text()
+    assert "Field test macro-F1 is 0.539 +- 0.128 for E1-FF" in findings and "0.141 +- 0.039 for E1-WF" in findings
+    per_class = (root / "_work" / "results" / "table_per_class.md").read_text()
+    assert "| field | Leaf Scald | 51 | 0.503 +- 0.065 | 0.511 +- 0.134 | 0.501 +- 0.083 |" in per_class
+    assert "(recommended)" in (root / "_work" / "results" / "table_required.md").read_text()
+    benchmark = gs.read_benchmark(root)
+    assert set(benchmark) <= {"cpu", "mps", "cuda"} and benchmark
+    for record in benchmark.values():
+        assert record["input_size"] == [448, 224] and set(record["backbones"]) == set(gs.BACKBONES)
+    figures = root / "_work" / "figures"
+    for name in ("confusion_E2-swin-U_white.png", "confusion_E2-swin-U_field.png", "confusion_E2-swin-WF_field.png", "confusion_E3-A-WF_field.png",
+                 "scenario_bars.png", "domain_gap.png", "training_curves_E2-swin-U.png", "cases_success.png", "cases_failure.png", "cases_challenging.png"):
+        size, dpi = png_size_and_dpi(figures / name)
+        assert round(dpi[0]) == 300 and size[0] <= round(5.8 * 300), name

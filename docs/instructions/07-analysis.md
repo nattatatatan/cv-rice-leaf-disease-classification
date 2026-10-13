@@ -28,19 +28,22 @@ Prerequisites: runs exist (this phase grows incrementally; build `summarize` rig
 | `table_hparams.*` | Every hyperparameter actually used (read from `config.json`, not retyped) | 6.1 |
 | `table_runtime.*` | Mean training time per run, inference ms/image, params | 6.3 (deployment discussion) |
 
+- [x] All eight tables are written by `summarize`. `table_required` marks the recommended row; `table_per_class` is the recommended method per class and domain (mean +- std over the 5 test splits, support summed); `table_hparams` reads every value from `config.json` (a value that differs between splits reads `varies:` and is named in the caption); `table_runtime` reads `metrics.json` and `env.json`.
+- [x] Inference ms/image is not measured by `summarize` (that would make results non-reproducible). `benchmark [--device D]` times the forward pass of the three backbones (untrained weights, batch 1, 10 warm-up passes, median of 50) and merges the record into `_work/results/inference_benchmark.json`, one entry per device; `summarize` reads it into `table_runtime`, else the column reads `not measured (run benchmark)`. The committed file holds the Mac CPU and MPS measurements.
+
 ### T7.3 Figures (`_work/figures/`)
-- [ ] `confusion_<recommended>_{white,field}.png`: summed over the 5 test splits, row-normalised, counts in cells.
-- [ ] `scenario_bars.png`: macro-F1 per scenario for the main models, error bars = std.
-- [ ] `domain_gap.png`: field macro-F1 for F->F, W->F, U (and A, B), visualising the transfer story.
-- [ ] `training_curves_<recommended>.png`: train loss and val macro-F1 per epoch, 5 splits overlaid.
+- [x] `confusion_<recommended>_{white,field}.png`: summed over the 5 test splits, row-normalised, counts in cells. Also `confusion_<exp>_field.png` for E1-WF, E2-swin-WF and E3-A-WF (which classes collapse under W->F).
+- [x] `scenario_bars.png`: macro-F1 per scenario for the main models, error bars = std.
+- [x] `domain_gap.png`: field macro-F1 for F->F, W->F, U (and A, B), visualising the transfer story.
+- [x] `training_curves_<recommended>.png`: train loss and val macro-F1 per epoch, 5 splits overlaid.
 - [ ] Pipeline block diagrams are drawn by hand for the report (Figures in section 5), not generated.
 
 ### T7.4 Success, failure and challenging cases (feeds 6.3, which the spec explicitly asks for)
-- [ ] From `predictions_test.csv` of the recommended method across all 5 splits (each image is in a test set ~0.75 times on average, so pool across splits):
-  - **consistent successes**: correct in every split where it was tested, with high confidence;
+- [x] From `predictions_test.csv` of the recommended method across all 5 splits (each image is in a test set ~0.75 times on average, so pool across splits):
+  - **consistent successes**: correct in every split where it was tested, with high confidence (implemented as: top probability never below 0.5; the contact sheet shows the most confident ones);
   - **consistent failures**: wrong in every split where it was tested;
   - **challenging**: correct in some splits and wrong in others, or correct with low confidence (max prob < 0.5).
-- [ ] Contact sheets: `cases_success.png`, `cases_failure.png`, `cases_challenging.png`, 8-12 images each, labelled `true -> pred (p)`, domain-tagged.
+- [x] Contact sheets: `cases_success.png`, `cases_failure.png`, `cases_challenging.png`, 8-12 images each, labelled `true -> pred (p)`, domain-tagged.
 - [ ] For each failure, Nattan writes a one-line hypothesis in `findings.md` (e.g. "lesions < 1% of image", "symptomatic leaf not in crop box", "Brown Spot lesions look like Blast", "motion blur"). Group them into 3-4 failure modes for the report.
 
 ### T7.5 Grad-CAM (Tier 4)
@@ -50,6 +53,6 @@ Prerequisites: runs exist (this phase grows incrementally; build `summarize` rig
 - [ ] **Quantitative shortcut check**: on the 20 eval-annotated field images, compute the fraction of CAM energy inside the annotated salient-leaf polygon, for plain vs A vs B. If A or B moves the energy onto the leaf, that is direct evidence for the method's motivation. If not, that is an honest negative finding.
 
 ## Phase acceptance
-- [ ] `summarize` regenerates every table and figure from scratch in < 2 min on CPU.
+- [x] `summarize` regenerates every table and figure from scratch in < 2 min on CPU (about 10 s; it loads no checkpoint).
 - [ ] `findings.md` lists, with numbers: required-scenario results, domain gap, gate decisions, segmenter quality, failure modes.
 - [ ] **Results freeze**: tag the commit `results-freeze`. After that, report numbers come only from this tag.

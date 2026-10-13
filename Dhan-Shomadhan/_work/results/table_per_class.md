@@ -1,0 +1,18 @@
+# Per-class results of the recommended method (E2-swin-U), test split
+
+Mean +- std over the 5 test splits (std with ddof=1). Support is the number of test images of the class summed over the 5 splits (an image can be in the test part of several splits). The macro-F1 row is the mean of the per-split macro-F1, not the mean of the class rows above it. A class that is never predicted in a split has precision 0 in that split.
+
+| Domain | Class | Support (5 splits) | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- | --- |
+| white | Brown Spot | 67 | 0.734 +- 0.139 | 0.667 +- 0.166 | 0.692 +- 0.134 |
+| white | Leaf Scald | 108 | 0.762 +- 0.067 | 0.714 +- 0.162 | 0.731 +- 0.100 |
+| white | Rice Blast | 147 | 0.800 +- 0.071 | 0.897 +- 0.070 | 0.844 +- 0.054 |
+| white | Rice Tungro | 90 | 0.811 +- 0.156 | 0.778 +- 0.171 | 0.768 +- 0.055 |
+| white | Sheath Blight | 166 | 0.981 +- 0.028 | 0.928 +- 0.045 | 0.953 +- 0.029 |
+| white | macro-F1 | 578 | - | - | 0.798 +- 0.053 |
+| field | Brown Spot | 36 | 0.642 +- 0.155 | 0.693 +- 0.276 | 0.657 +- 0.217 |
+| field | Leaf Scald | 51 | 0.503 +- 0.065 | 0.511 +- 0.134 | 0.501 +- 0.083 |
+| field | Rice Blast | 58 | 0.782 +- 0.210 | 0.585 +- 0.143 | 0.637 +- 0.055 |
+| field | Rice Tungro | 47 | 0.688 +- 0.193 | 0.741 +- 0.172 | 0.693 +- 0.106 |
+| field | Sheath Blight | 45 | 0.891 +- 0.079 | 0.889 +- 0.111 | 0.887 +- 0.081 |
+| field | macro-F1 | 237 | - | - | 0.675 +- 0.072 |

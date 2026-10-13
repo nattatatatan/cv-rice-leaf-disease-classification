@@ -46,9 +46,9 @@ Questions these runs answer (write the answers into `_work/results/findings.md` 
   - `X-domain-WW` is an alias of the winner's W->F row (`E2-cnx-WF` / `E2-swin-WF`), so only `X-domain-FF` needs new runs.
 
 ## Phase acceptance
-- [ ] `summarize` produces `_work/results/table_required.md` and `.csv`: rows = E1-U, E2-cnx-U, E2-swin-U, (later the recommended method); columns = white / field / mixed / domain-balanced, each as accuracy and macro-F1 mean +- std over 5 splits.
-- [ ] `_work/results/table_domains.md`: E1-WW, E1-FF, E1-WF, E1-U (and E2 WF rows).
-- [ ] `choices.json` contains `input_mode`, `backbone` and `lr`, each with the val numbers that justified it.
-- [ ] `findings.md` answers questions 1-4 with numbers.
+- [x] `summarize` produces `_work/results/table_required.md` and `.csv`: rows = E1-U, E2-cnx-U, E2-swin-U, (later the recommended method); columns = white / field / mixed / domain-balanced, each as accuracy and macro-F1 mean +- std over 5 splits.
+- [x] `_work/results/table_domains.md`: E1-WW, E1-FF, E1-WF, E1-U (and E2 WF rows).
+- [x] `choices.json` contains `input_mode`, `backbone` and `lr`, each with the val numbers that justified it.
+- [x] `findings.md` answers questions 1-4 with numbers.
 
 This is the **minimum complete submission**. If everything after this phase fails, the report can still be written with E1/E2 as the recommended method.

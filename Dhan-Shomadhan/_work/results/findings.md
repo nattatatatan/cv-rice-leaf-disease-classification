@@ -65,3 +65,56 @@ Kaggle T4 x2. Mean +- std over the 5 splits (ddof=1); paired = per-split differe
 
 Gate G2 recommends the plain unified model (E2-swin-U), by the rule fixed in phase 06: highest mean validation mixed macro-F1; if the top two are within one std, the higher validation field macro-F1; if that is also within one std, the simpler method. Validation mixed / field macro-F1 (mean +- std over 5 splits): plain unified model (E2-swin-U) 0.792 +- 0.019 / 0.753 +- 0.089; Method A (composites) (E3-A) 0.785 +- 0.015 / 0.765 +- 0.049. Left out because of a cut line: Method B. Decided by: within one std on mixed and on field -> simpler method. Paired A - plain on validation: mixed -0.007 +- 0.017 (2 of 5 splits ahead), field +0.012 +- 0.099.
 <!-- auto:g2:end -->
+
+<!-- auto:questions:begin -->
+## Domain transfer questions (phase 04)
+
+**1. Domain gap.** Field test macro-F1 is 0.539 +- 0.128 for E1-FF (ResNet50 trained on field images) and 0.141 +- 0.039 for E1-WF (trained on white images only), so training on white alone lowers field macro-F1 by 0.398 (paired E1-WF - E1-FF: -0.398 +- 0.108; E1-WF ahead in 0 of 5 splits). E2-cnx-WF (white only, ConvNeXt-T) reaches 0.442 +- 0.060. E2-swin-WF (white only, Swin-T) reaches 0.300 +- 0.027. With composites E3-A-WF reaches 0.647 +- 0.084 (paired E3-A-WF - E2-swin-WF: +0.347 +- 0.063; E3-A-WF ahead in 5 of 5 splits); its training leaves are white photos, but the backgrounds are field images, so it is not pure W->F.
+
+**2. Does white data help field?** Field test macro-F1 is 0.687 +- 0.048 for E1-U (white + field) and 0.539 +- 0.128 for E1-FF (field only): the unified model is ahead by 0.147 (paired E1-U - E1-FF: +0.147 +- 0.159; E1-U ahead in 5 of 5 splits).
+
+**3. Does field data hurt white?** White test macro-F1 is 0.802 +- 0.062 for E1-U (white + field) and 0.809 +- 0.037 for E1-WW (white only, the E1-WF run): the unified model is behind by 0.007 (paired E1-U - E1-WW: -0.007 +- 0.048; E1-U ahead in 3 of 5 splits).
+
+**4. Which classes collapse under W->F?** Per-class field test F1 (mean over the 5 splits). A class counts as collapsed when its F1 is below 50% of E1-FF's for that class. The mistakes are counted in the confusion matrices added up over the 5 test splits (`confusion_<exp>_field.png`).
+
+- E1-FF (field only, reference): per-class field F1 Brown Spot 0.419, Leaf Scald 0.347, Rice Blast 0.554, Rice Tungro 0.637, Sheath Blight 0.740.
+- E1-WF: per-class field F1 Brown Spot 0.000, Leaf Scald 0.306, Rice Blast 0.000, Rice Tungro 0.000, Sheath Blight 0.399. Collapsed: Brown Spot, Rice Blast, Rice Tungro. Largest change against E1-FF: Rice Tungro (-0.637). Most frequent mistakes: Rice Blast taken for Leaf Scald in 43 of 58 images (74%); Rice Tungro taken for Leaf Scald in 37 of 47 images (79%).
+- E2-cnx-WF: per-class field F1 Brown Spot 0.376, Leaf Scald 0.356, Rice Blast 0.519, Rice Tungro 0.334, Sheath Blight 0.625. Collapsed: none. Largest change against E1-FF: Rice Tungro (-0.303). Most frequent mistakes: Leaf Scald taken for Rice Blast in 23 of 51 images (45%); Brown Spot taken for Rice Blast in 17 of 36 images (47%).
+- E2-swin-WF: per-class field F1 Brown Spot 0.216, Leaf Scald 0.096, Rice Blast 0.467, Rice Tungro 0.156, Sheath Blight 0.567. Collapsed: Leaf Scald, Rice Tungro. Largest change against E1-FF: Rice Tungro (-0.481). Most frequent mistakes: Leaf Scald taken for Brown Spot in 27 of 51 images (53%); Rice Tungro taken for Brown Spot in 24 of 47 images (51%).
+- E3-A-WF: per-class field F1 Brown Spot 0.604, Leaf Scald 0.480, Rice Blast 0.660, Rice Tungro 0.628, Sheath Blight 0.865. Collapsed: none. Largest change against E1-FF: Rice Tungro (-0.008). Most frequent mistakes: Leaf Scald taken for Rice Blast in 10 of 51 images (20%); Brown Spot taken for Leaf Scald in 9 of 36 images (25%).
+<!-- auto:questions:end -->
+
+<!-- auto:cases:begin -->
+## Success, failure and challenging cases (T7.4)
+
+Pooled test predictions of E2-swin-U over the 5 splits cover 607 distinct images; 425 of them were in the test part of only one split. 428 consistent successes (right in every split they were tested in, top probability never below 0.5): 333 white, 95 field. 119 consistent failures (wrong in every split they were tested in): 70 white, 49 field. 60 challenging cases (right in some splits and wrong in others, or right but below 0.5 top probability): 30 white, 30 field. Most frequent failure pairs (true -> predicted): Leaf Scald -> Rice Blast (15); Leaf Scald -> Rice Tungro (13); Brown Spot -> Rice Blast (11). 95 of the 119 failures were tested in one split only, so for them 'every time' rests on one prediction. The per-image list is `cases.csv`; the contact sheets are `cases_success.png`, `cases_failure.png` and `cases_challenging.png`.
+<!-- auto:cases:end -->
+
+## Failure hypotheses (Nattan)
+
+One line per image of `cases_failure.png` (the consistent failures of E2-swin-U), written by Nattan after looking at the image: what made it hard
+(for example lesions under 1% of the image, symptomatic leaf not in frame, Brown Spot lesions that look like Blast, motion blur). Group them into 3-4
+failure modes for the report afterwards. Nothing is filled in yet. This section is outside the auto markers, so `summarize` never touches it.
+
+- `bs_wb_54.jpg`:
+- `ls_wb_39.jpg`:
+- `rb_wb_60.jpg`:
+- `rt_wb_5.jpg`:
+- `sb_wb_40.jpg`:
+- `bsf_47.jpg`:
+- `lsf_47.jpg`:
+- `rbf_46.jpg`:
+- `rtf_41.jpg`:
+- `sbf_56.jpg`:
+
+<!-- auto:hardware:begin -->
+## Hardware
+
+Hardware per run folder, read from each run's env.json:
+
+- E0-squash, E0-pad, E0-rect (also E1-U): Colab, cuda (Tesla T4), torch 2.11.0+cu130, Python 3.13.15, mixed precision (fp16 autocast)
+- E1-WF (also E1-WW), E1-FF: local macOS, mps (Apple MPS), torch 2.11.0, Python 3.12.13, fp32
+- E2-cnx-U, E2-cnx-WF, E2-swin-U, E2-swin-WF, E3-A, E3-A-WF: Kaggle, cuda (Tesla T4), torch 2.11.0+cu128, Python 3.13.15, mixed precision (fp16 autocast)
+
+The runs were not all made on the same hardware, torch build and precision, so a small difference between experiment families can include hardware and numerics effects (fp16 autocast on CUDA against fp32 on the Mac, different GPUs and torch builds), not only the method. Comparisons inside one group share their hardware. Comparisons made in the tables that cross groups: E1-U vs E1-FF, E1-U vs E1-WW, E2-cnx-U vs E1-U, E2-swin-U vs E1-U, E2-swin-WF vs E1-WF. Read those gaps against the paired std. Training times (table_runtime) are only comparable inside a group.
+<!-- auto:hardware:end -->

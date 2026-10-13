@@ -17,7 +17,7 @@ def test_help_exits_zero(gs, capsys):
         gs.run_cli(["--help"])
     assert excinfo.value.code == 0
     out = capsys.readouterr().out
-    for command in [*NOT_IMPLEMENTED, "smoke", "download-weights", "run", "choose-lr", "predict"]:
+    for command in [*NOT_IMPLEMENTED, "smoke", "download-weights", "run", "choose-lr", "predict", "benchmark"]:
         assert command in out
 
 

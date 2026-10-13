@@ -4922,19 +4922,23 @@ def table_input_mode(results: dict) -> Table:
     )
 
 
-def table_required(results: dict) -> Table:
-    """The unified models on the test split (spec scenarios a, b, c plus the domain-balanced mean)."""
+def table_required(results: dict, choices=None) -> Table:
+    """The unified models on the test split (spec scenarios a, b, c plus the domain-balanced mean). The recommended method
+    (gate G2) is marked, and added as a row when it is not one of the three plain models."""
+    recommended = recommended_experiment(choices) if choices is not None else None
     rows = []
-    for exp_id in ("E1-U", "E2-cnx-U", "E2-swin-U"):
-        backbone = EXPERIMENTS[exp_id].backbone
-        rows.append([exp_id, backbone, *score_cells(results.get(exp_id), "test")])
+    for exp_id in dict.fromkeys(("E1-U", "E2-cnx-U", "E2-swin-U", *([recommended] if recommended else []))):
+        found = results.get(exp_id)
+        backbone = found.config.backbone if found is not None else EXPERIMENTS[exp_id].backbone
+        rows.append([exp_id + (" (recommended)" if exp_id == recommended else ""), backbone, *score_cells(found, "test")])
     return Table(
         "table_required",
         "Required results: unified models, test split (E1-U, E2-cnx-U, E2-swin-U)",
         ("Experiment", "Backbone", *SCORE_HEADER),
         rows,
         "Mean +- std over the 5 splits (std with ddof=1). White, field and mixed are the three spec scenarios; "
-        "domain-balanced is the mean of white and field. Rows that are not complete yet read 'pending'.",
+        "domain-balanced is the mean of white and field. The recommended method is the one gate G2 froze. "
+        "Rows that are not complete yet read 'pending'.",
     )
 
 
@@ -5345,6 +5349,825 @@ def table_segmenter(exp: ExperimentResults | None, data_root) -> Table:
         "component covers 2% of the image, so the whole image is used. The validation IoUs threshold the raw mask at 0.5.",
     )
 
+BACKBONE_LABELS = {"resnet50": "ResNet50", "convnext_tiny": "ConvNeXt-T", "swin_t": "Swin-T"}
+# Every run folder the report draws on, in table order (E1-U and E1-WW are aliases that read another run folder).
+REPORTED_EXPERIMENTS = (*ANALYSIS_EXPERIMENTS, "E3-A", "E3-A-WF")
+
+
+def recommended_experiment(choices) -> str | None:
+    return choices.raw("recommended")
+
+
+def per_class_stat(exp: ExperimentResults, part: str, subset: str, cls: str, key: str) -> Aggregate:
+    """Precision, recall or F1 of one class on one subset: mean, std (ddof=1) and the per-split list."""
+    values = [exp.metrics[k][part][subset]["per_class"][cls][key] for k in exp.splits]
+    mean, std = mean_std(values)
+    return Aggregate(mean, std, values)
+
+
+def per_class_support(exp: ExperimentResults, part: str, subset: str, cls: str) -> int:
+    return sum(exp.metrics[k][part][subset]["per_class"][cls]["support"] for k in exp.splits)
+
+
+def summed_confusion(exp: ExperimentResults, subset: str, part: str = "test") -> np.ndarray:
+    """The confusion matrices of the splits added up: rows = true class, columns = predicted class (CLASS_NAMES order)."""
+    return sum(np.asarray(exp.metrics[k][part][subset]["confusion_matrix"], dtype=np.int64) for k in exp.splits)
+
+
+def table_per_class(results: dict, choices) -> Table:
+    """Per-class precision, recall and F1 of the recommended method on the white and the field test images."""
+    exp_id = recommended_experiment(choices)
+    exp = results.get(exp_id) if exp_id else None
+    rows = []
+    for domain in DOMAINS:
+        for cls in CLASS_NAMES:
+            if exp is None:
+                rows.append([domain, cls, PENDING, PENDING, PENDING, PENDING])
+                continue
+            stats = [format_mean_std(per_class_stat(exp, "test", domain, cls, key), "macro_f1") for key in ("precision", "recall", "f1")]
+            rows.append([domain, cls, per_class_support(exp, "test", domain, cls), *stats])
+        if exp is None:
+            rows.append([domain, "macro-F1", PENDING, "-", "-", PENDING])
+        else:
+            total = sum(per_class_support(exp, "test", domain, cls) for cls in CLASS_NAMES)
+            rows.append([domain, "macro-F1", total, "-", "-", format_mean_std(aggregate(exp, domain, "macro_f1", "test"), "macro_f1")])
+    return Table(
+        "table_per_class",
+        f"Per-class results of the recommended method ({exp_id or 'not chosen yet, gate g2'}), test split",
+        ("Domain", "Class", "Support (5 splits)", "Precision", "Recall", "F1"),
+        rows,
+        "Mean +- std over the 5 test splits (std with ddof=1). Support is the number of test images of the class summed over the "
+        "5 splits (an image can be in the test part of several splits). The macro-F1 row is the mean of the per-split macro-F1, "
+        "not the mean of the class rows above it. A class that is never predicted in a split has precision 0 in that split.",
+    )
+
+
+def read_run_json(data_root, exp: ExperimentResults, split_seed: int, name: str) -> dict | None:
+    """config.json or env.json of one split of an experiment's run folder (None when the file is missing)."""
+    path = split_dir(runs_dir(data_root) / exp.run_name, split_seed) / name
+    if not path.is_file():
+        return None
+    return json.loads(read_file_bytes(path).decode("utf-8"))
+
+
+def hparam_cells(config: dict) -> dict:
+    """The hyperparameters of one run as the table shows them, all read from its config.json."""
+    e = config["experiment"]
+    factor = config.get("choices_used", {}).get("composite_n_factor")
+    return {
+        "Backbone": e["backbone"],
+        "Pretrained weights": config.get("weights") or "none",
+        "Input mode": e["input_mode"],
+        "Input HxW": "x".join(str(v) for v in config["input_size"]),
+        "Train on": " + ".join(e["train_domains"]) + (" + composites" if e["use_composites"] else ""),
+        "Checkpoint chosen on (val)": " + ".join(e["select_domains"]),
+        "Composites per epoch": f"{factor:g}x" if factor is not None and e["use_composites"] else "-",
+        "Linear-probe epochs x lr": f"{e['stage1_epochs']} x {e['stage1_lr']:g}",
+        "Fine-tune epochs (max)": e["epochs"],
+        "Learning rate": f"{e['lr']:g}",
+        "Weight decay": f"{e['weight_decay']:g}",
+        "Warmup epochs": e["warmup_epochs"],
+        "Label smoothing": f"{e['label_smoothing']:g}",
+        "Batch size x accumulation": f"{e['batch_size']} x {e['grad_accum']}",
+        "Gradient clip norm": f"{e['clip_norm']:g}",
+        "Early-stop patience": e["patience"],
+        "Dropout": f"{e['dropout']:g}",
+    }
+
+
+HPARAM_COLUMNS = (
+    "Backbone", "Pretrained weights", "Input mode", "Input HxW", "Train on", "Checkpoint chosen on (val)", "Composites per epoch",
+    "Linear-probe epochs x lr", "Fine-tune epochs (max)", "Learning rate", "Weight decay", "Warmup epochs", "Label smoothing",
+    "Batch size x accumulation", "Gradient clip norm", "Early-stop patience", "Dropout",
+)
+
+
+def alias_note(exp: ExperimentResults) -> str:
+    """'' for a run folder that carries its own name, else 'E0-rect' (the run an alias such as E1-U reads)."""
+    return "" if exp.run_name == exp.exp_id else exp.run_name
+
+
+def table_hparams(results: dict, data_root) -> Table:
+    """One row per reported experiment, every value read from the config.json of its five runs. A value that differs
+    between the splits of one experiment is shown as 'varies: a / b' and named in the note."""
+    rows, varying, missing = [], [], []
+    for exp_id in REPORTED_EXPERIMENTS:
+        exp = results.get(exp_id)
+        if exp is None:
+            rows.append([exp_id, "-", *[PENDING] * len(HPARAM_COLUMNS)])
+            continue
+        configs = [read_run_json(data_root, exp, k, "config.json") for k in exp.splits]
+        if any(config is None for config in configs):
+            missing.append(exp_id)
+            rows.append([exp_id, exp.run_name, *["n/a"] * len(HPARAM_COLUMNS)])
+            continue
+        per_split = [hparam_cells(config) for config in configs]
+        cells = []
+        for column in HPARAM_COLUMNS:
+            values = list(dict.fromkeys(str(cell[column]) for cell in per_split))
+            if len(values) > 1:
+                varying.append(f"{exp_id} ({column})")
+            cells.append(values[0] if len(values) == 1 else "varies: " + " / ".join(values))
+        rows.append([exp_id, exp.run_name, *cells])
+    note = (
+        "Every value is read from config.json of the experiment's runs (not typed in). "
+        + ("Values are identical across the 5 splits of every experiment. " if not varying
+           else "Not identical across the splits: " + ", ".join(varying) + ". ")
+        + ("config.json is missing for: " + ", ".join(missing) + ". " if missing else "")
+        + "E1-U and E1-WW are aliases that read the run folder named in the second column. Not part of config.json because they "
+        "are fixed in the code: optimiser AdamW; stage 1 trains the classifier head only at a constant lr, stage 2 all weights with a linear warmup "
+        "then cosine decay per optimiser step; mixed precision (fp16 autocast) on CUDA only, cross-entropy with the label smoothing "
+        "above, checkpoint = best validation macro-F1 on the domains the model trained on. Training augmentation: random crop of "
+        f"{AUG_CROP_AREA[0]:.0%}-{AUG_CROP_AREA[1]:.0%} of the area, random horizontal and vertical flips, rotation up to "
+        f"+-{AUG_ROTATION_DEG:g} degrees, brightness +-{AUG_BRIGHTNESS:g}, contrast +-{AUG_CONTRAST:g}, saturation "
+        f"+-{AUG_SATURATION:g}, hue +-{AUG_HUE:g}; evaluation images are only resized. Rows that are not complete yet read 'pending'."
+    )
+    return Table("table_hparams", "Hyperparameters of every reported experiment", ("Experiment", "Run folder", *HPARAM_COLUMNS), rows, note)
+
+BENCHMARK_FILENAME = "inference_benchmark.json"
+BENCHMARK_FORMAT = 1
+BENCHMARK_WARMUP = 10  # forward passes that are run and not timed
+BENCHMARK_REPEATS = 50  # timed forward passes; the table reports their median
+DEVICE_ORDER = ("cpu", "mps", "cuda")
+
+
+def benchmark_path(data_root) -> Path:
+    return results_dir(data_root) / BENCHMARK_FILENAME
+
+
+def read_benchmark(data_root) -> dict:
+    """{device: record} of inference_benchmark.json. {} when the file is missing (no benchmark run yet) or unusable."""
+    path = benchmark_path(data_root)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(read_file_bytes(path).decode("utf-8"))
+        devices = data["devices"]
+        if data["format"] != BENCHMARK_FORMAT or not all(isinstance(r["backbones"], dict) for r in devices.values()):
+            raise ValueError(f"unexpected format {data['format']!r}")
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        warn(f"{path}: unusable ({exc}); run `benchmark` again. Inference times read 'not measured'")
+        return {}
+    return {device: devices[device] for device in DEVICE_ORDER if device in devices}
+
+
+def synchronize(device: str) -> None:
+    if device == "cuda":
+        torch.cuda.synchronize()
+    elif device == "mps":
+        torch.mps.synchronize()
+
+
+def time_inference(model: nn.Module, device: str, size: tuple, *, warmup: int = BENCHMARK_WARMUP, repeats: int = BENCHMARK_REPEATS) -> dict:
+    """Milliseconds of one forward pass on one image (batch 1): median and quartiles of ``repeats`` timed passes after
+    ``warmup`` untimed ones. The device is synchronised around every pass, so asynchronous GPU work is counted."""
+    model.eval()
+    x = torch.rand(1, 3, *size, device=device)
+    amp = device == "cuda"  # the same autocast the evaluation uses
+    times = []
+    with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp):
+        for i in range(warmup + repeats):
+            synchronize(device)
+            started = time.perf_counter()
+            model(x)
+            synchronize(device)
+            if i >= warmup:
+                times.append((time.perf_counter() - started) * 1000.0)
+    q1, median, q3 = (float(v) for v in np.percentile(times, [25, 50, 75]))
+    return {"median_ms": round(median, 2), "q1_ms": round(q1, 2), "q3_ms": round(q3, 2)}
+
+
+def run_benchmark(data_root, device: str, out=print, *, warmup: int = BENCHMARK_WARMUP, repeats: int = BENCHMARK_REPEATS) -> dict:
+    """Time the three backbones at the chosen input mode on ``device`` (untrained weights: the speed does not depend on
+    them) and merge the record into inference_benchmark.json, keeping the records of the other devices."""
+    data_root = Path(data_root)
+    mode = load_choices(data_root).get("input_mode")
+    size = input_size(mode)
+    env = environment_record(device)
+    backbones = {}
+    for name in BACKBONES:
+        torch.manual_seed(0)
+        model = build_model(name, pretrained=False).to(device)
+        backbones[name] = {**time_inference(model, device, size, warmup=warmup, repeats=repeats), "parameters": count_parameters(model)}
+        out(f"benchmark: {name} on {device}: {backbones[name]['median_ms']:.1f} ms/image (median of {repeats})")
+        del model
+        free_device_memory(device)
+    record = {
+        "device": device, "precision": precision_of(device), "input_mode": mode, "input_size": list(size), "batch_size": 1,
+        "warmup": warmup, "repeats": repeats, "torch_threads": torch.get_num_threads(),
+        **{key: env[key] for key in ("python", "platform", "torch", "torchvision", "cpu_count", "gpu", "cuda")},
+        "measured": "model forward pass only (no image decoding or resizing), untrained weights, batch size 1",
+        "backbones": backbones,
+    }
+    devices = read_benchmark(data_root)
+    devices[device] = record
+    path = benchmark_path(data_root)
+    write_json(path, {"format": BENCHMARK_FORMAT, "devices": {d: devices[d] for d in DEVICE_ORDER if d in devices}}, indent=2)
+    out(f"benchmark: wrote {path}")
+    return record
+
+
+def precision_of(device: str) -> str:
+    """The numeric precision a run on this device uses: training and evaluation autocast to fp16 on CUDA only."""
+    return "mixed precision (fp16 autocast)" if device == "cuda" else "fp32"
+
+
+def host_label(env: dict) -> str:
+    """Where a run was made, from its env.json: Kaggle and Colab leave their paths in torch_home."""
+    home = env.get("torch_home") or ""
+    if home.startswith("/kaggle"):
+        return "Kaggle"
+    if home.startswith("/content"):
+        return "Colab"
+    return "local " + str(env.get("platform", "")).split("-")[0]
+
+
+def hardware_signature(exp: ExperimentResults | None, data_root) -> tuple | None:
+    """The distinct (host, device, gpu, torch, python) of an experiment's five runs, read from env.json."""
+    if exp is None:
+        return None
+    envs = [read_run_json(data_root, exp, k, "env.json") for k in exp.splits]
+    if any(env is None for env in envs):
+        return None
+    return tuple(sorted({(host_label(env), env["device"], env.get("gpu") or "-", env["torch"], env["python"]) for env in envs}))
+
+
+def hardware_text(signature: tuple | None, *, full: bool = True) -> str:
+    """'Kaggle, cuda (Tesla T4), torch 2.11.0+cu128, Python 3.13.15, mixed precision (fp16 autocast)'; ``full=False`` stops at the device."""
+    if not signature:
+        return "n/a"
+    parts = []
+    for host, device, gpu, torch_version, python in signature:
+        text = f"{host}, {device} ({gpu})"
+        parts.append(text + (f", torch {torch_version}, Python {python}, {precision_of(device)}" if full else ""))
+    return " / ".join(parts)
+
+
+def format_number(stat, decimals: int = 1, scale: float = 1.0) -> str:
+    """'8.5 +- 1.2' for a mean +- std of a plain quantity (minutes, seconds, epochs)."""
+    if stat.mean != stat.mean or stat.std != stat.std:
+        return "n/a"
+    return f"{stat.mean * scale:.{decimals}f} +- {stat.std * scale:.{decimals}f}"
+
+
+def metric_stat(exp: ExperimentResults, key: str) -> Aggregate:
+    values = [exp.metrics[k][key] for k in exp.splits]
+    mean, std = mean_std(values)
+    return Aggregate(mean, std, values)
+
+
+def table_runtime(results: dict, data_root) -> Table:
+    """Training cost per experiment from metrics.json and env.json, and inference ms/image from the benchmark file."""
+    benchmark = read_benchmark(data_root)
+    devices = list(benchmark)
+    header = ("Experiment", "Run folder", "Hardware", "Training time per run (min)", "Seconds per epoch", "Epochs run", "Parameters (M)",
+              *([f"Inference ms/image, median (quartiles), {d}" for d in devices] or ["Inference ms/image"]))
+    rows = []
+    for exp_id in REPORTED_EXPERIMENTS:
+        exp = results.get(exp_id)
+        backbone = exp.config.backbone if exp is not None else EXPERIMENTS[exp_id].backbone
+        if devices:
+            timing = []
+            for device in devices:
+                entry = benchmark[device]["backbones"].get(backbone) if backbone else None
+                timing.append("n/a" if entry is None else f"{entry['median_ms']:.1f} ({entry['q1_ms']:.1f}-{entry['q3_ms']:.1f})")
+        else:
+            timing = ["not measured (run benchmark)"]
+        if exp is None:
+            rows.append([exp_id, "-", *[PENDING] * (len(header) - 2)])
+            continue
+        hardware = hardware_signature(exp, data_root)
+        rows.append([
+            exp_id, exp.run_name, hardware_text(hardware, full=False),
+            format_number(metric_stat(exp, "train_time_s"), 1, 1 / 60), format_number(metric_stat(exp, "seconds_per_epoch"), 1),
+            format_number(metric_stat(exp, "epochs_run"), 1), f"{exp.metrics[exp.splits[0]]['parameters'] / 1e6:.1f}", *timing,
+        ])
+    where = "; ".join(
+        f"{d}: {r['platform']}, {r['cpu_count']} cores, {r['gpu'] or 'no GPU'}, torch {r['torch']}, {r['input_mode']} input "
+        f"{r['input_size'][0]}x{r['input_size'][1]}, {r['precision']}, median of {r['repeats']} after {r['warmup']} warm-up passes"
+        for d, r in benchmark.items()
+    )
+    note = (
+        "Training time and seconds per epoch are the mean +- std (ddof=1) over the 5 runs of an experiment; a run's time includes "
+        "validation after every epoch, and the time is wall clock on a machine whose load varied (shared Kaggle/Colab sessions, "
+        "a laptop), so it is only comparable within one hardware group and only roughly. Early stopping makes the epochs run "
+        "differ between runs. Hardware is read from env.json (the findings list the groups with their torch versions). "
+        "E1-U and E1-WW are aliases that read the run folder named in the second column. Parameters are those of the classifier "
+        "with its 5-class head. Inference time is not measured by `summarize` (it would not be reproducible): the `benchmark` "
+        "command writes inference_benchmark.json and this table reads it. It times the model forward pass for one image "
+        "(batch 1), not image decoding, resizing or the first call. "
+        + (f"Measured on - {where}." if benchmark else "No benchmark file yet, so inference times read 'not measured (run benchmark)'.")
+    )
+    return Table("table_runtime", "Training and inference cost", header, rows, note)
+
+# One marker per subset in every figure that shows scores (colours: DOMAIN_COLORS; mixed has no domain, so it is grey).
+SUBSET_COLORS = {**DOMAIN_COLORS, "mixed": "#8C8C8C"}
+SUBSET_MARKERS = {"white": "o", "field": "s", "mixed": "^"}
+SPLIT_COLORS = (OKABE_ITO["black"], OKABE_ITO["sky"], OKABE_ITO["green"], OKABE_ITO["vermilion"], OKABE_ITO["purple"])  # one per split
+SCENARIO_MODELS = ("E1-U", "E2-cnx-U", "E2-swin-U", "E3-A")  # the main models of scenario_bars.png
+# domain_gap.png: (training regime, experiment). The regimes follow the phase-04 questions.
+DOMAIN_GAP_ROWS = (
+    ("F->F", "E1-FF"), ("W->F", "E1-WF"), ("W->F", "E2-cnx-WF"), ("W->F", "E2-swin-WF"), ("W + composites->F*", "E3-A-WF"),
+    ("U (white + field)", "E1-U"), ("U (white + field)", "E2-swin-U"), ("A (U + composites)", "E3-A"),
+)
+WF_CONFUSION_EXPERIMENTS = ("E1-WF", "E2-swin-WF", "E3-A-WF")  # which classes collapse under W->F, with E1-WF as the reference
+FIGURE_FONT = 7
+WRAPPED_CLASSES = [name.replace(" ", "\n") for name in CLASS_NAMES]
+
+
+def tidy_axes(ax) -> None:
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.set_axisbelow(True)
+
+
+def finish_figure(fig, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=FIGURE_DPI)
+    pyplot().close(fig)
+    return path
+
+
+def experiment_label(exp: ExperimentResults) -> str:
+    return f"{exp.exp_id} ({BACKBONE_LABELS.get(exp.config.backbone, exp.config.backbone)})"
+
+
+def save_confusion(data_root, exp: ExperimentResults, subset: str, path: Path | None = None) -> Path:
+    """`confusion_<exp>_<subset>.png`: the test confusion matrices of the 5 splits added up; the colour is the share of the
+    true class (each row sums to 1), the number in a cell is the image count. The frame has the domain's colour."""
+    plt = pyplot()
+    path = path or figures_dir(data_root) / f"confusion_{exp.exp_id}_{subset}.png"
+    matrix = summed_confusion(exp, subset)
+    share = matrix / np.maximum(matrix.sum(axis=1, keepdims=True), 1)
+    trained = " + ".join(exp.config.train_domains)
+    with plt.rc_context({"font.size": FIGURE_FONT}):
+        fig, ax = plt.subplots(figsize=(3.9, 3.75))
+        image = ax.imshow(share, cmap="Blues", vmin=0.0, vmax=1.0)
+        for i in range(NUM_CLASSES):
+            for j in range(NUM_CLASSES):
+                ax.text(j, i, str(matrix[i, j]), ha="center", va="center", fontsize=FIGURE_FONT + 0.5,
+                        fontweight="bold" if i == j else "normal", color="white" if share[i, j] > 0.55 else "black")
+        ax.set_xticks(range(NUM_CLASSES), WRAPPED_CLASSES)
+        ax.set_yticks(range(NUM_CLASSES), WRAPPED_CLASSES)
+        ax.set_xlabel("Predicted class")
+        ax.set_ylabel("True class")
+        ax.set_title(f"{exp.exp_id}: trained on {trained}, tested on {subset} images\n"
+                     f"(5 test splits added up, {int(matrix.sum())} predictions)", fontsize=FIGURE_FONT + 0.5)
+        for spine in ax.spines.values():
+            spine.set_edgecolor(DOMAIN_COLORS[subset])
+            spine.set_linewidth(2.0)
+        colorbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.03)
+        colorbar.set_label("Share of the true class")
+        colorbar.outline.set_visible(False)
+        fig.tight_layout(pad=0.6)
+        return finish_figure(fig, path)
+
+
+def save_scenario_bars(data_root, results: dict, recommended: str | None, path: Path | None = None) -> Path | None:
+    """`scenario_bars.png`: test macro-F1 of the main models for the three scenarios (white, field, mixed); bars = mean over
+    the 5 splits, whiskers = std (ddof=1), dots = the single splits."""
+    plt = pyplot()
+    path = path or figures_dir(data_root) / "scenario_bars.png"
+    models = [m for m in SCENARIO_MODELS if m in results]
+    if not models:
+        return None
+    subsets = ("white", "field", "mixed")
+    width = 0.26
+    with plt.rc_context({"font.size": FIGURE_FONT}):
+        fig, ax = plt.subplots(figsize=(4.4, 3.0))
+        for k, subset in enumerate(subsets):
+            for position, model in enumerate(models):
+                stat = aggregate(results[model], subset, "macro_f1", "test")
+                x = position + (k - 1) * width
+                ax.bar(x, stat.mean, width * 0.92, color=SUBSET_COLORS[subset], label=SUBSET_LABELS[subset] if position == 0 else None)
+                ax.errorbar(x, stat.mean, yerr=stat.std, color="black", capsize=2, linewidth=0.8, capthick=0.8)
+                jitter = np.linspace(-0.07, 0.07, len(stat.values))
+                ax.scatter(x + jitter, stat.values, s=5, marker=SUBSET_MARKERS[subset], color="white", edgecolor="black", linewidth=0.4, zorder=3)
+        ax.set_xticks(range(len(models)), [f"{m}\n{BACKBONE_LABELS.get(results[m].config.backbone, '')}"
+                                           + ("\n(recommended)" if m == recommended else "") for m in models])
+        ax.set_ylim(0, 1.0)
+        ax.set_ylabel("Test macro-F1 (mean +- std, 5 splits)")
+        ax.yaxis.grid(True, color="#DDDDDD", linewidth=0.6)
+        tidy_axes(ax)
+        ax.legend(frameon=False, ncol=3, loc="lower center", bbox_to_anchor=(0.5, 1.0), handlelength=1.2, columnspacing=1.2)
+        fig.tight_layout(pad=0.6)
+        return finish_figure(fig, path)
+
+
+def save_domain_gap(data_root, results: dict, path: Path | None = None) -> Path | None:
+    """`domain_gap.png`: test macro-F1 on the field images for each training regime (the transfer story). Bars = mean over the
+    5 splits, whiskers = std (ddof=1), dots = the single splits."""
+    plt = pyplot()
+    path = path or figures_dir(data_root) / "domain_gap.png"
+    rows = [(regime, exp_id) for regime, exp_id in DOMAIN_GAP_ROWS if exp_id in results]
+    if not rows:
+        return None
+    ypos, last, y = [], None, 0.0
+    for regime, _ in rows:
+        y += 0.0 if last in (None, regime) else 0.6
+        ypos.append(y)
+        y += 1.0
+        last = regime
+    with plt.rc_context({"font.size": FIGURE_FONT}):
+        fig, ax = plt.subplots(figsize=(4.4, 0.27 * (ypos[-1] + 1) + 1.0))
+        for y, (regime, exp_id) in zip(ypos, rows):
+            stat = aggregate(results[exp_id], "field", "macro_f1", "test")
+            ax.barh(y, stat.mean, 0.72, color=DOMAIN_COLORS["field"])
+            ax.errorbar(stat.mean, y, xerr=stat.std, color="black", capsize=2, linewidth=0.8, capthick=0.8)
+            ax.scatter(stat.values, y + np.linspace(-0.2, 0.2, len(stat.values)), s=5, marker=SUBSET_MARKERS["field"], color="white",
+                       edgecolor="black", linewidth=0.4, zorder=3)
+            ax.text(min(1.0, max(stat.values + [stat.mean + stat.std])) + 0.015, y, f"{stat.mean:.3f}", va="center", fontsize=FIGURE_FONT)
+        ax.set_yticks(ypos, [f"{regime}\n{exp_id}, {BACKBONE_LABELS.get(results[exp_id].config.backbone, '')}" for regime, exp_id in rows],
+                      fontsize=FIGURE_FONT - 0.5)
+        ax.set_ylim(ypos[-1] + 0.7, -0.7)
+        ax.set_xlim(0, 1.0)
+        ax.set_xlabel("Field test macro-F1 (mean +- std, 5 splits)")
+        ax.xaxis.grid(True, color="#DDDDDD", linewidth=0.6)
+        tidy_axes(ax)
+        if any(exp_id == "E3-A-WF" for _, exp_id in rows):
+            fig.text(0.01, 0.005, "* white photos only as leaves, but field images are the composite backgrounds: not pure W->F",
+                     fontsize=FIGURE_FONT - 1.5, va="bottom", color="#444444")
+        fig.tight_layout(pad=0.6, rect=(0, 0.03, 1, 1))
+        return finish_figure(fig, path)
+
+
+def read_history(data_root, exp: ExperimentResults, split_seed: int) -> list | None:
+    """history.csv of one run as dicts (numbers as floats, stage as text); None when the file is missing."""
+    path = split_dir(runs_dir(data_root) / exp.run_name, split_seed) / "history.csv"
+    if not path.is_file():
+        return None
+    with open(path, newline="") as handle:
+        return [{key: (value if key == "stage" else float(value)) for key, value in row.items()} for row in csv.DictReader(handle)]
+
+
+def save_training_curves(data_root, exp: ExperimentResults, path: Path | None = None) -> Path | None:
+    """`training_curves_<exp>.png`: training loss and validation macro-F1 per epoch, the 5 splits overlaid. The grey band is the
+    linear-probe stage, the star the epoch whose checkpoint was kept."""
+    plt = pyplot()
+    path = path or figures_dir(data_root) / f"training_curves_{exp.exp_id}.png"
+    histories = {k: read_history(data_root, exp, k) for k in exp.splits}
+    histories = {k: h for k, h in histories.items() if h}
+    if not histories:
+        return None
+    selected = " + ".join(exp.config.select_domains)
+    with plt.rc_context({"font.size": FIGURE_FONT}):
+        fig, (loss_ax, f1_ax) = plt.subplots(2, 1, figsize=(4.4, 4.2), sharex=True)
+        for k, history in histories.items():
+            color = SPLIT_COLORS[k % len(SPLIT_COLORS)]
+            epochs = [row["epoch"] for row in history]
+            loss_ax.plot(epochs, [row["train_loss"] for row in history], color=color, linewidth=1.0, label=f"split {k}")
+            f1_ax.plot(epochs, [row["val_macro_f1"] for row in history], color=color, linewidth=1.0)
+            kept = [row for row in history if row["best"]][-1:]
+            f1_ax.scatter([row["epoch"] for row in kept], [row["val_macro_f1"] for row in kept], marker="*", s=40, color=color,
+                          edgecolor="black", linewidth=0.5, zorder=3)
+        probe = max((row["epoch"] for h in histories.values() for row in h if row["stage"] == "lp"), default=0)
+        for ax in (loss_ax, f1_ax):
+            if probe:
+                ax.axvspan(0.5, probe + 0.5, color="#E6E6E6", zorder=0)
+            ax.yaxis.grid(True, color="#DDDDDD", linewidth=0.6)
+            tidy_axes(ax)
+        if probe:
+            loss_ax.text(probe / 2 + 0.5, 0.4, "linear\nprobe", transform=loss_ax.get_xaxis_transform(), ha="center", va="top",
+                         fontsize=FIGURE_FONT - 1)
+        loss_ax.set_ylabel("Training loss")
+        f1_ax.set_ylabel(f"Validation macro-F1\n({selected})")
+        f1_ax.set_xlabel("Epoch (star = kept checkpoint)")
+        f1_ax.set_ylim(0, 1.0)
+        loss_ax.set_title(f"{exp.exp_id}: training curves of the 5 splits", fontsize=FIGURE_FONT + 0.5)
+        loss_ax.legend(frameon=False, ncol=5, loc="upper right", fontsize=FIGURE_FONT - 1, handlelength=1.2, columnspacing=0.8)
+        fig.tight_layout(pad=0.6)
+        return finish_figure(fig, path)
+
+
+def write_figures(data_root, results: dict, choices) -> list:
+    """The T7.3 figures that the available runs support. Returns the paths written."""
+    recommended = recommended_experiment(choices)
+    paths = []
+    if recommended in results:
+        paths += [save_confusion(data_root, results[recommended], subset) for subset in DOMAINS]
+        paths.append(save_training_curves(data_root, results[recommended]))
+    for exp_id in WF_CONFUSION_EXPERIMENTS:
+        if exp_id in results:
+            paths.append(save_confusion(data_root, results[exp_id], "field"))
+    paths += [save_scenario_bars(data_root, results, recommended), save_domain_gap(data_root, results)]
+    return [p for p in paths if p is not None]
+
+CASE_LOW_CONFIDENCE = 0.5  # a correct prediction whose top probability is below this is not a success but a challenging case
+CASE_SHEET_IMAGES = 10  # images per contact sheet: 2 rows of 5
+CASE_CATEGORIES = ("success", "failure", "challenging")
+CASE_SHEET_COLUMNS = 5
+CASES_FILENAME = "cases.csv"
+
+
+def classify_case(correct: list, confidence: list) -> str:
+    """One image's outcomes over the splits whose test part held it: ``correct[i]`` and the top probability
+    ``confidence[i]`` of each. failure = wrong every time; success = right every time and never below
+    CASE_LOW_CONFIDENCE; challenging = everything else (mixed outcomes, or right but unsure)."""
+    if not any(correct):
+        return "failure"
+    if all(correct) and min(confidence) >= CASE_LOW_CONFIDENCE:
+        return "success"
+    return "challenging"
+
+
+def pool_predictions(data_root, exp: ExperimentResults) -> dict:
+    """{filename: {"domain", "true", "tests": {split: (predicted class index, probabilities)}}} from predictions_test.csv of
+    every split of ``exp``. An image is in the test part of about 0.75 splits on average, so most have one to three entries."""
+    pooled = {}
+    for split_seed in exp.splits:
+        path = split_dir(runs_dir(data_root) / exp.run_name, split_seed) / "predictions_test.csv"
+        if not path.is_file():
+            raise ExperimentError(f"{exp.exp_id}: {path} is missing")
+        with open(path, newline="") as handle:
+            for row in csv.DictReader(handle):
+                probs = [float(row[f"p{i}"]) for i in range(NUM_CLASSES)]
+                entry = pooled.setdefault(row["filename"], {"domain": row["domain"], "true": row["true"], "tests": {}})
+                entry["tests"][split_seed] = (CLASS_NAMES.index(row["pred"]), probs)
+    return pooled
+
+
+def case_rows(pooled: dict) -> list:
+    """One dict per image (sorted by filename): outcome counts, category, the split-wise predictions, the modal prediction
+    (ties go to the higher summed probability) and the probabilities of the true and the modal class, averaged over the splits."""
+    rows = []
+    for filename in sorted(pooled):
+        entry = pooled[filename]
+        true_index = CLASS_NAMES.index(entry["true"])
+        tests = entry["tests"]
+        correct = [pred == true_index for pred, _ in tests.values()]
+        top = [max(probs) for _, probs in tests.values()]
+        counts = Counter(pred for pred, _ in tests.values())
+        wrong = [pred for pred, _ in counts.most_common() if pred != true_index]  # wrong classes, the most frequent first
+        modal = max(counts, key=lambda c: (counts[c], sum(probs[c] for _, probs in tests.values()), -c))
+        rows.append({
+            "filename": filename, "domain": entry["domain"], "true": entry["true"], "tested": len(tests), "correct": sum(correct),
+            "category": classify_case(correct, top),
+            "preds": [CLASS_NAMES[tests[k][0]] if k in tests else "" for k in ANALYSIS_SPLITS],
+            "modal_pred": CLASS_NAMES[modal], "wrong_pred": CLASS_NAMES[wrong[0]] if wrong else "",
+            "mean_p_modal": float(np.mean([probs[modal] for _, probs in tests.values()])),
+            "mean_p_true": float(np.mean([probs[true_index] for _, probs in tests.values()])),
+            "min_top_p": float(min(top)),
+        })
+    return rows
+
+
+def cases_csv(rows: list) -> str:
+    header = ["filename", "domain", "true", "tested", "correct", "category", *[f"pred_split{k}" for k in ANALYSIS_SPLITS],
+              "modal_pred", "wrong_pred", "mean_p_modal", "mean_p_true", "min_top_p"]
+    return csv_text(header, [[r["filename"], r["domain"], r["true"], r["tested"], r["correct"], r["category"], *r["preds"], r["modal_pred"],
+                              r["wrong_pred"], f"{r['mean_p_modal']:.3f}", f"{r['mean_p_true']:.3f}", f"{r['min_top_p']:.3f}"] for r in rows])
+
+
+# Which images a contact sheet shows first within one (domain, class): successes the model is surest of, failures that were tested
+# most often (the most evidence) and are the most confidently wrong, challenging cases that split the splits closest to half.
+CASE_ORDER = {
+    "success": lambda r: (-r["mean_p_modal"], -r["tested"], r["filename"]),
+    "failure": lambda r: (-r["tested"], -r["mean_p_modal"], r["filename"]),
+    "challenging": lambda r: (-r["tested"], abs(r["correct"] / r["tested"] - 0.5), r["filename"]),
+}
+
+
+def select_cases(rows: list, category: str, n: int = CASE_SHEET_IMAGES) -> list:
+    """Up to ``n`` images of a category for its contact sheet, deterministic and balanced: one image per (class, domain) group in
+    turn, white and field alternating, until ``n`` are picked, so a domain or class with cases is shown before any is repeated.
+    The result is ordered white then field, by class."""
+    queues = []
+    for cls in CLASS_NAMES:
+        for domain in DOMAINS:
+            group = [r for r in rows if r["category"] == category and r["domain"] == domain and r["true"] == cls]
+            if group:
+                queues.append(sorted(group, key=CASE_ORDER[category]))
+    picked = []
+    while len(picked) < n and any(queues):
+        for queue in queues:
+            if queue and len(picked) < n:
+                picked.append(queue.pop(0))
+    return sorted(picked, key=lambda r: (DOMAINS.index(r["domain"]), CLASS_NAMES.index(r["true"]), r["filename"]))
+
+
+def case_label(row: dict) -> str:
+    """'true ->' over 'predicted (p)' over 'filename  correct/tested'; p is the mean probability of the predicted (modal) class.
+    A fourth line names the wrong class an image that is mostly right was also taken for."""
+    text = f"{row['true']} ->\n{row['modal_pred']} ({row['mean_p_modal']:.2f})\n{row['filename']}  {row['correct']}/{row['tested']} correct"
+    if row["wrong_pred"] and row["modal_pred"] == row["true"]:
+        text += f"\nalso taken for {row['wrong_pred']}"
+    return text
+
+
+def save_case_sheet(data_root, rows: list, category: str, exp_id: str, path: Path | None = None) -> Path:
+    """A contact sheet `cases_<category>.png` (2 rows of 5): the photo (domain-coloured frame and tag), the label
+    `true -> predicted (p)` and how often the image was right. The photos are drawn 1:1 at the figure's resolution."""
+    plt = pyplot()
+    path = path or figures_dir(data_root) / f"cases_{category}.png"
+    picks = select_cases(rows, category)
+    n_rows = max(1, math.ceil(len(picks) / CASE_SHEET_COLUMNS))
+    width_in, margin, gap, tile_w, tile_h, label_h, head = 5.8, 0.08, 0.05, 1.08, 1.9, 0.46, 0.22
+    pitch = (width_in - 2 * margin - tile_w) / (CASE_SHEET_COLUMNS - 1)  # left edge to left edge of neighbouring tiles
+    height_in = head + n_rows * (tile_h + label_h + gap) + margin
+    adjective = {"success": "consistent successes", "failure": "consistent failures", "challenging": "challenging cases"}[category]
+    with plt.rc_context({"font.size": 6}):
+        fig = plt.figure(figsize=(width_in, height_in))
+        fig.text(margin / width_in, 1 - 0.04 / height_in, f"{exp_id}: {adjective} (test images pooled over the 5 splits; label: true -> predicted (mean p))",
+                 fontsize=6.3, fontweight="bold", va="top")
+        if not picks:
+            fig.text(0.5, 0.5, f"no {adjective} in the test predictions", ha="center", va="center", fontsize=8)
+        for slot, row in enumerate(picks):
+            r, c = divmod(slot, CASE_SHEET_COLUMNS)
+            cell_left = margin + c * pitch
+            cell_top = height_in - head - r * (tile_h + label_h + gap)
+            rgb = read_cached_rgb(data_root, row["filename"])
+            scale = min(tile_w * FIGURE_DPI / rgb.shape[1], tile_h * FIGURE_DPI / rgb.shape[0])
+            px = (max(1, round(rgb.shape[1] * scale)), max(1, round(rgb.shape[0] * scale)))
+            w, h = px[0] / FIGURE_DPI, px[1] / FIGURE_DPI
+            ax = fig.add_axes(((cell_left + (tile_w - w) / 2) / width_in, (cell_top - tile_h + (tile_h - h) / 2) / height_in, w / width_in, h / height_in))
+            ax.imshow(cv2.resize(rgb, px, interpolation=cv2.INTER_AREA), interpolation="none", aspect="auto")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_edgecolor(DOMAIN_COLORS[row["domain"]])
+                spine.set_linewidth(1.6)
+            ax.text(0.04, 0.985, DOMAIN_LABELS[row["domain"]].split()[0], transform=ax.transAxes, ha="left", va="top", fontsize=5.5,
+                    fontweight="bold", color="white" if row["domain"] == "white" else "black",
+                    bbox={"boxstyle": "square,pad=0.2", "fc": DOMAIN_COLORS[row["domain"]], "ec": "none"})
+            fig.text((cell_left + tile_w / 2) / width_in, (cell_top - tile_h - 0.03) / height_in, case_label(row), ha="center", va="top",
+                     fontsize=5.6, linespacing=1.15)
+        return finish_figure(fig, path)
+
+
+def write_cases(data_root, results: dict, choices, out=print) -> list | None:
+    """T7.4: cases.csv and the three contact sheets for the recommended method. None while it is not chosen or not complete."""
+    exp_id = recommended_experiment(choices)
+    exp = results.get(exp_id) if exp_id else None
+    if exp is None:
+        warn("cases: skipped, the recommended method is not chosen (gate g2) or not complete")
+        return None
+    rows = case_rows(pool_predictions(data_root, exp))
+    path = results_dir(data_root) / CASES_FILENAME
+    write_text_atomic(path, cases_csv(rows))
+    out(f"summarize: wrote {path}")
+    shown = [name for category in CASE_CATEGORIES for name in (r["filename"] for r in select_cases(rows, category))]
+    if not all((cache_dir(data_root) / name).is_file() for name in shown):
+        warn("cases: contact sheets skipped, the image cache is incomplete (run `prepare`)")
+        return rows
+    for category in CASE_CATEGORIES:
+        out(f"summarize: wrote {save_case_sheet(data_root, rows, category, exp.exp_id)}")
+    return rows
+
+def have(results: dict, *exp_ids) -> bool:
+    return all(exp_id in results for exp_id in exp_ids)
+
+
+def pending_sentence(*exp_ids) -> str:
+    return "Not available yet: " + ", ".join(exp_ids) + " is not complete."
+
+
+def f1_text(exp: ExperimentResults, subset: str = "field", part: str = "test") -> str:
+    return format_mean_std(aggregate(exp, subset, "macro_f1", part), "macro_f1")
+
+
+def paired_text(a: ExperimentResults, b: ExperimentResults, subset: str = "field", part: str = "test") -> str:
+    """'+0.012 +- 0.034; E2-swin-U ahead in 3 of 5 splits' for the per-split difference a - b."""
+    diff = paired_difference(a, b, subset, "macro_f1", part)
+    return f"{diff.mean:+.3f} +- {diff.std:.3f}; {a.exp_id} ahead in {diff.ahead} of {len(diff.values)} splits"
+
+
+def paired_mean(a: ExperimentResults, b: ExperimentResults, subset: str = "field", part: str = "test") -> float:
+    return paired_difference(a, b, subset, "macro_f1", part).mean
+
+
+def direction(value: float, up: str, down: str) -> str:
+    return up if value > 0 else down
+
+
+def per_class_f1_text(exp: ExperimentResults, subset: str = "field") -> str:
+    return ", ".join(f"{cls} {per_class_stat(exp, 'test', subset, cls, 'f1').mean:.3f}" for cls in CLASS_NAMES)
+
+
+def largest_confusions(exp: ExperimentResults, subset: str = "field", top: int = 2) -> str:
+    """The most frequent mistakes (true class predicted as another class) of the summed test confusion matrix, with the share of
+    the true class's images they make up."""
+    matrix = summed_confusion(exp, subset)
+    mistakes = sorted(((int(matrix[i, j]), i, j) for i in range(NUM_CLASSES) for j in range(NUM_CLASSES) if i != j and matrix[i, j] > 0),
+                      key=lambda m: (-m[0], m[1], m[2]))[:top]
+    return "; ".join(f"{CLASS_NAMES[i]} taken for {CLASS_NAMES[j]} in {n} of {int(matrix[i].sum())} images ({n / matrix[i].sum():.0%})"
+                     for n, i, j in mistakes) or "no mistakes"
+
+
+COLLAPSE_RATIO = 0.5  # a class has collapsed under W->F when its field F1 is below this share of the field-trained model's (E1-FF)
+
+
+def domain_questions_findings(results: dict) -> str:
+    """Answers to the four phase-04 questions, in numbers read from the test metrics (field/white macro-F1, mean +- std over the
+    5 splits; paired = per-split difference)."""
+    paragraphs = []
+    if have(results, "E1-FF", "E1-WF"):
+        ff, wf = results["E1-FF"], results["E1-WF"]
+        gap = paired_mean(wf, ff)
+        text = (f"**1. Domain gap.** Field test macro-F1 is {f1_text(ff)} for E1-FF (ResNet50 trained on field images) and {f1_text(wf)} for "
+                f"E1-WF (trained on white images only), so training on white alone {direction(gap, 'raises', 'lowers')} field macro-F1 by "
+                f"{abs(gap):.3f} (paired E1-WF - E1-FF: {paired_text(wf, ff)}).")
+        for exp_id in ("E2-cnx-WF", "E2-swin-WF"):
+            if exp_id in results:
+                text += f" {exp_id} (white only, {BACKBONE_LABELS[results[exp_id].config.backbone]}) reaches {f1_text(results[exp_id])}."
+        if "E3-A-WF" in results:
+            extra = f" (paired E3-A-WF - E2-swin-WF: {paired_text(results['E3-A-WF'], results['E2-swin-WF'])})" if "E2-swin-WF" in results else ""
+            text += (f" With composites E3-A-WF reaches {f1_text(results['E3-A-WF'])}{extra}; its training leaves are white photos, but the "
+                     "backgrounds are field images, so it is not pure W->F.")
+        paragraphs.append(text)
+    else:
+        paragraphs.append("**1. Domain gap.** " + pending_sentence("E1-FF", "E1-WF"))
+    if have(results, "E1-U", "E1-FF"):
+        u, ff = results["E1-U"], results["E1-FF"]
+        diff = paired_mean(u, ff)
+        paragraphs.append(f"**2. Does white data help field?** Field test macro-F1 is {f1_text(u)} for E1-U (white + field) and {f1_text(ff)} for E1-FF "
+                          f"(field only): the unified model is {direction(diff, 'ahead', 'behind')} by {abs(diff):.3f} (paired E1-U - E1-FF: {paired_text(u, ff)}).")
+    else:
+        paragraphs.append("**2. Does white data help field?** " + pending_sentence("E1-U", "E1-FF"))
+    if have(results, "E1-U", "E1-WW"):
+        u, ww = results["E1-U"], results["E1-WW"]
+        diff = paired_mean(u, ww, "white")
+        paragraphs.append(f"**3. Does field data hurt white?** White test macro-F1 is {f1_text(u, 'white')} for E1-U (white + field) and {f1_text(ww, 'white')} for "
+                          f"E1-WW (white only, the E1-WF run): the unified model is {direction(diff, 'ahead', 'behind')} by {abs(diff):.3f} "
+                          f"(paired E1-U - E1-WW: {paired_text(u, ww, 'white')}).")
+    else:
+        paragraphs.append("**3. Does field data hurt white?** " + pending_sentence("E1-U", "E1-WW"))
+    rows = [exp_id for exp_id in ("E1-WF", "E2-cnx-WF", "E2-swin-WF", "E3-A-WF") if exp_id in results]
+    if rows and "E1-FF" in results:
+        lines = [f"- E1-FF (field only, reference): per-class field F1 {per_class_f1_text(results['E1-FF'])}."]
+        for exp_id in rows:
+            exp = results[exp_id]
+            change = {cls: per_class_stat(exp, "test", "field", cls, "f1").mean - per_class_stat(results["E1-FF"], "test", "field", cls, "f1").mean
+                      for cls in CLASS_NAMES}
+            collapsed = [cls for cls in CLASS_NAMES
+                         if per_class_stat(exp, "test", "field", cls, "f1").mean < COLLAPSE_RATIO * per_class_stat(results["E1-FF"], "test", "field", cls, "f1").mean]
+            worst = min(change, key=lambda cls: (change[cls], CLASS_NAMES.index(cls)))
+            lines.append(f"- {exp_id}: per-class field F1 {per_class_f1_text(exp)}. Collapsed: {', '.join(collapsed) if collapsed else 'none'}. "
+                         f"Largest change against E1-FF: {worst} ({change[worst]:+.3f}). Most frequent mistakes: {largest_confusions(exp)}.")
+        paragraphs.append("**4. Which classes collapse under W->F?** Per-class field test F1 (mean over the 5 splits). A class counts as collapsed when its "
+                          f"F1 is below {COLLAPSE_RATIO:.0%} of E1-FF's for that class. The mistakes are counted in the "
+                          "confusion matrices added up over the 5 test splits (`confusion_<exp>_field.png`).\n\n" + "\n".join(lines))
+    else:
+        paragraphs.append("**4. Which classes collapse under W->F?** " + pending_sentence("E1-FF", "E1-WF"))
+    return "\n\n".join(paragraphs)
+
+
+HARDWARE_COMPARISONS = (("E1-FF", "E1-WF"), ("E1-U", "E1-FF"), ("E1-U", "E1-WW"), ("E2-cnx-U", "E1-U"), ("E2-swin-U", "E1-U"),
+                        ("E2-swin-U", "E2-cnx-U"), ("E2-swin-WF", "E1-WF"), ("E3-A", "E2-swin-U"), ("E3-A-WF", "E2-swin-WF"))
+
+
+def hardware_findings(results: dict, data_root) -> str:
+    """Which runs were made on which hardware (from env.json), and which comparisons of the tables cross hardware. '' when no
+    complete experiment has an env.json."""
+    readers = {}  # run folder -> the experiment IDs that read it (E1-U reads E0-rect)
+    for exp_id in REPORTED_EXPERIMENTS:
+        if exp_id in results:
+            readers.setdefault(results[exp_id].run_name, []).append(exp_id)
+    groups = {}
+    for run_name, exp_ids in readers.items():
+        signature = hardware_signature(results[exp_ids[0]], data_root)
+        aliases = [e for e in exp_ids if e != run_name]
+        if signature:
+            groups.setdefault(signature, []).append(run_name + (f" (also {', '.join(aliases)})" if aliases else ""))
+    lines = [f"- {', '.join(names)}: {hardware_text(signature)}" for signature, names in groups.items()]
+    if not lines:
+        return ""
+    text = "Hardware per run folder, read from each run's env.json:\n\n" + "\n".join(lines)
+    if len(groups) > 1:
+        crossing = []
+        for a, b in HARDWARE_COMPARISONS:
+            if have(results, a, b) and hardware_signature(results[a], data_root) != hardware_signature(results[b], data_root):
+                crossing.append(f"{a} vs {b}")
+        text += ("\n\nThe runs were not all made on the same hardware, torch build and precision, so a small difference between experiment "
+                 "families can include hardware and numerics effects (fp16 autocast on CUDA against fp32 on the Mac, different GPUs and "
+                 "torch builds), not only the method. Comparisons inside one group share their hardware. Comparisons made in the tables that "
+                 "cross groups: " + (", ".join(crossing) if crossing else "none") + ". Read those gaps against the paired std. Training "
+                 "times (table_runtime) are only comparable inside a group.")
+    else:
+        text += "\n\nAll runs share the same hardware, torch build and precision, so comparisons between experiments carry no hardware effect."
+    return text
+
+
+def cases_findings(rows: list, exp_id: str) -> str:
+    """Counts of the T7.4 case categories for the recommended method, by domain, and where the failures concentrate."""
+    total = len(rows)
+    once = sum(r["tested"] == 1 for r in rows)
+    by = lambda category, domain=None: [r for r in rows if r["category"] == category and (domain is None or r["domain"] == domain)]  # noqa: E731
+    sentences = [f"Pooled test predictions of {exp_id} over the 5 splits cover {total} distinct images; {once} of them were in the test part of only one split."]
+    names = {"success": "consistent successes (right in every split they were tested in, top probability never below "
+                        f"{CASE_LOW_CONFIDENCE:g})", "failure": "consistent failures (wrong in every split they were tested in)",
+             "challenging": f"challenging cases (right in some splits and wrong in others, or right but below {CASE_LOW_CONFIDENCE:g} top probability)"}
+    for category in CASE_CATEGORIES:
+        found = by(category)
+        sentences.append(f"{len(found)} {names[category]}: {len(by(category, 'white'))} white, {len(by(category, 'field'))} field.")
+    failures = by("failure")
+    if failures:
+        pairs = Counter((r["true"], r["modal_pred"]) for r in failures).most_common(3)
+        sentences.append("Most frequent failure pairs (true -> predicted): " + "; ".join(f"{t} -> {p} ({n})" for (t, p), n in pairs) + ".")
+        tested_once = sum(r["tested"] == 1 for r in failures)
+        sentences.append(f"{tested_once} of the {len(failures)} failures were tested in one split only, so for them 'every time' rests on one prediction.")
+    sentences.append("The per-image list is `cases.csv`; the contact sheets are `cases_success.png`, `cases_failure.png` and `cases_challenging.png`.")
+    return " ".join(sentences)
+
 FINDINGS_TITLE = (
     "# Findings\n\n"
     "Sections between `<!-- auto:NAME:begin -->` and `<!-- auto:NAME:end -->` markers are regenerated by "
@@ -5429,15 +6252,16 @@ def g2_findings(result: dict) -> str:
 
 
 def summarize(data_root, out=print) -> None:
-    """Regenerate every table and findings section that the runs available so far support. Experiments that are
+    """Regenerate every table, figure and findings section that the runs available so far support. Experiments that are
     incomplete or do not match the registry are skipped with a warning."""
     data_root = Path(data_root)
     choices = load_choices(data_root)
     results = load_experiments(data_root, (*ANALYSIS_EXPERIMENTS, *METHOD_EXPERIMENTS, SEGMENTER_EXPERIMENT), choices)
     optional = [exp_id for exp_id in OPTIONAL_DOMAIN_EXPERIMENTS if (runs_dir(data_root) / exp_id).is_dir()]
     results.update(load_experiments(data_root, optional, choices))
-    tables = (table_input_mode(results), table_required(results), table_domains(results, choices), table_methods(results, choices),
-              table_segmenter(results.get(SEGMENTER_EXPERIMENT), data_root))
+    tables = (table_input_mode(results), table_required(results, choices), table_domains(results, choices), table_methods(results, choices),
+              table_segmenter(results.get(SEGMENTER_EXPERIMENT), data_root), table_per_class(results, choices),
+              table_hparams(results, data_root), table_runtime(results, data_root))
     for table in tables:
         for path in write_table(data_root, table):
             out(f"summarize: wrote {path}")
@@ -5454,6 +6278,16 @@ def summarize(data_root, out=print) -> None:
     recommended = choices.data.get("recommended")
     if isinstance(recommended, dict) and recommended.get("evidence"):
         blocks["g2"] = auto_block("g2", "G2 recommended method", g2_findings(recommended))
+    for path in write_figures(data_root, results, choices):
+        out(f"summarize: wrote {path}")
+    cases = write_cases(data_root, results, choices, out)
+    if any(exp_id in results for exp_id in ("E1-U", "E1-FF", "E1-WF")):
+        blocks["questions"] = auto_block("questions", "Domain transfer questions (phase 04)", domain_questions_findings(results))
+    if cases is not None:
+        blocks["cases"] = auto_block("cases", "Success, failure and challenging cases (T7.4)", cases_findings(cases, recommended_experiment(choices)))
+    hardware = hardware_findings(results, data_root)
+    if hardware:
+        blocks["hardware"] = auto_block("hardware", "Hardware", hardware)
     path = results_dir(data_root) / "findings.md"
     existing = read_file_bytes(path).decode("utf-8") if path.is_file() else None
     write_text_atomic(path, update_findings_text(existing, blocks))
@@ -6114,6 +6948,15 @@ def cmd_summarize(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     return EXIT_OK
 
+
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    try:
+        run_benchmark(Path(args.data_root), resolve_device(args.device))
+    except (ExperimentError, DatasetError, RuntimeError) as exc:
+        print(f"benchmark: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
+
 def resolve_device(requested: str = "auto") -> str:
     """Map the --device flag to a concrete torch device name; raise if it is unavailable."""
     import torch
@@ -6487,7 +7330,12 @@ COMMANDS = (
         cmd_seg_eval,
         _configure_seg_eval,
     ),
-    Command("summarize", "aggregate all runs into tables and findings (figures follow in phase 07)", cmd_summarize),
+    Command("summarize", "aggregate all runs into tables, figures, failure cases and findings", cmd_summarize),
+    Command(
+        "benchmark",
+        "time inference per image of the three backbones on this device and write _work/results/inference_benchmark.json (summarize reads it)",
+        cmd_benchmark,
+    ),
     Command("gradcam", "Grad-CAM figures for one experiment and split", not_implemented("gradcam", "07"), _configure_gradcam),
     Command("predict", "classify a single image and print class probabilities", cmd_predict, _configure_predict),
     Command("smoke", "tiny end-to-end check: imports, device, data path, one tiny experiment and predict", cmd_smoke),

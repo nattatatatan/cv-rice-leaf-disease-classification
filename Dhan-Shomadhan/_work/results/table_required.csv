@@ -1,4 +1,4 @@
 Experiment,Backbone,White macro-F1,White accuracy (%),Field macro-F1,Field accuracy (%),Mixed macro-F1,Mixed accuracy (%),Domain-balanced macro-F1,Domain-balanced accuracy (%)
 E1-U,resnet50,0.802 +- 0.062,82.9 +- 5.2,0.687 +- 0.048,68.8 +- 4.6,0.772 +- 0.049,78.8 +- 4.6,0.744 +- 0.048,75.8 +- 4.3
 E2-cnx-U,convnext_tiny,0.791 +- 0.035,82.2 +- 3.1,0.694 +- 0.079,70.0 +- 7.1,0.764 +- 0.010,78.6 +- 0.8,0.743 +- 0.025,76.1 +- 2.2
-E2-swin-U,swin_t,0.798 +- 0.053,82.7 +- 4.9,0.675 +- 0.072,67.6 +- 6.0,0.763 +- 0.033,78.3 +- 3.6,0.736 +- 0.036,75.1 +- 3.4
+E2-swin-U (recommended),swin_t,0.798 +- 0.053,82.7 +- 4.9,0.675 +- 0.072,67.6 +- 6.0,0.763 +- 0.033,78.3 +- 3.6,0.736 +- 0.036,75.1 +- 3.4
