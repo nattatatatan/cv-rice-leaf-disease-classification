@@ -6,17 +6,13 @@ from pathlib import Path
 
 import pytest
 
-NOT_IMPLEMENTED = {
-    "reproduce": [],
-}
-
 
 def test_help_exits_zero(gs, capsys):
     with pytest.raises(SystemExit) as excinfo:
         gs.run_cli(["--help"])
     assert excinfo.value.code == 0
     out = capsys.readouterr().out
-    for command in [*NOT_IMPLEMENTED, "gradcam", "smoke", "download-weights", "run", "choose-lr", "predict", "benchmark"]:
+    for command in ["reproduce", "gradcam", "smoke", "download-weights", "run", "choose-lr", "predict", "benchmark"]:
         assert command in out
 
 
@@ -26,13 +22,6 @@ def test_help_as_subprocess(group_file):
     )
     assert result.returncode == 0
     assert "--data-root" in result.stdout
-
-
-@pytest.mark.parametrize("command", sorted(NOT_IMPLEMENTED))
-def test_stub_commands_fail_with_clear_message(gs, capsys, command):
-    code = gs.run_cli([command, *NOT_IMPLEMENTED[command]])
-    assert code != 0
-    assert "not implemented yet (phase" in capsys.readouterr().err
 
 
 def test_global_flags_before_and_after_command(gs):

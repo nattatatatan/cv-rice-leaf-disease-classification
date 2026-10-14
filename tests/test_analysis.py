@@ -8,6 +8,7 @@ The last tests read the committed E0 runs and pin the numbers that gate G0 decid
 import csv
 import json
 import math
+import re
 import shutil
 from collections import Counter
 
@@ -284,6 +285,9 @@ def test_g1_tie_only_looks_at_the_top_two(gs):
 
 def test_gate_g0_writes_choice_with_evidence_and_keeps_other_keys(gs, root):
     add_e0(gs, root, squash=0.80, pad=0.74, rect=0.79, fields=(0.72, 0.60, 0.68))
+    data = json.loads(gs.choices_path(root).read_text())
+    del data["input_mode"]  # no recorded decision yet: the gate writes it (with a recorded one it only verifies)
+    gs.write_json(gs.choices_path(root), data, indent=2)
     before = json.loads(gs.choices_path(root).read_text())
     lines = []
     result = gs.run_gate(root, "g0", out=lines.append)
@@ -345,6 +349,69 @@ def test_gate_g1_clear_winner_and_missing_candidates(gs, root):
     assert result["value"] == "convnext_tiny" and result["evidence"]["decided_by"] == "highest mean"
 
 
+def test_gate_g0_without_a_recorded_decision_writes_it(gs, root):
+    data = json.loads(gs.choices_path(root).read_text())
+    del data["input_mode"]
+    gs.choices_path(root).write_text(json.dumps(data))
+    add_e0(gs, root, squash=0.80, pad=0.74, rect=0.79)
+    lines = []
+    assert gs.run_gate(root, "g0", out=lines.append)["outcome"] == "written"
+    assert json.loads(gs.choices_path(root).read_text())["input_mode"]["value"] == "rect" and "written to" in lines[-1]
+
+
+def test_gate_g0_with_the_same_decision_keeps_the_recorded_entry_and_shows_both_numbers(gs, root):
+    add_e0(gs, root, squash=0.80, pad=0.74, rect=0.79)
+    assert gs.run_gate(root, "g0", out=lambda text: None)["outcome"] == "matches", "the root records rect with empty evidence"
+    add_e0(gs, root, squash=0.80, pad=0.74, rect=0.795)  # the runs move a little, the decision does not
+    before = gs.choices_path(root).read_bytes()
+    lines = []
+    result = gs.run_gate(root, "g0", out=lines.append)
+    assert result["outcome"] == "matches" and result["value"] == "rect"
+    assert gs.choices_path(root).read_bytes() == before, "the recorded entry and its evidence are not rewritten"
+    text = "\n".join(lines)
+    assert "gate g0: the recomputed input_mode = 'rect' matches the recorded one" in text and "written to" not in text
+    assert re.search(r"rect\s+recorded not recorded\s+recomputed 0\.795 \+- 0\.016", text)
+    # with evidence on file, both numbers are shown
+    gs.write_choice(root, "input_mode", "rect", gs.evaluate_g0({m: gs.load_experiment(root, f"E0-{m}", gs.load_choices(root))[0] for m in gs.INPUT_MODES})["evidence"])
+    lines.clear()
+    gs.run_gate(root, "g0", out=lines.append)
+    assert re.search(r"rect\s+recorded 0\.795 \+- 0\.016\s+recomputed 0\.795 \+- 0\.016", "\n".join(lines))
+
+
+def test_gate_g0_with_another_decision_warns_keeps_the_recorded_one_and_exits_zero(gs, root, capsys):
+    add_e0(gs, root, squash=0.90, pad=0.74, rect=0.70)
+    before = gs.choices_path(root).read_bytes()
+    lines = []
+    result = gs.run_gate(root, "g0", out=lines.append)
+    assert result["outcome"] == "differs" and result["value"] == "squash"
+    assert gs.choices_path(root).read_bytes() == before and gs.load_choices(root).get("input_mode") == "rect"
+    text = "\n".join(lines)
+    assert "WARNING - the recomputed input_mode = 'squash' differs from the recorded 'rect'" in text
+    assert "frozen at results-freeze" in text and "--force overwrites" in text
+    assert gs.run_cli(["--data-root", str(root), "gate", "g0"]) == 0, "exit status 0, so that `reproduce` goes on"
+    assert "differs from the recorded" in capsys.readouterr().out and gs.choices_path(root).read_bytes() == before
+    assert gs.run_cli(["--data-root", str(root), "gate", "g0", "--force"]) == 0
+    assert gs.load_choices(root).get("input_mode") == "squash" and "overwrote" not in capsys.readouterr().err
+    assert gs.run_gate(root, "g0", out=lambda text: None, force=True)["outcome"] == "overwritten"
+
+
+def test_gate_g1_verifies_a_recorded_backbone(gs, root):
+    add_g1_candidates(gs, root, resnet=0.77, cnx=0.85, swin=0.80)
+    lines = []
+    assert gs.run_gate(root, "g1", out=lines.append)["outcome"] == "written" and "written to" in lines[-1]
+    recorded = gs.choices_path(root).read_bytes()
+    lines.clear()
+    assert gs.run_gate(root, "g1", out=lines.append)["outcome"] == "matches"
+    assert gs.choices_path(root).read_bytes() == recorded and re.search(r"recorded 0\.850 \+- 0\.016\s+recomputed 0\.850 \+- 0\.016", "\n".join(lines))
+    add_g1_candidates(gs, root, resnet=0.77, cnx=0.80, swin=0.90)  # now Swin-T wins
+    lines.clear()
+    result = gs.run_gate(root, "g1", out=lines.append)
+    assert result["outcome"] == "differs" and result["value"] == "swin_t" and gs.choices_path(root).read_bytes() == recorded
+    assert "differs from the recorded 'convnext_tiny'" in "\n".join(lines)
+    assert gs.run_gate(root, "g1", out=lambda text: None, force=True)["outcome"] == "overwritten"
+    assert gs.load_choices(root).get("backbone") == "swin_t"
+
+
 def test_gate_command_exit_codes(gs, root, capsys):
     add_e0(gs, root, 0.80, 0.74, 0.79)
     assert gs.run_cli(["--data-root", str(root), "gate", "g0"]) == 0
@@ -355,7 +422,7 @@ def test_gate_command_exit_codes(gs, root, capsys):
     err = capsys.readouterr().err
     assert "gate g2: FAIL" in err and "backbone" in err
     assert gs.run_cli(["--data-root", str(root), "gate", "g0", "--cut", "A"]) == 1
-    assert "belong to gate g2" in capsys.readouterr().err
+    assert "--cut belongs to gate g2" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         gs.run_cli(["--data-root", str(root), "gate", "g3"])
 
@@ -601,6 +668,25 @@ def test_gate_g2_is_frozen_once_written(gs, g2_root, capsys):
     assert "frozen" in capsys.readouterr().err and gs.choices_path(root).read_bytes() == frozen
     assert gs.run_cli(["--data-root", str(root), "gate", "g2", "--cut", "B", "--force"]) == 0
     assert gs.load_choices(root).raw("recommended") == "E1-U"
+
+
+def test_gate_g2_not_strict_keeps_a_different_frozen_recommendation_and_warns(gs, g2_root):
+    root = g2_root
+    add_run(gs, root, "E0-rect", 0.78)
+    add_run(gs, root, "E3-A", 0.84)
+    assert gs.run_gate(root, "g2", out=lambda _: None, cut=("B",))["outcome"] == "written"
+    frozen = gs.choices_path(root).read_bytes()
+    lines = []
+    assert gs.run_gate(root, "g2", out=lines.append, cut=("B",), strict=False)["outcome"] == "matches"
+    assert gs.choices_path(root).read_bytes() == frozen and "matches the recorded one" in "\n".join(lines)
+    add_run(gs, root, "E3-A", 0.70)  # the runs change and would now pick plain
+    lines.clear()
+    result = gs.run_gate(root, "g2", out=lines.append, cut=("B",), strict=False)
+    assert result["outcome"] == "differs" and result["value"] == "E1-U" and gs.choices_path(root).read_bytes() == frozen
+    assert "differs from the recorded 'E3-A'" in "\n".join(lines)
+    with pytest.raises(gs.ExperimentError, match="frozen"):  # the command itself stays strict
+        gs.run_gate(root, "g2", out=lambda _: None, cut=("B",))
+    assert gs.run_gate(root, "g2", out=lambda _: None, cut=("B",), force=True)["outcome"] == "overwritten"
 
 
 def test_table_methods_shows_test_numbers_only_after_g2(gs, g2_root):

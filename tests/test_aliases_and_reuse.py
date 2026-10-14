@@ -3,6 +3,7 @@ the winning sweep run as split 0 of the real run."""
 
 import dataclasses
 import json
+import re
 
 import pytest
 
@@ -121,6 +122,59 @@ def test_choose_lr_copies_the_winning_sweep_run_to_split_0_and_run_skips_it(gs, 
     assert code == 0 and "skipped" in capsys.readouterr().out
     # the summary of the T3.4 rule is unchanged
     assert choices.get("lr", "convnext_tiny") == 3e-4
+
+
+def test_choose_lr_with_the_same_lr_as_recorded_keeps_the_entry_and_still_reuses_the_sweep_run(gs, root):
+    make_sweep_runs(gs, root, scores=(0.70, 0.60))  # root records convnext_tiny lr 1e-4 (empty evidence)
+    before = gs.choices_path(root).read_bytes()
+    lines = []
+    result = gs.choose_lr(root, "convnext_tiny", out=lines.append)
+    assert result["outcome"] == "matches" and result["lr"] == 1e-4 and result["split_0"] == "copied"
+    assert gs.choices_path(root).read_bytes() == before, "the recorded entry is not rewritten"
+    text = "\n".join(lines)
+    assert "choose-lr: the recomputed lr[convnext_tiny] = 0.0001 matches the recorded one" in text and "written to" not in text
+    assert "lr 1e-4" in text and "recorded not recorded" in text and "recomputed 0.700" in text and "recomputed 0.600" in text
+    assert json.loads((gs.split_dir(gs.runs_dir(root) / "E2-cnx-U", 0) / "provenance.json").read_text())["lr"] == 1e-4
+    # with the evidence on file, the recorded numbers are shown next to the recomputed ones
+    gs.write_choice(root, "lr", 1e-4, result["evidence"], sub="convnext_tiny")
+    lines.clear()
+    assert gs.choose_lr(root, "convnext_tiny", out=lines.append)["outcome"] == "matches"
+    assert re.search(r"lr 1e-4\s+recorded 0\.700\s+recomputed 0\.700", "\n".join(lines))
+
+
+def test_choose_lr_with_another_lr_keeps_the_recorded_one_and_copies_only_its_sweep_run(gs, root, capsys):
+    make_sweep_runs(gs, root, scores=(0.60, 0.70))  # 3e-4 wins, root records 1e-4
+    before = gs.choices_path(root).read_bytes()
+    lines = []
+    result = gs.choose_lr(root, "convnext_tiny", out=lines.append)
+    assert result["outcome"] == "differs" and result["lr"] == 1e-4 and result["recomputed_lr"] == 3e-4
+    assert gs.choices_path(root).read_bytes() == before and gs.load_choices(root).get("lr", "convnext_tiny") == 1e-4
+    text = "\n".join(lines)
+    assert "WARNING - the recomputed lr[convnext_tiny] = 0.0003 differs from the recorded 0.0001" in text and "--force overwrites" in text
+    # the real split 0 is the sweep run at the recorded lr (the same training), never the one at the lr that lost the comparison
+    real = gs.split_dir(gs.runs_dir(root) / "E2-cnx-U", 0)
+    assert result["split_0"] == "copied" and (real / "best.pt").read_bytes() == b"checkpoint-100"
+    assert json.loads((real / "provenance.json").read_text())["lr"] == 1e-4 and "the recorded lr" in lines[-1]
+    fingerprint = gs.expected_fingerprint(gs.resolve_experiment("E2-cnx-U", gs.load_choices(root)).config)
+    assert gs.result_state(real, gs.load_split(root, 0)["sha256"], fingerprint)[0] == "fresh"
+    assert gs.run_cli(["choose-lr", "--backbone", "convnext_tiny", "--data-root", str(root)]) == 0, "exit status 0, so that `reproduce` goes on"
+    assert "differs from the recorded" in capsys.readouterr().out
+
+
+def test_choose_lr_with_a_recorded_lr_that_was_not_swept_copies_nothing(gs, root):
+    make_sweep_runs(gs, root, scores=(0.60, 0.70))
+    gs.write_choice(root, "lr", 5e-4, sub="convnext_tiny")
+    result = gs.choose_lr(root, "convnext_tiny", out=lambda text: None)
+    assert result["outcome"] == "differs" and result["split_0"] == "not reused" and not (gs.runs_dir(root) / "E2-cnx-U").exists()
+
+
+def test_choose_lr_force_overwrites_the_recorded_lr(gs, root, capsys):
+    make_sweep_runs(gs, root, scores=(0.60, 0.70))
+    assert gs.run_cli(["choose-lr", "--backbone", "convnext_tiny", "--data-root", str(root), "--force"]) == 0
+    out = capsys.readouterr().out
+    assert gs.load_choices(root).get("lr", "convnext_tiny") == 3e-4 and "written to" in out and "--force: it replaced the recorded one" in out
+    real = gs.split_dir(gs.runs_dir(root) / "E2-cnx-U", 0)
+    assert (real / "best.pt").read_bytes() == b"checkpoint-300" and json.loads((real / "provenance.json").read_text())["lr"] == 3e-4
 
 
 def test_choose_lr_picks_the_other_sweep_run_when_it_wins(gs, without_e2_lrs):

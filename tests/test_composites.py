@@ -623,10 +623,48 @@ def test_choose_composites_records_the_better_validation_factor_and_reuses_the_s
 
         shutil.rmtree(run)
     fake_composite_sweep(gs, root, scores=(0.8, 0.7))
-    gs.choose_composites(root, out=lambda _: None)
+    gs.choose_composites(root, out=lambda _: None, force=True)
     choices = gs.load_choices(root)
     assert choices.get("composite_n_factor") == 0.5 and gs.resolve_experiment("E3-A-WF", choices).composite_factor == 0.5
     assert (gs.runs_dir(root) / "E3-A" / "split_0" / "provenance.json").is_file()
+
+
+def test_choose_composites_with_the_same_factor_as_recorded_keeps_the_entry_and_still_reuses_the_sweep_run(gs, method_run_root):
+    root = method_run_root
+    gs.write_choice(root, "composite_n_factor", 1.0)
+    fake_composite_sweep(gs, root, scores=(0.6, 0.7))
+    before = gs.choices_path(root).read_bytes()
+    lines = []
+    result = gs.choose_composites(root, out=lines.append)
+    assert result["outcome"] == "matches" and result["n_factor"] == 1.0 and result["split_0"] == "copied"
+    assert gs.choices_path(root).read_bytes() == before
+    text = "\n".join(lines)
+    assert "matches the recorded one" in text and "written to" not in text and "recorded not recorded" in text and "recomputed 0.700" in text
+    assert json.loads((gs.split_dir(gs.runs_dir(root) / "E3-A", 0) / "provenance.json").read_text())["n_factor"] == 1.0
+
+
+def test_choose_composites_with_another_factor_keeps_the_recorded_one_and_copies_only_its_sweep_run(gs, method_run_root, capsys):
+    root = method_run_root
+    gs.write_choice(root, "composite_n_factor", 0.5)
+    fake_composite_sweep(gs, root, scores=(0.6, 0.7))  # 1x wins, 0.5x is recorded
+    for factor in gs.COMPOSITE_N_FACTORS:
+        (gs.split_dir(gs.sweep_dir(root) / gs.composite_sweep_run_name("E3-A", factor), 0) / "best.pt").write_bytes(b"x%g" % factor)
+    before = gs.choices_path(root).read_bytes()
+    lines = []
+    result = gs.choose_composites(root, out=lines.append)
+    assert result["outcome"] == "differs" and result["n_factor"] == 0.5 and result["recomputed_n_factor"] == 1.0
+    assert gs.choices_path(root).read_bytes() == before and gs.load_choices(root).get("composite_n_factor") == 0.5
+    text = "\n".join(lines)
+    assert "WARNING - the recomputed composite_n_factor = 1.0 differs from the recorded 0.5" in text and "--force overwrites" in text
+    real = gs.split_dir(gs.runs_dir(root) / "E3-A", 0)
+    assert result["split_0"] == "copied" and (real / "best.pt").read_bytes() == b"x0.5" and "the recorded factor" in lines[-1]
+    assert json.loads((real / "provenance.json").read_text())["n_factor"] == 0.5
+    resolved = gs.resolve_experiment("E3-A", gs.load_choices(root))
+    assert gs.result_state(real, gs.load_split(root, 0)["sha256"], gs.expected_fingerprint(resolved.config, resolved.composite_factor))[0] == "fresh"
+    assert gs.run_cli(["choose-composites", "--data-root", str(root)]) == 0, "exit status 0, so that `reproduce` goes on"
+    assert "differs from the recorded" in capsys.readouterr().out
+    assert gs.run_cli(["choose-composites", "--data-root", str(root), "--force"]) == 0
+    assert gs.load_choices(root).get("composite_n_factor") == 1.0
 
 
 def test_choose_composites_ties_go_to_the_default_and_bad_sweeps_are_refused(gs, method_run_root, capsys):

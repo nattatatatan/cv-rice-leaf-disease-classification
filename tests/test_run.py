@@ -173,10 +173,12 @@ def test_choose_lr_records_the_better_validation_lr(gs, tmp_path):
     assert entry["evidence"]["val_mixed_macro_f1"] == {"1e-4": 0.5, "3e-4": 0.7} and entry["evidence"]["experiment"] == "E0-rect"
     assert "3e-4" in lines[0]
     make_sweep(gs, root, scores=(0.8, 0.7))
-    gs.choose_lr(root, "resnet50", out=lambda _: None)
+    assert gs.choose_lr(root, "resnet50", out=lambda _: None)["outcome"] == "differs"
+    assert gs.load_choices(root).get("lr", "resnet50") == 3e-4, "a recorded lr is kept unless --force"
+    gs.choose_lr(root, "resnet50", out=lambda _: None, force=True)
     assert gs.load_choices(root).get("lr", "resnet50") == 1e-4
     make_sweep(gs, root, scores=(0.7, 0.7))
-    gs.choose_lr(root, "resnet50", out=lambda _: None)
+    assert gs.choose_lr(root, "resnet50", out=lambda _: None)["outcome"] == "matches"
     assert gs.load_choices(root).get("lr", "resnet50") == 1e-4, "ties go to the smaller lr"
 
 

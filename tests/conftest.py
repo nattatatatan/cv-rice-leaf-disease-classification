@@ -105,3 +105,34 @@ def make_cache(gs, root, n=8, size=(260, 120)):
         gs.write_bytes_atomic(gs.cache_dir(root) / name, gs.encode_jpeg(rgb, 95))
         records.append(gs.Record(name, f"x/{name}", cls, gs.CLASS_NAMES.index(cls), domain, 1, ""))
     return records
+
+
+# ---------------------------------------------------------------------------
+# Guard: no test may write to the real data root (the committed results are frozen)
+# ---------------------------------------------------------------------------
+
+REAL_DATA_ROOT = REPO_ROOT / "Dhan-Shomadhan"
+GUARDED_PATHS = ("index.json", "splits", "results", "runs", "figures", "annotations/selection.json")
+
+
+def snapshot_real_results() -> dict:
+    """(size, mtime) of every committed result file under the real data root (scratch runs are not results)."""
+    work = REAL_DATA_ROOT / "_work"
+    state = {}
+    for name in GUARDED_PATHS:
+        base = work / name
+        for path in ([base] if base.is_file() else sorted(base.rglob("*")) if base.is_dir() else []):
+            if path.is_file() and "scratch" not in path.relative_to(work).parts:
+                stat = path.stat()
+                state[str(path.relative_to(work))] = (stat.st_size, stat.st_mtime_ns)
+    return state
+
+
+@pytest.fixture(scope="session", autouse=True)
+def real_data_root_is_not_written():
+    """Fails the session if any test (or the code under test) created, changed or deleted a file of the frozen results."""
+    before = snapshot_real_results()
+    yield
+    after = snapshot_real_results()
+    changed = sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
+    assert not changed, f"the tests wrote to the real data root {REAL_DATA_ROOT}: {changed[:10]}"

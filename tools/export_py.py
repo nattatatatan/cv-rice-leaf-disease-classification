@@ -12,7 +12,7 @@ What it does:
 2. Collects every code cell whose first line is exactly ``#| export`` (the marker
    line itself is dropped) and concatenates them, with a comment header per notebook.
 3. Prepends a module docstring and appends ``if __name__ == "__main__": main()``.
-4. Embeds the JSON files listed in ``EMBEDDED_FILES`` (``annotations/*.json``) as Python
+4. Embeds the JSON files listed in ``EMBEDDED_FILES`` (``annotations/*.json`` and the frozen ``choices.json``) as Python
    constants before the notebook code, because the submission is the single ``.py``.
 5. Validates the result and refuses to write anything if a check fails:
    - cells contain no notebook-only syntax (``!cmd``, ``%magic``, ``display(...)``),
@@ -101,6 +101,10 @@ EMBEDDED_FILES = (
     EmbeddedFile("annotations/white_rejects.json", "WHITE_REJECTS"),
     # Phase 06 (T6.1): hand-annotated salient-leaf polygons. Skipped until the file exists.
     EmbeddedFile("annotations/field_salient_leaf.json", "FIELD_ANNOTATIONS", required=False),
+    # Phase 08 (T8): the decisions frozen at results-freeze (input mode, lr per backbone, backbone, composites, recommended
+    # method) with their evidence. `prepare` seeds _work/results/choices.json from it, so a marker with only the .py can
+    # `run --exp E2-swin-U` right away and land in the same run folder layout as the reported runs.
+    EmbeddedFile("Dhan-Shomadhan/_work/results/choices.json", "FROZEN_CHOICES"),
 )
 
 LITERAL_WIDTH = 100  # soft line-length limit of embedded literals

@@ -397,6 +397,454 @@ FIELD_ANNOTATIONS = {
 }
 
 
+# ---- embedded:Dhan-Shomadhan/_work/results/choices.json ----
+# Embedded from Dhan-Shomadhan/_work/results/choices.json by tools/export_py.py. Edit that file, not this block.
+FROZEN_CHOICES = {
+    "lr": {
+        "resnet50": {
+            "value": 0.0001,
+            "evidence": {
+                "experiment": "E0-rect",
+                "split": 0,
+                "split_sha256": "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                "val_mixed_macro_f1": {"1e-4": 0.7735882221227048, "3e-4": 0.7524463210345563},
+                "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr",
+            },
+        },
+        "convnext_tiny": {
+            "value": 0.0001,
+            "evidence": {
+                "experiment": "E2-cnx-U",
+                "split": 0,
+                "split_sha256": "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                "val_mixed_macro_f1": {"1e-4": 0.8097466050213932, "3e-4": 0.7878466657343928},
+                "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr",
+            },
+        },
+        "swin_t": {
+            "value": 0.0003,
+            "evidence": {
+                "experiment": "E2-swin-U",
+                "split": 0,
+                "split_sha256": "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                "val_mixed_macro_f1": {"1e-4": 0.7730299114866666, "3e-4": 0.8032132419863718},
+                "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr",
+            },
+        },
+    },
+    "input_mode": {
+        "value": "rect",
+        "evidence": {
+            "rule": "G0 (phase 04): choose the input mode with the highest validation mixed macro-F1 (mean over the 5 splits; std with ddof=1). If the top two are within one std of each other, prefer rect (it preserves leaf geometry at no extra cost). The top two are 'within one std' when their gap in mean is at most the larger of their two stds.",
+            "metric": "validation mixed macro-F1 (mean over the 5 splits; std with ddof=1)",
+            "decided_by": "within one std -> rect",
+            "ranking": ["squash", "rect", "pad"],
+            "top_two_gap": 0.012879497065186984,
+            "tolerance_one_std": 0.021076003698026393,
+            "candidates": {
+                "squash": {
+                    "experiment": "E0-squash",
+                    "run_folder": "E0-squash",
+                    "config_fingerprint": "5c75631cb0ea8561f8b19b6fa8cb84328c0208be94cd0174398068c8d7a77fd7",
+                    "split_sha256": [
+                        "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                        "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+                        "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+                        "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+                        "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa",
+                    ],
+                    "val_mixed_macro_f1": {
+                        "mean": 0.7800706371657464,
+                        "std": 0.017246224460146262,
+                        "per_split": [
+                            0.7665816671496184, 0.80619918699187, 0.7673445758279576,
+                            0.7710828417845961, 0.7891449140746893,
+                        ],
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.7079890791876211,
+                        "std": 0.018474652218310145,
+                        "per_split": [
+                            0.6905847953216374, 0.7222832722832723, 0.7239139515455305,
+                            0.6854214413037942, 0.717741935483871,
+                        ],
+                    },
+                },
+                "pad": {
+                    "experiment": "E0-pad",
+                    "run_folder": "E0-pad",
+                    "config_fingerprint": "4130de75e0059cf9ab00e6eca0d037064b9a2268f3a39a38cedd33cdfbe5f3e5",
+                    "split_sha256": [
+                        "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                        "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+                        "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+                        "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+                        "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa",
+                    ],
+                    "val_mixed_macro_f1": {
+                        "mean": 0.7413815394846204,
+                        "std": 0.02703910022270109,
+                        "per_split": [
+                            0.7078938839374411, 0.7487886697867214, 0.7731264106637585,
+                            0.7195180258338153, 0.7575807072013659,
+                        ],
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.6566379338693243,
+                        "std": 0.05983285253508311,
+                        "per_split": [
+                            0.6138892686261108, 0.6883116883116884, 0.7444257703081233,
+                            0.5977867746288799, 0.6387761674718198,
+                        ],
+                    },
+                },
+                "rect": {
+                    "experiment": "E0-rect",
+                    "run_folder": "E0-rect",
+                    "config_fingerprint": "63380991647ac0b5568bf5453af99f9362f5271e435c70e5f50123290c1198b3",
+                    "split_sha256": [
+                        "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                        "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+                        "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+                        "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+                        "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa",
+                    ],
+                    "val_mixed_macro_f1": {
+                        "mean": 0.7671911401005594,
+                        "std": 0.021076003698026393,
+                        "per_split": [
+                            0.7735882221227048, 0.7785819664155389, 0.7602640429212437,
+                            0.7343823227694519, 0.7891391462738577,
+                        ],
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.6832687259988781,
+                        "std": 0.02720323945342519,
+                        "per_split": [
+                            0.682562091503268, 0.7042252484357748, 0.6708805668016194,
+                            0.645161701044054, 0.7135140222096743,
+                        ],
+                    },
+                },
+            },
+            "paired_differences": {
+                "squash_minus_rect": {
+                    "val_mixed_macro_f1": {
+                        "mean": 0.012879497065186851,
+                        "std": 0.0185705246101407,
+                        "per_split": [
+                            -0.007006554973086443, 0.027617220576331092, 0.007080532906713843,
+                            0.03670051901514415, 5.767800831613101e-06,
+                        ],
+                        "splits_ahead": 4,
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.024720353188742973,
+                        "std": 0.021131957592617077,
+                        "per_split": [
+                            0.008022703818369448, 0.01805802384749744, 0.05303338474391106,
+                            0.04025974025974022, 0.004227913274196693,
+                        ],
+                        "splits_ahead": 5,
+                    },
+                },
+                "pad_minus_rect": {
+                    "val_mixed_macro_f1": {
+                        "mean": -0.025809600615938955,
+                        "std": 0.028526444213517743,
+                        "per_split": [
+                            -0.06569433818526371, -0.029793296628817467, 0.012862367742514813,
+                            -0.014864296935636623, -0.031558439072491784,
+                        ],
+                        "splits_ahead": 1,
+                    },
+                    "val_field_macro_f1": {
+                        "mean": -0.02663079212955368,
+                        "std": 0.060543847938861015,
+                        "per_split": [
+                            -0.06867282287715715, -0.0159135601240864, 0.07354520350650384,
+                            -0.04737492641517416, -0.07473785473785455,
+                        ],
+                        "splits_ahead": 1,
+                    },
+                },
+            },
+        },
+    },
+    "backbone": {
+        "value": "swin_t",
+        "evidence": {
+            "rule": "G1 (phase 04): choose the backbone with the highest validation mixed macro-F1 (mean over the 5 splits; std with ddof=1), among ResNet50 (E1-U), ConvNeXt-T and Swin-T. If the top two are within one std of each other, prefer the one with the higher mean validation field macro-F1 (field is the harder, more valuable domain). The top two are 'within one std' when their gap in mean is at most the larger of their two stds.",
+            "metric": "validation mixed macro-F1 (mean over the 5 splits; std with ddof=1)",
+            "decided_by": "within one std -> higher val field macro-F1",
+            "ranking": ["convnext_tiny", "swin_t", "resnet50"],
+            "top_two_gap": 0.008410004651068115,
+            "tolerance_one_std": 0.019063845852122674,
+            "lr": {
+                "backbone": "swin_t",
+                "value": 0.0003,
+                "source": "choices.json lr[backbone], chosen by the split-0 sweep",
+            },
+            "candidates": {
+                "resnet50": {
+                    "experiment": "E1-U",
+                    "run_folder": "E0-rect",
+                    "config_fingerprint": "63380991647ac0b5568bf5453af99f9362f5271e435c70e5f50123290c1198b3",
+                    "split_sha256": [
+                        "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                        "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+                        "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+                        "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+                        "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa",
+                    ],
+                    "val_mixed_macro_f1": {
+                        "mean": 0.7671911401005594,
+                        "std": 0.021076003698026393,
+                        "per_split": [
+                            0.7735882221227048, 0.7785819664155389, 0.7602640429212437,
+                            0.7343823227694519, 0.7891391462738577,
+                        ],
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.6832687259988781,
+                        "std": 0.02720323945342519,
+                        "per_split": [
+                            0.682562091503268, 0.7042252484357748, 0.6708805668016194,
+                            0.645161701044054, 0.7135140222096743,
+                        ],
+                    },
+                },
+                "convnext_tiny": {
+                    "experiment": "E2-cnx-U",
+                    "run_folder": "E2-cnx-U",
+                    "config_fingerprint": "7b328a708c2d9e7b15ff63e7088b996d9cee0f44d3cbaff03280ed28512b283e",
+                    "split_sha256": [
+                        "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                        "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+                        "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+                        "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+                        "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa",
+                    ],
+                    "val_mixed_macro_f1": {
+                        "mean": 0.800530299878852,
+                        "std": 0.011770610089557421,
+                        "per_split": [
+                            0.8097466050213932, 0.815579283889735, 0.7959669105037651,
+                            0.7944123043997212, 0.7869463955796455,
+                        ],
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.7390193766051082,
+                        "std": 0.03843747926729644,
+                        "per_split": [
+                            0.7985631982770224, 0.6973450249665083, 0.7514721444133208,
+                            0.7213333333333333, 0.7263831820353561,
+                        ],
+                    },
+                },
+                "swin_t": {
+                    "experiment": "E2-swin-U",
+                    "run_folder": "E2-swin-U",
+                    "config_fingerprint": "a02460e3fe8457a4774a67affd1fda28084a828d925e2268a45115862918755a",
+                    "split_sha256": [
+                        "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                        "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+                        "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+                        "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+                        "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa",
+                    ],
+                    "val_mixed_macro_f1": {
+                        "mean": 0.7921202952277839,
+                        "std": 0.019063845852122674,
+                        "per_split": [
+                            0.8032132419863718, 0.7975844998874926, 0.7804573106205499,
+                            0.7656647942358508, 0.8136816294086545,
+                        ],
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.7528742670743979,
+                        "std": 0.08872607308833906,
+                        "per_split": [
+                            0.7990138745556702, 0.804001983568547, 0.6419649122807017,
+                            0.6749827688651218, 0.8444077961019489,
+                        ],
+                    },
+                },
+            },
+            "paired_differences": {
+                "convnext_tiny_minus_resnet50": {
+                    "val_mixed_macro_f1": {
+                        "mean": 0.03333915977829258,
+                        "std": 0.022370929150766723,
+                        "per_split": [
+                            0.036158382898688335, 0.0369973174741961, 0.03570286758252139,
+                            0.06002998163026929, -0.002192750694212209,
+                        ],
+                        "splits_ahead": 4,
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.05575065060623006,
+                        "std": 0.05105304656631255,
+                        "per_split": [
+                            0.11600110677375441, -0.006880223469266533, 0.08059157761170133,
+                            0.07617163228927926, 0.01286915982568182,
+                        ],
+                        "splits_ahead": 4,
+                    },
+                },
+                "swin_t_minus_resnet50": {
+                    "val_mixed_macro_f1": {
+                        "mean": 0.02492915512722449,
+                        "std": 0.00547993529462144,
+                        "per_split": [
+                            0.029625019863666946, 0.019002533471953686, 0.020193267699306183,
+                            0.03128247146639884, 0.02454248313479679,
+                        ],
+                        "splits_ahead": 5,
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.06960554107551982,
+                        "std": 0.0673616157649953,
+                        "per_split": [
+                            0.11645178305240222, 0.09977673513277219, -0.02891565452091771,
+                            0.029821067821067748, 0.13089377389227463,
+                        ],
+                        "splits_ahead": 4,
+                    },
+                },
+                "swin_t_minus_convnext_tiny": {
+                    "val_mixed_macro_f1": {
+                        "mean": -0.008410004651068092,
+                        "std": 0.021181335827390936,
+                        "per_split": [
+                            -0.006533363035021389, -0.017994784002242414, -0.015509599883215208,
+                            -0.02874751016387045, 0.026735233829008997,
+                        ],
+                        "splits_ahead": 1,
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.01385489046928976,
+                        "std": 0.09808942121758388,
+                        "per_split": [
+                            0.00045067627864781024, 0.10665695860203872, -0.10950723213261904,
+                            -0.04635056446821151, 0.11802461406659281,
+                        ],
+                        "splits_ahead": 3,
+                    },
+                },
+            },
+        },
+    },
+    "composite_n_factor": {
+        "value": 0.5,
+        "evidence": {
+            "experiment": "E3-A",
+            "split": 0,
+            "split_sha256": "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+            "val_mixed_macro_f1": {"0.5": 0.7895659881418985, "1": 0.7727392763566536},
+            "n_per_epoch": {"0.5": 269, "1": 538},
+            "rule": "higher validation mixed macro-F1 on split 0; a tie goes to 1x (the default)",
+        },
+    },
+    "recommended": {
+        "value": "E2-swin-U",
+        "evidence": {
+            "rule": "G2 (phase 06): recommend the method with the highest validation mixed macro-F1 (mean over the 5 splits; std with ddof=1), among the plain unified model of the G1 backbone, Method A (E3-A) and Method B (E4-B). If the top two are within one std of each other, prefer the one with the higher mean validation field macro-F1; if their field means are also within one std, prefer the simpler method (plain < A < B). The top two are 'within one std' when their gap in mean is at most the larger of their two stds.",
+            "metric": "validation mixed macro-F1 (mean over the 5 splits; std with ddof=1)",
+            "method": "plain",
+            "method_label": "plain unified model",
+            "decided_by": "within one std on mixed and on field -> simpler method",
+            "ranking": ["plain", "A"],
+            "top_two_gap": 0.006700702848786988,
+            "tolerance_one_std": 0.019063845852122674,
+            "field_gap": 0.012045174128123115,
+            "field_tolerance_one_std": 0.08872607308833906,
+            "cut": ["B"],
+            "candidates": {
+                "plain": {
+                    "experiment": "E2-swin-U",
+                    "run_folder": "E2-swin-U",
+                    "config_fingerprint": "a02460e3fe8457a4774a67affd1fda28084a828d925e2268a45115862918755a",
+                    "split_sha256": [
+                        "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                        "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+                        "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+                        "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+                        "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa",
+                    ],
+                    "val_mixed_macro_f1": {
+                        "mean": 0.7921202952277839,
+                        "std": 0.019063845852122674,
+                        "per_split": [
+                            0.8032132419863718, 0.7975844998874926, 0.7804573106205499,
+                            0.7656647942358508, 0.8136816294086545,
+                        ],
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.7528742670743979,
+                        "std": 0.08872607308833906,
+                        "per_split": [
+                            0.7990138745556702, 0.804001983568547, 0.6419649122807017,
+                            0.6749827688651218, 0.8444077961019489,
+                        ],
+                    },
+                },
+                "A": {
+                    "experiment": "E3-A",
+                    "run_folder": "E3-A",
+                    "config_fingerprint": "5c2d15ad61c6aff926ef42ea2bda984905ce247ff9930dcab62dfff4b432b045",
+                    "split_sha256": [
+                        "776993879bb5eaf79b4af6e5b7d292baf80925eb8d6a5b2da8ffa69122d84638",
+                        "40ed843b5d0cf708255440b62c4c7c304fb2e886077b85201a769005725cc254",
+                        "5b90871abbf303e1b03b0f995741303828764f9ff5e2b17ce4b4d1082e0d5409",
+                        "36b6b09fa8c032df1a9bf7aea8bc3cc3a5cb6a07ae84c3b2a107885b6a7f3424",
+                        "0d10520d39533f5516d59809dfafd03820b55e1b5fdf0c539e1ad0964a2a26aa",
+                    ],
+                    "val_mixed_macro_f1": {
+                        "mean": 0.785419592378997,
+                        "std": 0.01511990376346331,
+                        "per_split": [
+                            0.7895659881418985, 0.7731210412818752, 0.7990013117232486,
+                            0.7661700618222357, 0.7992395589257271,
+                        ],
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.764919441202521,
+                        "std": 0.04895493098383134,
+                        "per_split": [
+                            0.7407264957264957, 0.7605009178464556, 0.8224134053081421,
+                            0.6992002063983488, 0.801756180733163,
+                        ],
+                    },
+                },
+            },
+            "paired_differences": {
+                "A_minus_plain": {
+                    "val_mixed_macro_f1": {
+                        "mean": -0.0067007028487868995,
+                        "std": 0.01668022724043447,
+                        "per_split": [
+                            -0.013647253844473295, -0.024463458605617383, 0.018544001102698715,
+                            0.0005052675863849165, -0.01444207048292745,
+                        ],
+                        "splits_ahead": 2,
+                    },
+                    "val_field_macro_f1": {
+                        "mean": 0.012045174128123115,
+                        "std": 0.09941281778644817,
+                        "per_split": [
+                            -0.05828737882917445, -0.04350106572209145, 0.18044849302744037,
+                            0.024217437533227026, -0.04265161536878592,
+                        ],
+                        "splits_ahead": 2,
+                    },
+                },
+            },
+        },
+    },
+}
+
+
 # ---- from 10_data.ipynb ----
 import csv
 import hashlib
@@ -5206,15 +5654,29 @@ def describe_gate(gate: str, result: dict) -> str:
     return "\n".join(lines)
 
 
-def run_gate(data_root, gate: str, out=print, *, cut=(), force: bool = False) -> dict:
-    """Recompute gate ``g0``, ``g1`` or ``g2`` from the run folders and write its entry to choices.json (other keys
-    stay). ``cut`` and ``force`` belong to g2 (see its section below)."""
+def gate_comparison(recorded, new: dict) -> list[str]:
+    """Lines that put the recorded and the recomputed validation mixed macro-F1 of each gate candidate side by side."""
+    was = recorded.get("candidates") if isinstance(recorded, dict) else None
+    lines = ["  val mixed macro-F1, mean +- std over the 5 splits:"]
+    for name, candidate in new["candidates"].items():
+        before = ((was or {}).get(name) or {}).get("val_mixed_macro_f1")
+        old = f"{before['mean']:.3f} +- {before['std']:.3f}" if isinstance(before, dict) else "not recorded"
+        now = candidate["val_mixed_macro_f1"]
+        lines.append(f"    {name:<15}recorded {old:<16}recomputed {now['mean']:.3f} +- {now['std']:.3f}")
+    return lines
+
+
+def run_gate(data_root, gate: str, out=print, *, cut=(), force: bool = False, strict: bool = True) -> dict:
+    """Recompute gate ``g0``, ``g1`` or ``g2`` from the run folders. The decision is written to choices.json (other keys
+    stay) when there is none yet; otherwise it is verified against the recorded one, which is kept: ``outcome`` of the
+    result is "written", "matches", "differs" or (``force``) "overwritten" (see `settle_choice`). ``cut`` belongs to g2,
+    ``strict`` too (see its section below); ``value`` is the recomputed decision."""
     data_root = Path(data_root)
     choices = load_choices(data_root)
-    if gate != "g2" and (cut or force):
-        raise ExperimentError(f"gate {gate}: --cut and --force belong to gate g2")
+    if gate != "g2" and cut:
+        raise ExperimentError(f"gate {gate}: --cut belongs to gate g2")
     if gate == "g2":
-        return run_gate_g2(data_root, choices, cut=tuple(cut), force=force, out=out)
+        return run_gate_g2(data_root, choices, cut=tuple(cut), force=force, strict=strict, out=out)
     if gate == "g0":
         exps = {mode: require_complete(data_root, f"E0-{mode}", choices, gate) for mode in INPUT_MODES}
         result, key = evaluate_g0(exps), "input_mode"
@@ -5223,10 +5685,13 @@ def run_gate(data_root, gate: str, out=print, *, cut=(), force: bool = False) ->
         result, key = evaluate_g1(exps, {name: choices.get("lr", name) for name in G1_CANDIDATES}), "backbone"
     else:
         raise ExperimentError(f"unknown gate {gate!r}, expected g0, g1 or g2")
-    path = write_choice(data_root, key, result["value"], result["evidence"])
     out(describe_gate(gate, result))
-    out(f"  written to {path}: {key} = {result['value']!r}" + (f", lr = {result['evidence']['lr']['value']:g}" if gate == "g1" else ""))
-    return result
+    outcome = settle_choice(data_root, key, result["value"], result["evidence"], force=force, command=f"gate {gate}", label=key,
+                            compare=gate_comparison, out=out)
+    if outcome in ("written", "overwritten"):
+        out(f"  written to {choices_path(data_root)}: {key} = {result['value']!r}" + (f", lr = {result['evidence']['lr']['value']:g}" if gate == "g1" else "")
+            + (" (--force: it replaced the recorded one)" if outcome == "overwritten" else ""))
+    return {**result, "outcome": outcome}
 
 G2_METHODS = ("plain", "A", "B")  # simplest first: the last tie-break prefers the earlier one
 G2_METHOD_EXPERIMENTS = {"A": "E3-A", "B": "E4-B"}
@@ -5318,23 +5783,27 @@ def describe_g2(result: dict) -> str:
     return "\n".join(lines)
 
 
-def run_gate_g2(data_root, choices, *, cut=(), force: bool = False, out=print) -> dict:
-    """Gate G2 (see the section text): refuses incomplete candidates that are not cut, and a changed outcome once frozen."""
+def run_gate_g2(data_root, choices, *, cut=(), force: bool = False, strict: bool = True, out=print) -> dict:
+    """Gate G2 (see the section text): refuses incomplete candidates that are not cut, and (``strict``) a changed outcome once
+    frozen. Not strict (`reproduce`), a changed outcome keeps the frozen recommendation and warns, like g0 and g1. The same
+    outcome keeps the recorded entry and its evidence."""
     names = g2_candidate_experiments(choices, cut)
     exps = {method: require_complete(data_root, exp_id, choices, "g2") for method, exp_id in names.items()}
     result = evaluate_g2(exps, cut)
     frozen = choices.raw("recommended")
-    if frozen is not None and frozen != result["value"] and not force:
-        out(describe_g2(result))
+    out(describe_g2(result))
+    if strict and frozen is not None and frozen != result["value"] and not force:
         raise ExperimentError(
             f"choices.json already recommends {frozen!r} (frozen by an earlier `gate g2`), and the runs now decide "
             f"{result['value']!r}. The recommendation is frozen once made (06: flipping it after seeing test numbers is "
             "test-set selection). If the earlier decision was a genuine mistake, rerun with --force and say so in the report"
         )
-    path = write_choice(data_root, "recommended", result["value"], result["evidence"])
-    out(describe_g2(result))
-    out(f"  written to {path}: recommended = {result['value']!r}" + (" (overwrote a different frozen choice: --force)" if frozen not in (None, result["value"]) else ""))
-    return result
+    outcome = settle_choice(data_root, "recommended", result["value"], result["evidence"], force=force, command="gate g2",
+                            label="recommended", compare=gate_comparison, out=out)
+    if outcome in ("written", "overwritten"):
+        out(f"  written to {choices_path(data_root)}: recommended = {result['value']!r}"
+            + (" (overwrote a different frozen choice: --force)" if frozen not in (None, result["value"]) else ""))
+    return {**result, "outcome": outcome}
 
 METHOD_EXPERIMENTS = ("E3-A", "E4-B")
 SEGMENTER_EXPERIMENT = "S-seg"
@@ -6892,7 +7361,6 @@ DEFAULT_SPLITS = (0, 1, 2, 3, 4)
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
-EXIT_NOT_IMPLEMENTED = 3
 
 import difflib
 
@@ -6932,6 +7400,13 @@ class Choices:
         if isinstance(entry, dict) and "value" in entry:
             entry = entry["value"]
         return entry
+
+    def evidence(self, key: str, sub: str | None = None):
+        """The evidence stored next to a choice, or None (no entry, or a bare value)."""
+        entry = self.data.get(key)
+        if sub is not None:
+            entry = entry.get(sub) if isinstance(entry, dict) else None
+        return entry.get("evidence") if isinstance(entry, dict) and "value" in entry else None
 
     def get(self, key: str, sub: str | None = None):
         """The validated choice, or ChoicesError that says which step writes it."""
@@ -6980,6 +7455,65 @@ def write_choice(data_root, key: str, value, evidence=None, *, sub: str | None =
         data[key] = group
     write_json(choices.path, data, indent=2)
     return choices.path
+
+
+def seed_choices(data_root, out=print) -> bool:
+    """`prepare` step: write choices.json from FROZEN_CHOICES (the decisions frozen at results-freeze, embedded in this
+    file) when it does not exist yet. An existing file is never touched. Returns True when the file was written."""
+    path = choices_path(data_root)
+    if path.is_file():
+        return False
+    write_json(path, FROZEN_CHOICES, indent=2)
+    out(f"prepare: seeded {path} from the decisions frozen at results-freeze and embedded in this file "
+        f"(recommended model: {FROZEN_CHOICES['recommended']['value']})")
+    return True
+
+
+def same_choice(recorded, value) -> bool:
+    """Equal choice values; numbers (learning rates, composite factors) compare with a tolerance."""
+    numbers = (int, float)
+    if isinstance(recorded, numbers) and isinstance(value, numbers) and not isinstance(recorded, bool) and not isinstance(value, bool):
+        return abs(float(recorded) - float(value)) <= 1e-12
+    return recorded == value
+
+
+def settle_choice(data_root, key: str, value, evidence, *, sub: str | None = None, force: bool = False,
+                  command: str, label: str, compare=None, out=print) -> str:
+    """Record a decision recomputed from the runs, or verify it against the recorded one (see the section text).
+
+    Returns "written" (no entry yet), "matches" (same value: the recorded entry and its evidence are kept), "differs" (other
+    value: the recorded entry is kept and a warning is printed) or "overwritten" (``force``). ``compare(recorded evidence,
+    new evidence)`` gives the lines that put the recorded and the recomputed numbers side by side."""
+    choices = load_choices(data_root)
+    recorded = choices.raw(key, sub)
+    if recorded is None:
+        write_choice(data_root, key, value, evidence, sub=sub)
+        return "written"
+    if force:
+        write_choice(data_root, key, value, evidence, sub=sub)
+        return "overwritten"
+    numbers = list(compare(choices.evidence(key, sub), evidence)) if compare is not None else []
+    if same_choice(recorded, value):
+        out(f"{command}: the recomputed {label} = {value!r} matches the recorded one; the recorded entry and its evidence in "
+            f"{choices.path} are kept")
+    else:
+        out(f"{command}: WARNING - the recomputed {label} = {value!r} differs from the recorded {recorded!r}. The recorded one is "
+            "kept: it was frozen at results-freeze and the later experiments use it, so that the tables you reproduce are the "
+            "reported ones. --force overwrites it with the recomputed one")
+    for line in numbers:
+        out(line)
+    return "matches" if same_choice(recorded, value) else "differs"
+
+
+def sweep_comparison(recorded, new: dict, name) -> list[str]:
+    """Lines that put the recorded and the recomputed validation mixed macro-F1 of the sweep runs side by side (``name`` turns
+    a sweep tag such as '1e-4' into its label)."""
+    was = recorded.get("val_mixed_macro_f1") if isinstance(recorded, dict) else None
+    lines = ["  val mixed macro-F1 of the split-0 sweep runs:"]
+    for tag, score in new["val_mixed_macro_f1"].items():
+        before = (was or {}).get(tag)
+        lines.append(f"    {name(tag):<10}recorded {fmt3(before) if isinstance(before, (int, float)) else 'not recorded':<13}recomputed {fmt3(score)}")
+    return lines
 
 
 def _row(exp_id: str, backbone, train, test_subsets, **kwargs) -> ExperimentConfig:
@@ -7301,8 +7835,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
 
-def choose_lr(data_root, backbone: str, out=print) -> dict:
-    """T3.4 rule: of the two split-0 sweep runs, take the lr with the higher validation mixed macro-F1."""
+def choose_lr(data_root, backbone: str, out=print, *, force: bool = False) -> dict:
+    """T3.4 rule: of the two split-0 sweep runs, take the lr with the higher validation mixed macro-F1. The decision is
+    recorded in choices.json, or verified against the recorded one when there is one (``settle_choice``; ``force`` overwrites)."""
     if backbone not in SWEEP_EXPERIMENT:
         raise ExperimentError(f"unknown backbone {backbone!r}, expected one of {', '.join(SWEEP_EXPERIMENT)}")
     exp_id = SWEEP_EXPERIMENT[backbone]
@@ -7326,20 +7861,25 @@ def choose_lr(data_root, backbone: str, out=print) -> dict:
         "val_mixed_macro_f1": {lr_tag(lr): scores[lr] for lr in SWEEP_LRS},
         "rule": "higher validation mixed macro-F1 on split 0; ties go to the smaller lr",
     }
-    path = write_choice(data_root, "lr", best, evidence, sub=backbone)
     out(f"choose-lr: {backbone}: " + ", ".join(f"lr {lr_tag(lr)} -> val mixed F1 {fmt3(scores[lr])}" for lr in SWEEP_LRS)
-        + f"  =>  lr {lr_tag(best)}  (written to {path})")
+        + f"  =>  lr {lr_tag(best)}")
+    outcome = settle_choice(data_root, "lr", best, evidence, sub=backbone, force=force, command="choose-lr", label=f"lr[{backbone}]",
+                            compare=lambda recorded, new: sweep_comparison(recorded, new, lambda tag: f"lr {tag}"), out=out)
+    if outcome in ("written", "overwritten"):
+        out(f"choose-lr: lr[{backbone}] = {lr_tag(best)} written to {choices_path(data_root)}"
+            + (" (--force: it replaced the recorded one)" if outcome == "overwritten" else ""))
+    chosen = load_choices(data_root).get("lr", backbone)  # in force: the recomputed lr, or the recorded one that was kept
     try:
-        reuse = reuse_sweep_run(data_root, backbone, best)
+        reuse = reuse_sweep_run(data_root, backbone, chosen)  # the sweep run at the lr in force is the same training as split 0
         message = {
-            "copied": f"the sweep run at lr {lr_tag(best)} was copied to split 0 of {run_folder_name(exp_id, load_choices(data_root))} "
-            "(same training; the real run will skip split 0)",
+            "copied": f"the sweep run at lr {lr_tag(chosen)}{' (the recorded lr)' if outcome == 'differs' else ''} was copied to split 0 of "
+            f"{run_folder_name(exp_id, load_choices(data_root))} (same training; the real run will skip split 0)",
             "exists": "the real split 0 already exists and was left untouched",
         }[reuse]
     except (ExperimentError, DatasetError) as exc:
         reuse, message = "not reused", f"sweep run not reused for split 0 ({exc}); the real run will train it"
     out(f"choose-lr: {message}")
-    return {"lr": best, "evidence": evidence, "split_0": reuse}
+    return {"lr": chosen, "recomputed_lr": best, "evidence": evidence, "split_0": reuse, "outcome": outcome}
 
 
 PROVENANCE_FILENAME = "provenance.json"
@@ -7450,9 +7990,10 @@ def reuse_composite_sweep_run(data_root, factor: float) -> str:
     return "copied"
 
 
-def choose_composites(data_root, out=print) -> dict:
+def choose_composites(data_root, out=print, *, force: bool = False) -> dict:
     """T5.3 rule: of the two split-0 sweep runs of E3-A (0.5x and 1x white-train count composites per epoch), take the
-    factor with the higher **validation** mixed macro-F1; a tie goes to 1x, the default. Records it in choices.json."""
+    factor with the higher **validation** mixed macro-F1; a tie goes to 1x, the default. Records it in choices.json, or
+    verifies it against the recorded one when there is one (``settle_choice``; ``force`` overwrites)."""
     runs, sha = read_composite_sweep(data_root)
     scores = {f: runs[f]["val"]["mixed"]["macro_f1"] for f in COMPOSITE_N_FACTORS}
     best = max(COMPOSITE_N_FACTORS, key=lambda f: (scores[f], f == COMPOSITE_DEFAULT_FACTOR))
@@ -7462,24 +8003,30 @@ def choose_composites(data_root, out=print) -> dict:
         "n_per_epoch": {composite_factor_tag(f): runs[f]["composites"]["n_per_epoch"] for f in COMPOSITE_N_FACTORS},
         "rule": "higher validation mixed macro-F1 on split 0; a tie goes to 1x (the default)",
     }
-    path = write_choice(data_root, "composite_n_factor", best, evidence)
     out("choose-composites: " + ", ".join(f"{composite_factor_tag(f)}x -> val mixed F1 {fmt3(scores[f])}" for f in COMPOSITE_N_FACTORS)
-        + f"  =>  {composite_factor_tag(best)}x  (written to {path})")
+        + f"  =>  {composite_factor_tag(best)}x")
+    outcome = settle_choice(data_root, "composite_n_factor", best, evidence, force=force, command="choose-composites",
+                            label="composite_n_factor", compare=lambda recorded, new: sweep_comparison(recorded, new, lambda tag: f"{tag}x"), out=out)
+    if outcome in ("written", "overwritten"):
+        out(f"choose-composites: composite_n_factor = {composite_factor_tag(best)} written to {choices_path(data_root)}"
+            + (" (--force: it replaced the recorded one)" if outcome == "overwritten" else ""))
+    chosen = load_choices(data_root).get("composite_n_factor")  # in force: the recomputed factor, or the recorded one that was kept
     try:
-        reuse = reuse_composite_sweep_run(data_root, best)
+        reuse = reuse_composite_sweep_run(data_root, chosen)  # the sweep run at the factor in force is the same training as split 0
         message = {
-            "copied": f"the sweep run at {composite_factor_tag(best)}x was copied to split 0 of E3-A (same training; the real run will skip split 0)",
+            "copied": f"the sweep run at {composite_factor_tag(chosen)}x{' (the recorded factor)' if outcome == 'differs' else ''} was copied to split 0 "
+            "of E3-A (same training; the real run will skip split 0)",
             "exists": "the real split 0 already exists and was left untouched",
         }[reuse]
     except (ExperimentError, DatasetError) as exc:
         reuse, message = "not reused", f"sweep run not reused for split 0 ({exc}); the real run will train it"
     out(f"choose-composites: {message}")
-    return {"n_factor": best, "evidence": evidence, "split_0": reuse}
+    return {"n_factor": chosen, "recomputed_n_factor": best, "evidence": evidence, "split_0": reuse, "outcome": outcome}
 
 
 def cmd_choose_composites(args: argparse.Namespace) -> int:
     try:
-        choose_composites(Path(args.data_root))
+        choose_composites(Path(args.data_root), force=args.force)
     except (ExperimentError, DatasetError) as exc:
         print(f"choose-composites: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
@@ -7488,7 +8035,7 @@ def cmd_choose_composites(args: argparse.Namespace) -> int:
 
 def cmd_choose_lr(args: argparse.Namespace) -> int:
     try:
-        choose_lr(Path(args.data_root), args.backbone)
+        choose_lr(Path(args.data_root), args.backbone, force=args.force)
     except (ExperimentError, DatasetError) as exc:
         print(f"choose-lr: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
@@ -7567,18 +8114,24 @@ def resolve_device(requested: str = "auto") -> str:
         raise RuntimeError(f"device {requested!r} was requested but is not available here")
     return requested
 
+def run_prepare(data_root, workers: int | None = None, out=print) -> None:
+    """Index, cache, near-duplicate audit, splits, tables and figures (phase 02), `choices.json` from the frozen decisions when it
+    does not exist yet, then the white pseudo-masks and QC sheets (T5.1), the composite figures (T5.2) and the annotation selection
+    (T6.1). Idempotent."""
+    data_root = Path(data_root)
+    prepare_data(data_root, workers=workers)
+    seed_choices(data_root, out=out)
+    records = load_index(data_root)
+    prepare_pseudo_masks(data_root, records, workers=workers)
+    prepare_composites(data_root, records)
+    prepare_annotations(data_root, records)
+
+
 def cmd_prepare(args: argparse.Namespace) -> int:
-    """Index, cache, near-duplicate audit, splits, tables and figures (phase 02), then the white pseudo-masks and QC sheets
-    (T5.1), the composite figures (T5.2) and the annotation selection (T6.1).
-    Idempotent."""
+    """`run_prepare` with a timer and an error message. Idempotent."""
     started = time.time()
     try:
-        data_root = Path(args.data_root)
-        prepare_data(data_root, workers=args.workers)
-        records = load_index(data_root)
-        prepare_pseudo_masks(data_root, records, workers=args.workers)
-        prepare_composites(data_root, records)
-        prepare_annotations(data_root, records)
+        run_prepare(Path(args.data_root), args.workers)
     except DatasetError as exc:
         print(f"prepare: FAIL - {exc}", file=sys.stderr)
         return EXIT_FAILURE
@@ -7708,10 +8261,33 @@ def method_b_smoke(data_root, tmp_root, selected: list[Record], log=print) -> No
         f"predict = segment + crop + classify ({time.time() - started:.0f} s)")
 
 
+def reproduce_smoke(data_root, tmp_root, log=print) -> None:
+    """`reproduce --recommended --fast --splits 0` on the tiny smoke set (everything in ``tmp_root``, after `classifier_smoke` wrote its
+    index and split): `choices.json` is seeded from the frozen decisions, then the command's own steps run in-process - a tiny run of the
+    recommended model into scratch, and `summarize`. (`download-weights` and `prepare` need the real dataset; the tests cover them.)"""
+    started = time.time()
+    smoke_require(seed_choices(tmp_root, out=lambda text: None), "choices.json was not seeded from the frozen decisions")
+    smoke_require(json.loads(read_file_bytes(choices_path(tmp_root)).decode("utf-8")) == FROZEN_CHOICES, "the seeded choices.json differs from FROZEN_CHOICES")
+    smoke_require(not seed_choices(tmp_root, out=lambda text: None), "an existing choices.json was seeded again")
+    args = build_parser().parse_args(["reproduce", "--recommended", "--fast", "--splits", "0", "--data-root", str(tmp_root), "--device", "cpu"])
+    steps = [step for step in reproduce_steps(args) if step.argv[0] in ("run", "summarize")]
+    lines: list[str] = []
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = run_reproduce(args, steps, out=lines.append)
+    smoke_require(code == EXIT_OK and any("2 of 2 steps done" in line for line in lines), f"reproduce --recommended --fast failed: {lines[-3:]}")
+    recommended = FROZEN_CHOICES["recommended"]["value"]
+    metrics = read_metrics(split_dir(scratch_dir(tmp_root) / f"{recommended}_fast", 0))
+    smoke_require(metrics is not None and metrics["fast"], f"reproduce trained no tiny {recommended} run")
+    smoke_require((results_dir(tmp_root) / "table_required.md").is_file(), "reproduce wrote no tables (summarize)")
+    log(f"smoke: OK - reproduce --recommended --fast: choices.json seeded from the frozen decisions, tiny {recommended} run, summarize ({time.time() - started:.0f} s)")
+
+
 def smoke_extra_checks(data_root, tmp_root, selected: list[Record]) -> None:
     classifier_smoke(data_root, tmp_root, selected)
     method_a_smoke(data_root, tmp_root, selected)
     method_b_smoke(data_root, tmp_root, selected)
+    reproduce_smoke(data_root, tmp_root)
 
 
 def cmd_smoke(args: argparse.Namespace) -> int:
@@ -7751,15 +8327,199 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     print("smoke: PASSED")
     return EXIT_OK
 
+@dataclass(frozen=True)
+class Step:
+    """One step of `reproduce`: the command line of an individual command, without the global flags."""
 
-def not_implemented(command: str, phase: str) -> Callable[[argparse.Namespace], int]:
-    """Placeholder handler: say which phase will provide the command and exit non-zero."""
+    argv: tuple[str, ...]
+    needs_all_splits: bool = False  # reads complete 5-split experiments (gates, Grad-CAM): skipped when --splits asks for fewer
 
-    def handler(args: argparse.Namespace) -> int:
-        print(f"{command}: not implemented yet (phase {phase})", file=sys.stderr)
-        return EXIT_NOT_IMPLEMENTED
+    @property
+    def label(self) -> str:
+        return " ".join(self.argv)
 
-    return handler
+
+# The reported chain, in the order the decisions depend on each other (see the section text).
+REPRODUCE_CHAIN = (
+    Step(("download-weights",)),
+    Step(("prepare",)),
+    Step(("run", "--exp", "E0-rect", "--sweep-lr")),
+    Step(("choose-lr", "--backbone", "resnet50")),
+    Step(("run", "--exp", "E0")),
+    Step(("gate", "g0"), needs_all_splits=True),
+    Step(("run", "--exp", "E1")),
+    Step(("run", "--exp", "E2-cnx-U", "--sweep-lr")),
+    Step(("run", "--exp", "E2-swin-U", "--sweep-lr")),
+    Step(("choose-lr", "--backbone", "convnext_tiny")),
+    Step(("choose-lr", "--backbone", "swin_t")),
+    Step(("run", "--exp", "E2")),
+    Step(("gate", "g1"), needs_all_splits=True),
+    Step(("run", "--exp", "E3-A", "--sweep-composites")),
+    Step(("choose-composites",)),
+    Step(("run", "--exp", "E3-A,E3-A-WF")),
+    Step(("gate", "g2", "--cut", "B"), needs_all_splits=True),
+    Step(("benchmark",)),
+    Step(("gradcam",), needs_all_splits=True),
+    Step(("summarize",)),
+)
+# Measured on one T4 (table_runtime): E2-swin-U takes 7.6 min per split; the sum over the chain is about 9 h plus the one-off prepare.
+REPRODUCE_DESCRIPTION = (
+    "Reproduce the reported results from the original dataset (Dhan-Shomadhan/ next to this file), one step after the other,\n"
+    "in this process. Every step is also a command of its own.\n"
+    "\n"
+    "modes:\n"
+    "  reproduce                the whole chain below: every reported experiment on 5 splits, then all tables and figures\n"
+    "                           (about 10 hours on one T4 GPU)\n"
+    f"  reproduce --recommended  the quick check: download-weights, prepare, run --exp {FROZEN_CHOICES['recommended']['value']} (the recommended model),\n"
+    "                           summarize (about 40 minutes on one T4 GPU, plus the one-off prepare)\n"
+    "  --splits LIST            any mode: only these splits of every run (--splits 0: about a fifth of the training; the gates and\n"
+    "                           Grad-CAM need all 5 splits and are skipped)\n"
+    "\n"
+    "The decisions (input mode, learning rates, backbone, composites, recommended model) are frozen in this file. The gates and\n"
+    "choosers recompute them from your runs and check them against the frozen ones; a difference is printed as a warning and the\n"
+    "frozen decision is kept, so that the tables you get are the reported ones.\n"
+    "\n"
+    "It can be stopped and started again with the same command: finished splits are skipped. A failing step stops the chain and\n"
+    "says which one.\n"
+    "\n"
+    "the chain (reproduce):\n"
+    + "\n".join(f"  {number:>2}. {step.label}" for number, step in enumerate(REPRODUCE_CHAIN, 1))
+)
+
+
+def recommended_experiment_id(data_root) -> str:
+    """The model of `reproduce --recommended`: the one in choices.json, else the frozen one that `prepare` is going to seed."""
+    choices = load_choices(data_root)
+    return choices.get("recommended") if choices.raw("recommended") is not None else FROZEN_CHOICES["recommended"]["value"]
+
+
+def reproduce_steps(args) -> list[Step]:
+    """The steps of this invocation: the whole chain, or with ``--recommended`` weights, prepare, the recommended run, summarize."""
+    if not args.recommended:
+        return list(REPRODUCE_CHAIN)
+    return [Step(("download-weights",)), Step(("prepare",)), Step(("run", "--exp", recommended_experiment_id(Path(args.data_root)))),
+            Step(("summarize",))]
+
+
+def step_namespace(step: Step, args) -> argparse.Namespace:
+    """The arguments the command of ``step`` would get on the command line: its own flags, ``--splits`` for the real runs (the
+    sweeps are split 0 anyway) and the global flags of `reproduce`."""
+    argv = list(step.argv)
+    if argv[0] == "run" and "--sweep-lr" not in argv and "--sweep-composites" not in argv:
+        argv += ["--splits", ",".join(str(k) for k in args.splits)]
+    argv += ["--data-root", str(args.data_root), "--device", args.device, "--seed-offset", str(args.seed_offset)]
+    if args.fast:
+        argv.append("--fast")
+    return build_parser().parse_args(argv)
+
+
+def execute_step(step_args: argparse.Namespace) -> str | None:
+    """Run the command of one step in-process, through the same functions as its own command. Returns "written", "matches",
+    "differs" or "overwritten" for the gates and choosers, else None. Errors propagate. The gates are not strict: a different
+    outcome keeps the frozen decision and warns, so that the chain goes on with the reported configuration."""
+    data_root, command = Path(step_args.data_root), step_args.command
+    if command == "download-weights":
+        download_weights(data_root)
+    elif command == "prepare":
+        run_prepare(data_root, step_args.workers)
+    elif command == "run":
+        run_command(step_args)
+    elif command == "choose-lr":
+        return choose_lr(data_root, step_args.backbone, force=step_args.force)["outcome"]
+    elif command == "choose-composites":
+        return choose_composites(data_root, force=step_args.force)["outcome"]
+    elif command == "gate":
+        return run_gate(data_root, step_args.gate, cut=tuple(step_args.cut or ()), force=step_args.force, strict=False)["outcome"]
+    elif command == "benchmark":
+        run_benchmark(data_root, resolve_device(step_args.device))
+    elif command == "gradcam":
+        run_gradcam(data_root, step_args.exp, step_args.compare, resolve_device(step_args.device), step_args.split, step_args.runs_dir)
+    elif command == "summarize":
+        summarize(data_root)
+    else:
+        raise ExperimentError(f"reproduce has no step for {command!r}")
+    return None
+
+
+def skip_reason(step: Step, args) -> str | None:
+    """Why a step is not run in this invocation (None: it is)."""
+    if step.argv[0] == "download-weights" and args.fast:
+        return "--fast uses the pretrained weights only if they are already downloaded"
+    if step.needs_all_splits and set(args.splits) != set(DEFAULT_SPLITS):
+        return (f"it needs all five splits (--splits {','.join(str(k) for k in args.splits)}); "
+                "the frozen decision stays in force")
+    return None
+
+
+def format_elapsed(seconds: float) -> str:
+    """'12 s', '5 min 03 s' or '2 h 05 min'."""
+    hours, rest = divmod(int(round(seconds)), 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours} h {minutes:02d} min"
+    return f"{minutes} min {secs:02d} s" if minutes else f"{secs} s"
+
+
+def run_reproduce(args, steps: list[Step] | None = None, out=print) -> int:
+    """`reproduce` (see the section text). ``steps`` replaces the step list (tests). Returns the exit code: the first failing step
+    stops the chain."""
+    data_root = Path(args.data_root)
+    if args.fast and not args.recommended:
+        print("reproduce: FAIL - --fast only works with --recommended: a fast run is never a result, so the sweeps and gates of the "
+              "whole chain would have nothing to read", file=sys.stderr)
+        return EXIT_FAILURE
+    try:
+        steps = reproduce_steps(args) if steps is None else steps
+    except ExperimentError as exc:
+        print(f"reproduce: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    total = len(steps)
+    started = time.time()
+    out(f"reproduce: {'recommended model only' if args.recommended else 'the whole reported chain'}: {total} steps, "
+        f"splits {','.join(str(k) for k in args.splits)}, data root {data_root}")
+    done: list[tuple[str, str | None]] = []  # (header, outcome) of the steps that ran
+    skipped = 0
+    for number, step in enumerate(steps, 1):
+        header = f"[{number}/{total}] {step.label}"
+        out(f"\nreproduce: {header}")
+        reason = skip_reason(step, args)
+        if reason is not None:
+            skipped += 1
+            out(f"reproduce: {header} skipped - {reason}")
+            continue
+        began = time.time()
+        try:
+            outcome = execute_step(step_namespace(step, args))
+        except KeyboardInterrupt:
+            print(f"\nreproduce: interrupted at step {header} after {format_elapsed(time.time() - started)}. "
+                  "Run the same command again to resume: finished splits are skipped.", file=sys.stderr)
+            return 130
+        except (ExperimentError, DatasetError, RuntimeError, OSError) as exc:
+            print(f"reproduce: FAIL at step {header} after {format_elapsed(time.time() - started)} - {exc}", file=sys.stderr)
+            print(f"reproduce: the {len(done)} step(s) before it are done. Fix the problem and run the same command again: finished splits "
+                  "are skipped and the decisions are checked again, so it resumes at this step.", file=sys.stderr)
+            return EXIT_FAILURE
+        done.append((header, outcome))
+        out(f"reproduce: {header} done in {format_elapsed(time.time() - began)} (total {format_elapsed(time.time() - started)})")
+    out(f"\nreproduce: summary - {len(done)} of {total} steps done" + (f", {skipped} skipped" if skipped else "")
+        + f" in {format_elapsed(time.time() - started)}")
+    checks = [(header, outcome) for header, outcome in done if outcome is not None]
+    if checks:
+        out("reproduce: decisions recomputed from your runs, against the frozen ones (the frozen ones stay in force):")
+        words = {"matches": "matches", "differs": "DIFFERS (kept the frozen one, see the warning above)",
+                 "written": "no frozen decision, recorded", "overwritten": "overwritten (--force)"}
+        for header, outcome in checks:
+            out(f"  {header}: {words[outcome]}")
+        different = sum(outcome == "differs" for _, outcome in checks)
+        if different:
+            out(f"reproduce: {different} decision(s) differ from the frozen ones (numbers in the warnings above); "
+                "the later experiments used the frozen decisions.")
+    out(f"reproduce: tables and findings: {results_dir(data_root)}; figures: {figures_dir(data_root)}")
+    return EXIT_OK
+
+
+def cmd_reproduce(args: argparse.Namespace) -> int:
+    return run_reproduce(args)
 
 def parse_splits(text: str) -> tuple[int, ...]:
     """Parse '0,1,2' into (0, 1, 2); duplicates are dropped, order is kept."""
@@ -7844,8 +8604,23 @@ def _configure_run(parser: argparse.ArgumentParser) -> None:
                         help="Method B (E4-B): the S-seg runs folder whose split_<k>/boxes.json to use (default: _work/runs/S-seg)")
 
 
+def _configure_reproduce(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--recommended", action="store_true",
+                        help="only the recommended model: download-weights, prepare, run --exp <the model of choices.json>, summarize "
+                             "(about 40 minutes on one T4 GPU, plus the one-off prepare)")
+    parser.add_argument("--splits", type=parse_splits, default=DEFAULT_SPLITS, metavar="LIST",
+                        help="comma-separated split seeds of every run (default: 0,1,2,3,4; the sweeps are split 0 anyway)")
+
+
 def _configure_choose_lr(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--backbone", required=True, choices=BACKBONES, help="backbone whose split-0 sweep to evaluate")
+    parser.add_argument("--force", action="store_true",
+                        help="overwrite a recorded learning rate that differs from the recomputed one (default: keep the recorded one and warn)")
+
+
+def _configure_choose_composites(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--force", action="store_true",
+                        help="overwrite a recorded composites factor that differs from the recomputed one (default: keep the recorded one and warn)")
 
 
 def _configure_gate(parser: argparse.ArgumentParser) -> None:
@@ -7854,7 +8629,8 @@ def _configure_gate(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cut", action="append", choices=("A", "B"), default=None, metavar="METHOD",
                         help="g2 only: leave Method A or B out because it was cut (cut lines of the README); repeat for both")
     parser.add_argument("--force", action="store_true",
-                        help="g2 only: overwrite a recommendation that an earlier `gate g2` froze with a different outcome")
+                        help="overwrite a recorded decision that differs from the recomputed one (default: g0 and g1 keep the recorded one and warn, "
+                             "g2 refuses)")
 
 
 def _configure_gradcam(parser: argparse.ArgumentParser) -> None:
@@ -7895,6 +8671,7 @@ class Command:
     help: str
     handler: Callable[[argparse.Namespace], int]
     configure: Callable[[argparse.ArgumentParser], None] | None = None
+    description: str | None = None  # long help of the command (line breaks kept); default: ``help``
 
 
 COMMANDS = (
@@ -7912,7 +8689,7 @@ COMMANDS = (
     Command("run", "train and evaluate one experiment over the given splits", cmd_run, _configure_run),
     Command(
         "choose-lr",
-        "record the learning rate of a backbone from its split-0 sweep (T3.4 rule) in choices.json",
+        "record the learning rate of a backbone from its split-0 sweep (T3.4 rule) in choices.json (or verify it against the recorded one)",
         cmd_choose_lr,
         _configure_choose_lr,
     ),
@@ -7920,10 +8697,12 @@ COMMANDS = (
         "choose-composites",
         "record the composites per epoch of Method A from its split-0 sweep (validation only) in choices.json",
         cmd_choose_composites,
+        _configure_choose_composites,
     ),
     Command(
         "gate",
-        "recompute decision gate g0 (input mode), g1 (backbone) or g2 (recommended method) from the runs and record it in choices.json",
+        "recompute decision gate g0 (input mode), g1 (backbone) or g2 (recommended method) from the runs and record it in choices.json "
+        "(or verify it against the recorded one)",
         cmd_gate,
         _configure_gate,
     ),
@@ -7949,8 +8728,10 @@ COMMANDS = (
     Command("smoke", "tiny end-to-end check: imports, device, data path, one tiny experiment and predict", cmd_smoke),
     Command(
         "reproduce",
-        "download-weights, prepare, every reported experiment, summarize",
-        not_implemented("reproduce", "08"),
+        "the whole reported chain (weights, prepare, every experiment, gates, tables), or with --recommended just the recommended model",
+        cmd_reproduce,
+        _configure_reproduce,
+        REPRODUCE_DESCRIPTION,
     ),
 )
 
@@ -7964,7 +8745,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_global_flags(parser, is_subcommand=False)
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     for command in COMMANDS:
-        sub = subparsers.add_parser(command.name, help=command.help, description=command.help)
+        sub = subparsers.add_parser(command.name, help=command.help, description=command.description or command.help,
+                                    formatter_class=argparse.RawDescriptionHelpFormatter if command.description else argparse.HelpFormatter)
         if command.configure is not None:
             command.configure(sub)
         add_global_flags(sub, is_subcommand=True)
