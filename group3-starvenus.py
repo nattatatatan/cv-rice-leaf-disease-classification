@@ -6352,6 +6352,46 @@ def g2_findings(result: dict) -> str:
     return " ".join(sentences)
 
 
+REQUIRED_SCENARIOS = (("white", "(a) white background"), ("field", "(b) field background"), ("mixed", "(c) mixed"))
+UNIFIED_EXPERIMENTS = ("E1-U", "E2-cnx-U", "E2-swin-U")  # the plain unified models of table_required
+
+
+def required_findings(results: dict, choices) -> str:
+    """The three spec scenarios on the test split for the recommended method, and how the other unified models compare
+    (mean +- std over the 5 splits; paired = per-split difference). Empty until gate G2 froze a recommendation that has run."""
+    recommended = recommended_experiment(choices)
+    if recommended is None or recommended not in results:
+        return ""
+    best = results[recommended]
+    others = [exp_id for exp_id in UNIFIED_EXPERIMENTS if exp_id != recommended and exp_id in results]
+
+    def scores(exp: ExperimentResults, subset: str) -> str:
+        return f"macro-F1 {f1_text(exp, subset)}, accuracy {format_mean_std(aggregate(exp, subset, 'accuracy'), 'accuracy')} %"
+
+    lines = [f"Test results of the recommended method, {recommended} ({BACKBONE_LABELS[best.config.backbone]}), mean +- std over the 5 splits:", ""]
+    lines += [f"- {label}: {scores(best, subset)}." for subset, label in REQUIRED_SCENARIOS]
+    lines.append(f"- Domain-balanced (mean of white and field): macro-F1 {f1_text(best, 'domain_balanced')}.")
+    if others:
+        lines += ["", "Paired difference on test macro-F1 against the other unified models:", ""]
+        for exp_id in others:
+            diffs = {subset: paired_difference(best, results[exp_id], subset, "macro_f1") for subset, _ in REQUIRED_SCENARIOS}
+            lines.append(f"- {recommended} - {exp_id} ({BACKBONE_LABELS[results[exp_id].config.backbone]}): "
+                         + ", ".join(f"{subset} {d.mean:+.3f} +- {d.std:.3f} (ahead in {d.ahead} of {len(d.values)} splits)"
+                                     for subset, d in diffs.items()) + ".")
+        notes = []
+        for subset, _ in REQUIRED_SCENARIOS:
+            top = max((recommended, *others), key=lambda exp_id: aggregate(results[exp_id], subset, "macro_f1").mean)
+            if top != recommended:
+                a, b = aggregate(results[top], subset, "macro_f1"), aggregate(best, subset, "macro_f1")
+                gap, tolerance = a.mean - b.mean, max(a.std, b.std)
+                notes.append(f"{subset} ({top} ahead by {gap:.3f}, {'within' if gap <= tolerance else 'more than'} one std, {tolerance:.3f})")
+        if notes:
+            lead = "on no scenario" if len(notes) == len(REQUIRED_SCENARIOS) else "not on every scenario"
+            lines += ["", f"On test, the recommended method has the highest mean {lead}: " + "; ".join(notes) + ". "
+                      "The backbone (gate G1) and the method (gate G2) were chosen on validation, and the test split is not used to revisit them."]
+    return "\n".join(lines)
+
+
 def summarize(data_root, out=print) -> None:
     """Regenerate every table, figure and findings section that the runs available so far support. Experiments that are
     incomplete or do not match the registry are skipped with a warning."""
@@ -6379,6 +6419,9 @@ def summarize(data_root, out=print) -> None:
     recommended = choices.data.get("recommended")
     if isinstance(recommended, dict) and recommended.get("evidence"):
         blocks["g2"] = auto_block("g2", "G2 recommended method", g2_findings(recommended))
+    required = required_findings(results, choices)
+    if required:
+        blocks["required"] = auto_block("required", "Required scenarios (test split)", required)
     for path in write_figures(data_root, results, choices):
         out(f"summarize: wrote {path}")
     cases = write_cases(data_root, results, choices, out)

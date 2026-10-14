@@ -1054,6 +1054,23 @@ def test_cases_findings_count_the_categories(gs, rich_root):
     assert "5 of the 5 failures were tested in one split only" in text
 
 
+def test_required_findings_appear_once_g2_froze_and_report_the_recommended_method(gs, rich_root):
+    gs.summarize(rich_root, out=quiet)
+    findings = read_results(gs, rich_root, "findings.md")
+    block = findings.split("<!-- auto:required:begin -->")[1].split("<!-- auto:required:end -->")[0]
+    best = gs.load_experiment(rich_root, "E3-A", gs.load_choices(rich_root))[0]
+    assert "Test results of the recommended method, E3-A (ResNet50)" in block
+    assert f"- (c) mixed: macro-F1 {gs.f1_text(best, 'mixed')}, accuracy" in block
+    assert "- E3-A - E1-U (ResNet50): white " in block and "- E3-A - E2-swin-U (Swin-T): " in block
+    assert "highest mean" not in block  # E3-A leads every scenario in this synthetic root
+
+
+def test_required_findings_are_empty_before_g2(gs, g2_root):
+    add_run(gs, g2_root, "E0-rect", 0.78)
+    gs.summarize(g2_root, out=quiet)
+    assert "auto:required" not in read_results(gs, g2_root, "findings.md")
+
+
 def test_findings_keep_hand_written_failure_hypotheses(gs, rich_root):
     gs.summarize(rich_root, out=quiet)
     path = gs.results_dir(rich_root) / "findings.md"
@@ -1076,6 +1093,8 @@ def test_committed_phase_07_numbers(gs, committed):
     per_class = (root / "_work" / "results" / "table_per_class.md").read_text()
     assert "| field | Leaf Scald | 51 | 0.503 +- 0.065 | 0.511 +- 0.134 | 0.501 +- 0.083 |" in per_class
     assert "(recommended)" in (root / "_work" / "results" / "table_required.md").read_text()
+    assert "- (c) mixed: macro-F1 0.763 +- 0.033, accuracy 78.3 +- 3.6 %." in findings
+    assert "the recommended method has the highest mean on no scenario" in findings and "within one std" in findings
     benchmark = gs.read_benchmark(root)
     assert set(benchmark) <= {"cpu", "mps", "cuda"} and benchmark
     for record in benchmark.values():

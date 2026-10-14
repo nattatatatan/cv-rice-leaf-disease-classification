@@ -66,6 +66,28 @@ Kaggle T4 x2. Mean +- std over the 5 splits (ddof=1); paired = per-split differe
 Gate G2 recommends the plain unified model (E2-swin-U), by the rule fixed in phase 06: highest mean validation mixed macro-F1; if the top two are within one std, the higher validation field macro-F1; if that is also within one std, the simpler method. Validation mixed / field macro-F1 (mean +- std over 5 splits): plain unified model (E2-swin-U) 0.792 +- 0.019 / 0.753 +- 0.089; Method A (composites) (E3-A) 0.785 +- 0.015 / 0.765 +- 0.049. Left out because of a cut line: Method B. Decided by: within one std on mixed and on field -> simpler method. Paired A - plain on validation: mixed -0.007 +- 0.017 (2 of 5 splits ahead), field +0.012 +- 0.099.
 <!-- auto:g2:end -->
 
+<!-- auto:required:begin -->
+## Required scenarios (test split)
+
+Test results of the recommended method, E2-swin-U (Swin-T), mean +- std over the 5 splits:
+
+- (a) white background: macro-F1 0.798 +- 0.053, accuracy 82.7 +- 4.9 %.
+- (b) field background: macro-F1 0.675 +- 0.072, accuracy 67.6 +- 6.0 %.
+- (c) mixed: macro-F1 0.763 +- 0.033, accuracy 78.3 +- 3.6 %.
+- Domain-balanced (mean of white and field): macro-F1 0.736 +- 0.036.
+
+Paired difference on test macro-F1 against the other unified models:
+
+- E2-swin-U - E1-U (ResNet50): white -0.004 +- 0.032 (ahead in 2 of 5 splits), field -0.012 +- 0.070 (ahead in 2 of 5 splits), mixed -0.009 +- 0.019 (ahead in 1 of 5 splits).
+- E2-swin-U - E2-cnx-U (ConvNeXt-T): white +0.006 +- 0.027 (ahead in 4 of 5 splits), field -0.019 +- 0.062 (ahead in 2 of 5 splits), mixed -0.001 +- 0.036 (ahead in 4 of 5 splits).
+
+On test, the recommended method has the highest mean on no scenario: white (E1-U ahead by 0.004, within one std, 0.062); field (E2-cnx-U ahead by 0.019, within one std, 0.079); mixed (E1-U ahead by 0.009, within one std, 0.049). The backbone (gate G1) and the method (gate G2) were chosen on validation, and the test split is not used to revisit them.
+<!-- auto:required:end -->
+
+## Segmenter quality (Method B)
+
+Not measured. Method B was cut at gate G2 (`gate g2 --cut B`, 2026-10-13) before a segmenter was trained, so there is no S-seg run and no IoU or hit rate. The 30 annotated field images were used instead for the Grad-CAM shortcut check (T7.5). Phase 06's Method B code (segmenter training, crop boxes, `predict` with segment + crop) is complete and covered by the smoke test, so it can be run later.
+
 <!-- auto:questions:begin -->
 ## Domain transfer questions (phase 04)
 
