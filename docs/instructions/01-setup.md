@@ -70,13 +70,14 @@ Subcommands (each can be a stub at first; later phases fill them in):
 | Command | Purpose |
 |---|---|
 | `download-weights` | Fetch all torchvision pretrained weights into `_work/weights/` (sets `TORCH_HOME`). |
-| `prepare` | Index, cache, splits, audits, pseudo-masks. Idempotent: skips work whose outputs exist and are valid. |
+| `prepare` | Index, cache, splits, audits, pseudo-masks. Idempotent: skips work whose outputs exist and are valid. Also writes `_work/results/choices.json` from the decisions frozen at results-freeze (embedded in the `.py` as `FROZEN_CHOICES`) when that file does not exist yet, so `run --exp E2-swin-U` works right after `download-weights` and `prepare` and trains the reported configuration. |
 | `run --exp ID [--splits 0,1,2,3,4] [--device auto]` | Train and evaluate one experiment over the given splits. |
+| `choose-lr --backbone NAME [--force]`, `choose-composites [--force]`, `gate g0\|g1\|g2 [--force]` | Recompute a decision from the runs (learning rate of a backbone, composites per epoch of Method A, input mode, backbone, recommended method). No entry in `choices.json` yet: write it with its evidence. Same value as the recorded one: keep the recorded entry and print both sets of numbers. Another value: keep the recorded entry, print a warning, exit 0 (so `reproduce` goes on); `--force` overwrites (`gate g2` without `--force` refuses, as before). |
 | `summarize` | Aggregate all runs into tables and figures under `_work/results/` and `_work/figures/`. |
 | `gradcam [--exp ID] [--compare ID] [--split k] [--runs-dir DIR]` | Grad-CAM of the plain model and Method A: figures of the success and failure images, the shortcut check on the annotated field images, and its `findings.md` section. Needs the retrained checkpoints (`runs/retrain/`). |
 | `predict --exp ID --image PATH` | Client-facing single-image prediction with class probabilities. |
 | `smoke` | Tiny end-to-end run: 20 images, 1 epoch, CPU, every code path (data, composites, segmenter, classifier, summarize). Must finish in < 3 min on the M2. |
-| `reproduce` | Runs `download-weights`, `prepare`, then all reported experiments and `summarize`. This is the one command the user manual tells the marker to run. |
+| `reproduce [--recommended] [--splits LIST]` | Runs, in-process and in order, the 20 steps of the reported chain (`download-weights`, `prepare`, the learning-rate sweeps and `choose-lr`, E0, `gate g0`, E1, E2, `gate g1`, the composite sweep and `choose-composites`, E3-A and E3-A-WF, `gate g2 --cut B`, `benchmark`, `gradcam`, `summarize`) and verifies the frozen decisions on the way; about 10 h on one T4. `--recommended`: `download-weights`, `prepare`, `run --exp <recommended>`, `summarize` (about 40 min on a T4 plus the one-off `prepare`). `--splits 0`: split 0 only (gates and Grad-CAM, which need five splits, are skipped). Resumable: run the same command again. This is the one command the user manual tells the marker to run. |
 
 Global flags: `--data-root` (default `Dhan-Shomadhan`), `--device {auto,cuda,mps,cpu}`, `--seed-offset` (default 0), `--fast` (smoke settings).
 

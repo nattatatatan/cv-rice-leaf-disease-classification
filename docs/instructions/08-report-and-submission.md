@@ -60,8 +60,9 @@ IEEE style, exactly the format of the spec's examples. Every reference cited in 
 - **a) Packages**: Python 3.12; exact pinned versions of torch, torchvision, numpy, matplotlib, opencv-python(-headless) 4.12, scikit-learn, scikit-image; one `pip install ...` line; a note that a CUDA GPU is strongly recommended, and the expected run time on a T4 and on CPU.
 - **Pretrained weights**: `python <group_name>.py download-weights` stores them under `Dhan-Shomadhan/_work/weights/`. List the torchvision weight names and their source URLs, plus the manual-download fallback (where to place the `.pth` files).
 - **b) Reproduce**: place the original dataset at `.\Dhan-Shomadhan\` next to the `.py`. Then:
-  - `python <group_name>.py reproduce` - everything, with expected time;
-  - `python <group_name>.py prepare` and `python <group_name>.py run --exp <ID>` - individual experiments (table of IDs -> report tables);
+  - `python <group_name>.py reproduce --recommended` - the quick check, about 40 min on a T4: weights, `prepare`, the recommended model (E2-swin-U) on all five splits, `summarize`. Add `--splits 0` for split 0 only (about 8 min of training);
+  - `python <group_name>.py reproduce` - everything, about 10 h on a T4 (measured per-run times in `table_runtime`): 20 numbered steps with the time of each, resumable (stop it, run the same command again), then every table and figure under `Dhan-Shomadhan/_work/results/` and `_work/figures/`. The decisions (input mode, learning rates, backbone, composites per epoch, recommended model) are frozen in the `.py`; the gates recompute them from your runs, print "matches" or a warning next to the numbers, and keep the frozen ones so your tables are the reported ones. `--device cuda|mps|cpu`, `--data-root PATH`, `--fast` (with `--recommended` only) pass through;
+  - `python <group_name>.py prepare` and `python <group_name>.py run --exp <ID>` - individual experiments (table of IDs -> report tables); after `download-weights` and `prepare`, `run --exp E2-swin-U` works without any other step;
   - `python <group_name>.py summarize` - regenerates every table and figure, and states where they appear;
   - `python <group_name>.py predict --image <path>` - client usage;
   - `python <group_name>.py smoke` - 3-minute installation check.
@@ -69,6 +70,9 @@ IEEE style, exactly the format of the spec's examples. Every reference cited in 
 - Note expected small numerical differences across GPUs (non-deterministic cuDNN kernels).
 
 ## T8.x Submission checklist
+- [x] `choices.json` is embedded in the `.py` (`FROZEN_CHOICES`) and seeded by `prepare`; `tests/test_frozen_decisions.py` proves that the seeded choices give every committed run its fingerprint.
+- [x] `reproduce` implemented (full chain, `--recommended`, `--splits`), gates and choosers verify frozen decisions.
+- [ ] Clean-room `reproduce --recommended` on a T4 (Colab or Kaggle) from the `.py` and the original dataset only: finishes in about 40 min and its `table_required` row for E2-swin-U matches the reported one within GPU noise.
 - [ ] `results-freeze` tag exists; every number in the report traces to a file in `_work/results/` at that tag.
 - [ ] **Clean-room reproduction**: on a fresh Colab session with the original Mendeley zip, follow the user manual literally (copy-paste the commands from the PDF). At least `smoke`, `prepare`, and one full experiment must succeed and match the reported split-0 numbers within normal GPU noise.
 - [ ] Also run `smoke` on Windows if any teammate has it (path handling, trailing-space folder names).
