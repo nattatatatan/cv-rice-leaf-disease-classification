@@ -35,3 +35,6 @@ Dhan-Shomadhan/_work/figures/composites_realism_check.png
 kaggle_output/
 csci935-code/
 csci935-code.zip
+
+# Report drafts (docx/pdf and the script that builds the draft); kept out of git
+report/
