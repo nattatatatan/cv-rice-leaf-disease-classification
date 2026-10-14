@@ -163,7 +163,7 @@ Stop and ask Nattan when: a gate result is ambiguous (difference smaller than on
 
 ## 7. Timeline and cut lines
 
-Today is Sun 11 Oct 2026. Due ~Mon 26 Oct 2026.
+Written Sun 11 Oct 2026. Due ~Mon 26 Oct 2026.
 
 | Dates | Work | Owner |
 |---|---|---|

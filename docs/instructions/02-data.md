@@ -12,7 +12,7 @@ Prerequisites: 01 complete. Notebook: `notebooks/10_data.ipynb`.
 | White 769 / Field 337. Per class x domain from 49 (Brown Spot, field) to 219 (Sheath Blight, white) | Stratify on class x domain; report macro-F1. |
 | 381 images carry an EXIF rotation tag (orientations 3, 6, 8) | Every read must apply EXIF orientation. |
 | After EXIF: 1089 are 1952x4160, 6 are 1536x3264 (portrait), 11 field images are 4160x1952 (landscape) | Aspect is ~0.47 almost everywhere. |
-| Field images: dense canopy, target leaf ~10-15% of area, lesions small | Resolution matters; motivates segmentation. |
+| Field images: dense canopy, target leaf ~10-15% of area (planning estimate; measured on the 30 annotated field images: about 7%, 2% for Rice Tungro), lesions small | Resolution matters; motivates segmentation. |
 
 ## Label mapping (single source of truth)
 

@@ -35,7 +35,7 @@ Prerequisites: 05 T5.1-T5.3 done. T6.1 (annotation) is manual and can start on d
     learns "pasted leaf vs real field leaf" (real field leaves are background in every composite), so it rejects the real
     salient leaf. DeepLabV3 swap: dev IoU 0.015, 8 of 10 fallbacks (not adopted). Post-processing sweep (threshold
     0.1-0.5, min area 0.5-2%): best dev IoU 0.05, 1 of 10 boxes with >= 50% of the leaf. Whites at the composites'
-    resolution: no change. **Open: needs Nattan's decision before batch5** (see the agent report for options).
+    resolution: no change. **Resolved 2026-10-13: Method B cut (decision P8, README).**
 
 ### Post-processing: mask -> crop box
 1. Sigmoid > 0.5 -> connected components -> keep the component with the largest `area x centrality`, where centrality = 1 - (normalised distance of the component centroid from the image centre).

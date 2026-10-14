@@ -30,7 +30,7 @@ group/
     test_*.py                # pytest against the exported module
   docs/...
   Dhan-Shomadhan/            # dataset, original structure
-    _work/                   # ALL generated data (gitignored except results)
+    _work/                   # ALL generated data (index, splits, runs, results and most figures tracked; cache, masks, weights and checkpoints gitignored)
       cache/  splits/  masks/  runs/  weights/  results/  figures/
 ```
 
