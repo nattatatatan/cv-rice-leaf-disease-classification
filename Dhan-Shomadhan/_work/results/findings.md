@@ -101,18 +101,31 @@ Pooled test predictions of E2-swin-U over the 5 splits cover 607 distinct images
 
 One line per image of `cases_failure.png` (the consistent failures of E2-swin-U), written by Nattan after looking at the image: what made it hard
 (for example lesions under 1% of the image, symptomatic leaf not in frame, Brown Spot lesions that look like Blast, motion blur). Group them into 3-4
-failure modes for the report afterwards. Nothing is filled in yet. This section is outside the auto markers, so `summarize` never touches it.
+failure modes for the report afterwards (below). This section is outside the auto markers, so `summarize` never touches it.
 
-- `bs_wb_54.jpg`:
-- `ls_wb_39.jpg`:
-- `rb_wb_60.jpg`:
-- `rt_wb_5.jpg`:
-- `sb_wb_40.jpg`:
-- `bsf_47.jpg`:
-- `lsf_47.jpg`:
-- `rbf_46.jpg`:
-- `rtf_41.jpg`:
-- `sbf_56.jpg`:
+- `bs_wb_54.jpg`: The image mainly features a leaf turning orange from the two sides leaving only green center. There are a few irregular shaped darkish brown lines on the leaf. The symptoms visually are closer to a Rice Tungro rather than the Brown Spot. 
+- `ls_wb_39.jpg`: This one is visually much closer to a leaf scald and the model was confident too. There are no visible brown spots on the leaf at all. It has straw-colored, or grayish-tan areas rather than neat circles. Some of the brown spot images contain this pattern e.g. bs_wb_17 or bs_wb_48.
+- `rb_wb_60.jpg`: Rice Blast lesions are described as eye-shaped or elliptical lesions with pointed ends. The image features a mostly normal green leaf with orange-yellow discoloration starting from the leaf tip and moving down the margin. This visually aligns more with Rice Tungro rather than Rice Blast.
+- `rt_wb_5.jpg`: The most definitive visual giveaway for Leaf Scald is a series of V-shaped or wavy "chevron" bands. The image resolution might be too low to detect that pattern.
+- `sb_wb_40.jpg`: The image shows orange-yellow lines along the edge with a few lines of white. Don't have enough domain knowledge to identify whether this is a fungal thread or dried leaf edges.  
+- `bsf_47.jpg`: The focused leaf is mostly green with some oval shaped brown spots with brown border and white colored center. There is a small leaf lay over the focus leaf diagonally with yellow-orange edges and small white dots in the center. The model might be distracted by the environment rather than focusing purely on the focus leaf.
+- `lsf_47.jpg`: The focus leaf shows a straw-like color, running down from the tip of the leaf down to almost the center of the leaf. The focus leaf is right at the center horizontally in the picture and there are barely any brown spots. The leaf is almost entirely green. 
+- `rbf_46.jpg`: The image features a leaf whose area near the tip have a white grayish patterns with reddish brown borders. The symptoms for these two are visually quite similar, I think the model knowing the fact that the symptoms are near the tip rather than the sheath would help this case. 
+- `rtf_41.jpg`: The center of the image shows mostly withered leaf, mostly from the tip with barely noticable orange colors in the center. For this case the plant is mostly withered and is visually hard to identify any symptoms which may lead the relatively low confidence prediction to Rice Blast. 
+- `sbf_56.jpg`: The focused leaf is visually easily identifiable. There is a clear white centre with brownish-red border over the pattern in the middle of the leaf. The shape is irregular instead of circular, oval, or ellipsoid.
+  - Follow-up (Nattan): the centre colouring overlaps with Leaf Scald (compare `lsf_47`), but `sbf_56` has a clear dark brown border where `lsf_47`'s is subtle, and its lesion starts mid-leaf while `lsf_47`'s runs from the tip down to about the middle.
+  - Follow-up (Nattan) on `rt_wb_5`: at this resolution one cannot tell whether Leaf Scald's chevron bands are there, so Leaf Scald cannot be ruled out from the image. On `lsf_47`: the tan streak is a small part of a busy clump.
+
+### Failure modes (grouped for the report)
+
+Grouping of the 10 hypotheses above, checked against the images and the Grad-CAM figure `gradcam_failure.png`. The model sees each photo at 448 x 224 px (rect mode), about a third of the 1280 px cached photo's long side, which matters for modes 3 and 4.
+
+1. **The visible symptoms match another class** (3, all white background): `bs_wb_54` (Brown Spot) and `rb_wb_60` (Rice Blast) show the yellow-orange discolouration from the tip and margins that is typical of Rice Tungro, without their own class's hallmark lesions, and both were predicted Rice Tungro. `ls_wb_39` (Leaf Scald -> Brown Spot, 0.98) shows torn straw-tan bands, a pattern that Brown Spot training images of the same split also carry (`bs_wb_17`, `bs_wb_48`, both in split 3's training set), so the model learned it as Brown Spot. Either the classes genuinely overlap at some disease stages, or some images carry a second condition; this is a limit of image-level labels.
+2. **Look-alike lesions separated only by fine cues** (2, field): `rbf_46` (Rice Blast -> Sheath Blight) and `sbf_56` (Sheath Blight -> Leaf Scald, 0.50 near tie; Method A right at 0.77). The lesion centres look alike; what separates the classes is border colour (dark brown for `sbf_56`) and where on the plant the lesion sits (near the tip vs mid-leaf or on the sheath). A whole-image classifier at this resolution has no explicit notion of position on the plant.
+3. **The diagnostic symptom is too fine or too faint to see** (3): `rt_wb_5` (chevron bands not resolvable, so Leaf Scald cannot be ruled out), `sb_wb_40` (thin white lines along the edge that even the annotator cannot attribute to the fungus or to drying), `rtf_41` (a withered plant with barely visible discolouration; the two models disagree, Rice Blast at 0.63 and Leaf Scald at 0.41).
+4. **Field clutter: the symptom is a small part of a busy scene** (2, field): `bsf_47` (a second leaf with its own yellow-orange edges and white dots lies across the Brown Spot leaf) and `lsf_47` (the tan streak is a small part of a dense clump, and the leaf is otherwise almost entirely green). This is the failure Method B (crop to the salient leaf) was designed for; it was cut at G2.
+
+Caveat: these are 10 of 119 consistent failures, chosen by `select_cases`, and 95 of the 119 were tested in one split only, so the modes are illustrations, not frequencies. The 10 shown were each wrong in every one of the 2 or 3 splits that tested them (lsf_47 and rtf_41 in 3), so each rests on more than one model. Across all 119, the most common confusions are Leaf Scald -> Rice Blast (15), Leaf Scald -> Rice Tungro (13) and Brown Spot -> Rice Blast (11) (see the cases block above).
 
 <!-- auto:hardware:begin -->
 ## Hardware

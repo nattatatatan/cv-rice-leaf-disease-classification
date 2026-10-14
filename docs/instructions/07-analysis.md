@@ -44,7 +44,7 @@ Prerequisites: runs exist (this phase grows incrementally; build `summarize` rig
   - **consistent failures**: wrong in every split where it was tested;
   - **challenging**: correct in some splits and wrong in others, or correct with low confidence (max prob < 0.5).
 - [x] Contact sheets: `cases_success.png`, `cases_failure.png`, `cases_challenging.png`, 8-12 images each, labelled `true -> pred (p)`, domain-tagged.
-- [ ] For each failure, Nattan writes a one-line hypothesis in `findings.md` (e.g. "lesions < 1% of image", "symptomatic leaf not in crop box", "Brown Spot lesions look like Blast", "motion blur"). Group them into 3-4 failure modes for the report.
+- [x] For each failure, Nattan writes a one-line hypothesis in `findings.md` (e.g. "lesions < 1% of image", "symptomatic leaf not in crop box", "Brown Spot lesions look like Blast", "motion blur"). Group them into 3-4 failure modes for the report. Done: four modes in `findings.md` (symptoms matching another class; look-alike lesions separated by border colour and position on the plant; symptom too fine at 448 x 224; field clutter).
 
 ### T7.5 Grad-CAM (Tier 4)
 - **Grad-CAM** colours the image regions that most increased the predicted class's score, computed from the gradients at the last convolutional (or Swin) stage. We use it to check whether the model looks at the leaf or at the background (a shortcut).
