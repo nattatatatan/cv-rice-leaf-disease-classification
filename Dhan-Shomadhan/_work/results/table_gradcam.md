@@ -1,0 +1,18 @@
+# Grad-CAM energy inside the annotated leaf: Plain (E2-swin-U) vs Method A (E3-A)
+
+Pairs are (annotated field image, split) where the image was a test or validation image, never a training image. Energy inside = the share of the Grad-CAM map (upsampled, not normalised) inside the annotated salient-leaf polygon; the leaf area share is what a uniform map would score. Mean +- std (ddof=1) over the pairs; the paired difference is per pair, other minus plain. The pairs of one image are not independent, hence the last block of each part, where each image counts once.
+
+| CAM of the | Subset | Pairs | Leaf area share (chance) | E2-swin-U energy inside | E3-A energy inside | E3-A - E2-swin-U (paired) | E3-A ahead in |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| predicted class | all pairs | 43 (24 images) | 0.072 | 0.244 +- 0.192 | 0.240 +- 0.209 | -0.004 +- 0.136 | 17 of 43 |
+| predicted class | test pairs | 22 (17 images) | 0.056 | 0.200 +- 0.152 | 0.187 +- 0.173 | -0.013 +- 0.092 | 8 of 22 |
+| predicted class | val pairs | 21 (16 images) | 0.089 | 0.291 +- 0.221 | 0.297 +- 0.232 | +0.006 +- 0.173 | 9 of 21 |
+| predicted class | all pairs, without the ambiguous images | 33 (18 images) | 0.084 | 0.284 +- 0.197 | 0.294 +- 0.209 | +0.011 +- 0.148 | 15 of 33 |
+| predicted class | test pairs, without the ambiguous images | 16 (12 images) | 0.065 | 0.237 +- 0.157 | 0.235 +- 0.179 | -0.003 +- 0.102 | 7 of 16 |
+| predicted class | all pairs, each image once (its splits averaged) | 24 (24 images) | 0.068 | 0.215 +- 0.175 | 0.226 +- 0.203 | +0.011 +- 0.138 | 10 of 24 |
+| true class | all pairs | 43 (24 images) | 0.072 | 0.220 +- 0.179 | 0.217 +- 0.197 | -0.003 +- 0.123 | 20 of 43 |
+| true class | test pairs | 22 (17 images) | 0.056 | 0.179 +- 0.156 | 0.185 +- 0.175 | +0.007 +- 0.093 | 10 of 22 |
+| true class | val pairs | 21 (16 images) | 0.089 | 0.263 +- 0.194 | 0.250 +- 0.216 | -0.013 +- 0.149 | 10 of 21 |
+| true class | all pairs, without the ambiguous images | 33 (18 images) | 0.084 | 0.254 +- 0.183 | 0.251 +- 0.204 | -0.003 +- 0.138 | 15 of 33 |
+| true class | test pairs, without the ambiguous images | 16 (12 images) | 0.065 | 0.215 +- 0.163 | 0.223 +- 0.187 | +0.009 +- 0.106 | 7 of 16 |
+| true class | all pairs, each image once (its splits averaged) | 24 (24 images) | 0.068 | 0.191 +- 0.154 | 0.200 +- 0.192 | +0.009 +- 0.106 | 12 of 24 |

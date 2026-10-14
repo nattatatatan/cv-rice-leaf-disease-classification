@@ -73,7 +73,7 @@ Subcommands (each can be a stub at first; later phases fill them in):
 | `prepare` | Index, cache, splits, audits, pseudo-masks. Idempotent: skips work whose outputs exist and are valid. |
 | `run --exp ID [--splits 0,1,2,3,4] [--device auto]` | Train and evaluate one experiment over the given splits. |
 | `summarize` | Aggregate all runs into tables and figures under `_work/results/` and `_work/figures/`. |
-| `gradcam --exp ID --split k` | Grad-CAM figures. |
+| `gradcam [--exp ID] [--compare ID] [--split k] [--runs-dir DIR]` | Grad-CAM of the plain model and Method A: figures of the success and failure images, the shortcut check on the annotated field images, and its `findings.md` section. Needs the retrained checkpoints (`runs/retrain/`). |
 | `predict --exp ID --image PATH` | Client-facing single-image prediction with class probabilities. |
 | `smoke` | Tiny end-to-end run: 20 images, 1 epoch, CPU, every code path (data, composites, segmenter, classifier, summarize). Must finish in < 3 min on the M2. |
 | `reproduce` | Runs `download-weights`, `prepare`, then all reported experiments and `summarize`. This is the one command the user manual tells the marker to run. |

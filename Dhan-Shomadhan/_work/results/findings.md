@@ -125,3 +125,18 @@ Hardware per run folder, read from each run's env.json:
 
 The runs were not all made on the same hardware, torch build and precision, so a small difference between experiment families can include hardware and numerics effects (fp16 autocast on CUDA against fp32 on the Mac, different GPUs and torch builds), not only the method. Comparisons inside one group share their hardware. Comparisons made in the tables that cross groups: E1-U vs E1-FF, E1-U vs E1-WW, E2-cnx-U vs E1-U, E2-swin-U vs E1-U, E2-swin-WF vs E1-WF. Read those gaps against the paired std. Training times (table_runtime) are only comparable inside a group.
 <!-- auto:hardware:end -->
+
+<!-- auto:gradcam:begin -->
+## Grad-CAM shortcut check (T7.5)
+
+Shortcut check: how much of the Grad-CAM map lies inside the hand-annotated salient leaf. 43 (image, split) pairs from 24 annotated field images (22 test, 21 validation; an image counts in every split where it was not a training image). The map explains the class the model predicted; it was computed on mps from the retrained checkpoints, whose predictions equal the reported runs' on 86 of 86 pairs checked. The leaf area share is the chance level: a uniform map would put exactly that share inside the polygon.
+
+- Leaf area share (chance): 0.072.
+- Plain (E2-swin-U): energy inside 0.244 +- 0.192 (3.4x chance).
+- Method A (E3-A): energy inside 0.240 +- 0.209 (3.3x chance).
+- Paired difference Method A (E3-A) - Plain (E2-swin-U): -0.004 +- 0.136; Method A (E3-A) ahead in 17 of 43 pairs.
+
+Sub-groups of the same difference: test pairs -0.013 +- 0.092 (8 of 22); validation pairs +0.006 +- 0.173 (9 of 21); without ambiguous images +0.011 +- 0.148 (15 of 33); each image once +0.011 +- 0.138 (10 of 24). With the true class explained instead of the predicted one: Plain (E2-swin-U) 0.220 +- 0.179, Method A (E3-A) 0.217 +- 0.197, difference -0.003 +- 0.123.
+
+Reading: Method A (E3-A) and Plain (E2-swin-U) put about the same share of their map on the leaf (per-image difference +0.011, 0.4 standard errors from zero), so this check shows no effect of the composites on where the model looks. The sign of the difference is not the same in all five subsets of the table. This is 24 images with one or two splits each, and Grad-CAM at the last stage has a very coarse grid, so read it as a direction and a size, not as proof.
+<!-- auto:gradcam:end -->

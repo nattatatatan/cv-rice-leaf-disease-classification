@@ -2637,6 +2637,106 @@ def predict_image(run_dir, image, device: str, data_root=None, out=print, seg_di
         out(f"segmenter   crop box x {x0}-{x1}, y {y0}-{y1}" + ("  (no leaf found: whole image)" if hook.last["fallback"] else f"  (leaf covers {100 * hook.last['area']:.0f}% of the image)"))
     return probs
 
+@dataclass(frozen=True)
+class GradCamResult:
+    """Grad-CAM of a batch at the resolution of the target layer."""
+
+    probs: np.ndarray  # [N, 5] softmax probabilities
+    targets: np.ndarray  # [N] explained class per image
+    cams: np.ndarray  # [N, h, w] float32, non-negative (after the ReLU), not normalised
+
+
+@contextlib.contextmanager
+def capture_activation(layer: nn.Module):
+    """Forward hook on ``layer``: the dict it yields holds the layer's latest output (still attached to the autograd graph).
+    The hook is removed on exit, also when the body raises."""
+    store: dict = {}
+    handle = layer.register_forward_hook(lambda module, inputs, output: store.__setitem__("activation", output))
+    try:
+        yield store
+    finally:
+        handle.remove()
+
+
+def cam_from_gradients(activation: torch.Tensor, gradient: torch.Tensor) -> torch.Tensor:
+    """The Grad-CAM maps [N, h, w] from the target layer's output and the gradient of the class score with respect to it (both
+    NCHW): channel weights = spatial mean of the gradient, map = ReLU(sum over channels of weight * activation)."""
+    weights = gradient.mean(dim=(2, 3), keepdim=True)
+    return torch.relu((weights * activation).sum(dim=1))
+
+
+def grad_cam(model: nn.Module, images: torch.Tensor, targets=None) -> GradCamResult:
+    """Grad-CAM of a batch of normalised float images [N, 3, H, W] already on the model's device. ``targets`` is one class index
+    per image; None explains the predicted class. The model is switched to eval mode (dropout off, as in evaluation)."""
+    model.eval()
+    layer = gradcam_target_layer(model)
+    with torch.enable_grad(), capture_activation(layer) as store:
+        logits = model(images)
+        raw = store["activation"]
+        chosen = logits.argmax(dim=1) if targets is None else torch.as_tensor(np.asarray(targets), dtype=torch.long, device=logits.device)
+        score = logits.gather(1, chosen[:, None]).sum()  # images do not interact in eval mode, so one sum gives every image's gradient
+        (gradient,) = torch.autograd.grad(score, raw)
+    cams = cam_from_gradients(cam_to_nchw(raw.detach(), model), cam_to_nchw(gradient, model))
+    return GradCamResult(torch.softmax(logits.detach().float(), dim=1).cpu().numpy(), chosen.cpu().numpy(), cams.float().cpu().numpy())
+
+
+def content_box(mode: str, size: tuple[int, int], image_shape) -> tuple[int, int, int, int]:
+    """(top, left, height, width) of the photo inside the network input of ``size`` under input mode ``mode``: the whole input
+    for `squash` and `rect` (a plain resize), the centred aspect-preserving fit for `pad` (the arithmetic of
+    ``resize_content`` and ``letterbox``)."""
+    height, width = size
+    if mode != "pad":
+        return 0, 0, height, width
+    scale = min(height / image_shape[0], width / image_shape[1])
+    content_h, content_w = max(1, round(image_shape[0] * scale)), max(1, round(image_shape[1] * scale))
+    return (height - content_h) // 2, (width - content_w) // 2, content_h, content_w
+
+
+def cam_on_image(cam: np.ndarray, mode: str, size: tuple[int, int], image_shape) -> np.ndarray:
+    """A target-layer map [h, w] on the pixel grid of the original image [H, W]: bilinear up to the network input, the photo's
+    region cut out (``content_box``), bilinear to the photo's size. Not normalised; values stay non-negative."""
+    height, width = size
+    canvas = cv2.resize(np.ascontiguousarray(cam, dtype=np.float32), (width, height), interpolation=cv2.INTER_LINEAR)
+    top, left, content_h, content_w = content_box(mode, size, image_shape)
+    content = canvas[top : top + content_h, left : left + content_w]
+    return np.maximum(cv2.resize(content, (image_shape[1], image_shape[0]), interpolation=cv2.INTER_LINEAR), 0.0)
+
+
+def normalise_cam(cam: np.ndarray) -> np.ndarray:
+    """Min-max scaling to [0, 1] for display (all zeros for a flat map)."""
+    low, high = float(cam.min()), float(cam.max())
+    return (cam - low) / (high - low) if high > low else np.zeros_like(cam)
+
+
+@dataclass(frozen=True)
+class Explanation:
+    """One image's Grad-CAM: the model's probabilities, the explained class and its map on the image's own pixel grid."""
+
+    probs: np.ndarray
+    target: int
+    cam: np.ndarray  # [H, W] of the original image, not normalised
+
+    @property
+    def predicted(self) -> int:
+        return int(np.argmax(self.probs))
+
+
+def explain_images(model: nn.Module, checkpoint: dict, rgbs: list, device: str, targets=None, batch_size: int = 8) -> list:
+    """Grad-CAM of uint8 RGB images (as ``classify_rgb`` takes them) under the evaluation pipeline of the checkpoint's
+    experiment, mapped back onto each image. ``targets`` is one class index per image; None explains the predicted class."""
+    if checkpoint["config"].get("seg_crop"):
+        raise ExperimentError(f"{checkpoint['exp_id']} is a Method B model (its input is a segmenter crop); Grad-CAM supports the plain pipeline only")
+    transform = ImageTransform(checkpoint["input_mode"], train=False, size_div=checkpoint["size_div"])
+    explanations = []
+    for start in range(0, len(rgbs), batch_size):
+        chunk = rgbs[start : start + batch_size]
+        batch = torch.from_numpy(np.stack([np.ascontiguousarray(transform(rgb).transpose(2, 0, 1)) for rgb in chunk]))
+        result = grad_cam(model, normalize_batch(batch, device), None if targets is None else list(targets)[start : start + batch_size])
+        for k, rgb in enumerate(chunk):
+            cam = cam_on_image(result.cams[k], checkpoint["input_mode"], transform.size, rgb.shape)
+            explanations.append(Explanation(result.probs[k], int(result.targets[k]), cam))
+    return explanations
+
 # ---- from 30_copy_paste.ipynb ----
 import math
 import time
@@ -4687,7 +4787,8 @@ import re
 from typing import NamedTuple
 
 ANALYSIS_SPLITS = (0, 1, 2, 3, 4)  # every reported number is a mean +- std over these five splits
-IGNORED_RUN_FOLDERS = ("sweep", "scratch", "retrain")  # under runs/: learning-rate sweeps, dev runs and retrained copies with best.pt (Grad-CAM), never results
+RETRAIN_RUNS_FOLDER = "retrain"  # runs/retrain/<run folder>/split_k/: the retrained copies of the Grad-CAM models, with best.pt
+IGNORED_RUN_FOLDERS = ("sweep", "scratch", RETRAIN_RUNS_FOLDER)  # under runs/: learning-rate sweeps, dev runs and retrained copies (Grad-CAM), never results
 SCORE_SUBSETS = ("white", "field", "mixed", "domain_balanced")
 SCORE_METRICS = ("macro_f1", "accuracy")
 PARTS = ("val", "test")
@@ -6293,6 +6394,447 @@ def summarize(data_root, out=print) -> None:
     write_text_atomic(path, update_findings_text(existing, blocks))
     out(f"summarize: wrote {path}")
 
+GRADCAM_COMPARE_EXPERIMENT = "E3-A"  # the second model: Method A (Method B was cut at gate G2)
+GRADCAM_MODEL_NAMES = {"E2-swin-U": "Plain", "E3-A": "Method A"}
+GRADCAM_PARTS = ("test", "val")  # the parts of a split in which an annotated image counts (never the training part)
+GRADCAM_KEEP_PX = 480  # the maps kept for the figures are shrunk to this long side (the energy uses the full-size map)
+GRADCAM_BATCH = 8
+GRADCAM_ENERGY_FILENAME = "gradcam_energy.csv"
+GRADCAM_TABLE_NAME = "table_gradcam"
+
+
+def gradcam_label(exp_id: str) -> str:
+    """'Plain (E2-swin-U)' for the known models, the ID otherwise."""
+    return f"{GRADCAM_MODEL_NAMES[exp_id]} ({exp_id})" if exp_id in GRADCAM_MODEL_NAMES else exp_id
+
+
+def checkpoint_run_dir(data_root, exp_id: str, choices, split_seed: int, runs_override=None) -> Path:
+    """The split folder holding ``best.pt`` for Grad-CAM: <runs_override>/<run folder>/split_k when given, else the reported run
+    folder if it kept a checkpoint, else runs/retrain/<run folder>/split_k (the retrained copies of batch5-checkpoints)."""
+    folder = run_folder_name(exp_id, choices)
+    roots = [Path(runs_override)] if runs_override is not None else [runs_dir(data_root), runs_dir(data_root) / RETRAIN_RUNS_FOLDER]
+    candidates = [split_dir(root / folder, split_seed) for root in roots]
+    for candidate in candidates:
+        if (candidate / "best.pt").is_file():
+            return candidate
+    raise ExperimentError(
+        f"{exp_id} split {split_seed}: no best.pt in {' or '.join(str(c) for c in candidates)}. The reported runs keep no checkpoints: "
+        "fetch runs/retrain/<ID>/split_k/ (Kaggle batch `batch5-checkpoints`, docs/instructions/kaggle-guide.md) or pass --runs-dir DIR"
+    )
+
+
+def reported_predictions(data_root, exp_id: str, choices, split_seed: int, part: str) -> dict | None:
+    """{filename: predicted class index} of the reported run (predictions_<part>.csv); None when the file is missing."""
+    path = split_dir(runs_dir(data_root) / run_folder_name(exp_id, choices), split_seed) / f"predictions_{part}.csv"
+    if not path.is_file():
+        return None
+    with open(path, newline="") as handle:
+        return {row["filename"]: CLASS_NAMES.index(row["pred"]) for row in csv.DictReader(handle)}
+
+
+def annotated_pairs(data_root, annotations=None, splits=ANALYSIS_SPLITS) -> list:
+    """The (image, split) pairs of the shortcut check: every annotated field image (dev and eval sets) in every split where it was a
+    test or a validation image, as the annotation entry plus ``split`` and ``part``. Sorted by image, then split."""
+    entries = [entry for which in SEG_EVAL_SETS for entry in annotation_entries(data_root, which, annotations)]
+    members = {k: {part: set(load_split(data_root, k)[part]) for part in GRADCAM_PARTS} for k in splits}
+    pairs = [{**entry, "split": k, "part": part} for entry in entries for k in splits for part in GRADCAM_PARTS if entry["filename"] in members[k][part]]
+    return sorted(pairs, key=lambda pair: (pair["filename"], pair["split"]))
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """What Grad-CAM said about one image under one model."""
+
+    probs: np.ndarray  # [5]
+    pred: int
+    cam: np.ndarray  # the predicted class's map, not normalised, long side <= GRADCAM_KEEP_PX
+    energy_pred: float | None  # share of the map inside the polygon (None without a polygon, NaN for an all-zero map)
+    energy_true: float | None  # the same for the true class's map
+    area: float | None  # the polygon's share of the image (the chance level of the energy share)
+    reported: bool | None  # the reported run predicted the same class (None: no predictions file)
+
+
+def cam_energy_share(cam: np.ndarray, mask: np.ndarray) -> float:
+    """Share of the map's total energy (sum of the non-normalised map) inside ``mask``; NaN for an all-zero map."""
+    total = float(cam.sum(dtype=np.float64))
+    return float(cam[mask].sum(dtype=np.float64)) / total if total > 0.0 else float("nan")
+
+
+def shrink_cam(cam: np.ndarray, long_side: int = GRADCAM_KEEP_PX) -> np.ndarray:
+    scale = long_side / max(cam.shape)
+    if scale >= 1.0:
+        return cam.astype(np.float32)
+    return cv2.resize(cam, (max(1, round(cam.shape[1] * scale)), max(1, round(cam.shape[0] * scale))), interpolation=cv2.INTER_AREA)
+
+
+def measure_model(data_root, choices, exp_id: str, tasks: dict, device: str, runs_override=None, out=print) -> dict:
+    """Grad-CAM of one model on ``tasks``, {(split, filename): {"true": class index, "part": "test"|"val", "polygon": fractional
+    (x, y) array or None}}. Each split's checkpoint is loaded once. Returns {(split, filename): Measurement}; the energy shares are
+    computed on the full-size maps, for the predicted class and for the true class, when the task has a polygon."""
+    measured = {}
+    for split_seed in sorted({k for k, _ in tasks}):
+        model, checkpoint = load_run_model(checkpoint_run_dir(data_root, exp_id, choices, split_seed, runs_override), device)
+        keys = sorted(key for key in tasks if key[0] == split_seed)
+        reported = {part: reported_predictions(data_root, exp_id, choices, split_seed, part) for part in GRADCAM_PARTS}
+        out(f"gradcam: {exp_id} split {split_seed}: {len(keys)} images on {device}")
+        for start in range(0, len(keys), GRADCAM_BATCH):
+            chunk = keys[start : start + GRADCAM_BATCH]
+            rgbs = [read_cached_rgb(data_root, name) for _, name in chunk]
+            predicted = explain_images(model, checkpoint, rgbs, device)
+            other = [i for i, key in enumerate(chunk) if tasks[key]["polygon"] is not None and tasks[key]["true"] != predicted[i].predicted]
+            truth = dict(zip(other, explain_images(model, checkpoint, [rgbs[i] for i in other], device, [tasks[chunk[i]]["true"] for i in other]))) if other else {}
+            for i, key in enumerate(chunk):
+                task, explanation = tasks[key], predicted[i]
+                energy_pred = energy_true = area = None
+                if task["polygon"] is not None:
+                    mask = rasterize_polygon(task["polygon"], rgbs[i].shape[:2])
+                    area = float(mask.mean())
+                    energy_pred = cam_energy_share(explanation.cam, mask)
+                    energy_true = energy_pred if i not in truth else cam_energy_share(truth[i].cam, mask)
+                table = reported[task["part"]]
+                measured[key] = Measurement(explanation.probs, explanation.predicted, shrink_cam(explanation.cam), energy_pred, energy_true, area,
+                                            None if table is None else table.get(key[1]) == explanation.predicted)
+        del model
+    return measured
+
+
+def energy_rows(pairs: list, measured: dict, exp_ids: tuple) -> list:
+    """One dict per pair for the CSV and the summaries: the annotation fields, ``area`` (the polygon's share of the image, the
+    chance level) and ``measured[exp_id]`` per model (a Measurement)."""
+    rows = []
+    for pair in pairs:
+        key = (pair["split"], pair["filename"])
+        rows.append({"filename": pair["filename"], "cls": pair["cls"], "set": pair["set"], "ambiguous": pair["ambiguous"],
+                     "split": pair["split"], "part": pair["part"],
+                     "area": measured[exp_ids[0]][key].area,
+                     **{exp_id: measured[exp_id][key] for exp_id in exp_ids}})
+    return rows
+
+
+def energy_csv(rows: list, exp_ids: tuple) -> str:
+    header = ["filename", "class", "set", "ambiguous", "split", "part", "leaf_area_share"]
+    for exp_id in exp_ids:
+        header += [f"{exp_id}_pred", f"{exp_id}_p_pred", f"{exp_id}_p_true", f"{exp_id}_energy_pred", f"{exp_id}_energy_true", f"{exp_id}_same_as_reported"]
+    body = []
+    for r in rows:
+        line = [r["filename"], r["cls"], r["set"], str(r["ambiguous"]).lower(), r["split"], r["part"], f"{r['area']:.4f}"]
+        for exp_id in exp_ids:
+            m = r[exp_id]
+            line += [CLASS_NAMES[m.pred], f"{m.probs[m.pred]:.3f}", f"{m.probs[CLASS_NAMES.index(r['cls'])]:.3f}", f"{m.energy_pred:.4f}",
+                     f"{m.energy_true:.4f}", "" if m.reported is None else str(m.reported).lower()]
+        body.append(line)
+    return csv_text(header, body)
+
+
+# The subsets of the pairs that the table and the findings report, as (label, predicate on a row).
+ENERGY_SUBSETS = (
+    ("all pairs", lambda r: True),
+    ("test pairs", lambda r: r["part"] == "test"),
+    ("val pairs", lambda r: r["part"] == "val"),
+    ("all pairs, without the ambiguous images", lambda r: not r["ambiguous"]),
+    ("test pairs, without the ambiguous images", lambda r: r["part"] == "test" and not r["ambiguous"]),
+)
+ENERGY_KEYS = (("energy_pred", "predicted class"), ("energy_true", "true class"))
+
+
+def energy_stats(rows: list, plain: str, other: str, key: str) -> dict:
+    """n (pairs with a finite value for both models), the images they cover, the mean leaf area share, mean and sample std
+    (ddof=1) of the energy inside for both models and of the paired difference other - plain, and the pairs in which ``other``
+    is ahead."""
+    pairs = [(r["area"], getattr(r[plain], key), getattr(r[other], key), r["filename"]) for r in rows]
+    pairs = [p for p in pairs if np.isfinite(p[1]) and np.isfinite(p[2])]
+    area, base, new = (np.array([p[i] for p in pairs], dtype=np.float64) for i in range(3))
+    return {"n": len(pairs), "images": len({p[3] for p in pairs}), "area": float(area.mean()) if len(pairs) else float("nan"),
+            plain: mean_std(list(base)), other: mean_std(list(new)), "diff": mean_std(list(new - base)), "ahead": int((new > base).sum())}
+
+
+def per_image_rows(rows: list, exp_ids: tuple) -> list:
+    """One row per image: the pairs of an image averaged (its splits), so that every image counts once."""
+    merged = []
+    for filename in sorted({r["filename"] for r in rows}):
+        group = [r for r in rows if r["filename"] == filename]
+        row = {**group[0], "area": float(np.mean([r["area"] for r in group]))}
+        for exp_id in exp_ids:
+            row[exp_id] = Measurement(group[0][exp_id].probs, group[0][exp_id].pred, group[0][exp_id].cam,
+                                      float(np.mean([r[exp_id].energy_pred for r in group])), float(np.mean([r[exp_id].energy_true for r in group])), row["area"], None)
+        merged.append(row)
+    return merged
+
+
+def format_stat(stat: tuple) -> str:
+    return f"{stat[0]:.3f} +- {stat[1]:.3f}"
+
+
+def table_gradcam(rows: list, plain: str, other: str, name: str = GRADCAM_TABLE_NAME) -> Table:
+    """The shortcut check as a table: for the predicted-class and the true-class maps, per subset of the pairs, the leaf area share
+    (chance level), the energy inside the leaf polygon of both models (mean +- std over the pairs) and the paired difference."""
+    table_rows = []
+    for key, key_label in ENERGY_KEYS:
+        blocks = [(label, [r for r in rows if keep(r)]) for label, keep in ENERGY_SUBSETS] + [("all pairs, each image once (its splits averaged)", per_image_rows(rows, (plain, other)))]
+        for label, subset in blocks:
+            if not subset:
+                continue
+            s = energy_stats(subset, plain, other, key)
+            table_rows.append([key_label, label, f"{s['n']} ({s['images']} images)", f"{s['area']:.3f}", format_stat(s[plain]), format_stat(s[other]),
+                               f"{s['diff'][0]:+.3f} +- {s['diff'][1]:.3f}", f"{s['ahead']} of {s['n']}"])
+    return Table(
+        name, f"Grad-CAM energy inside the annotated leaf: {gradcam_label(plain)} vs {gradcam_label(other)}",
+        ("CAM of the", "Subset", "Pairs", "Leaf area share (chance)", f"{plain} energy inside", f"{other} energy inside", f"{other} - {plain} (paired)", f"{other} ahead in"),
+        table_rows,
+        "Pairs are (annotated field image, split) where the image was a test or validation image, never a training image. Energy inside = the "
+        "share of the Grad-CAM map (upsampled, not normalised) inside the annotated salient-leaf polygon; the leaf area share is what a uniform "
+        "map would score. Mean +- std (ddof=1) over the pairs; the paired difference is per pair, other minus plain. The pairs of one image are "
+        "not independent, hence the last block of each part, where each image counts once.",
+    )
+
+import textwrap
+
+GRADCAM_ALPHA = 0.45  # weight of the colour map in the blend with the photo
+GRADCAM_COLORMAP = "turbo"
+GRADCAM_ANNOTATED_IMAGES = 8
+FOOTER_CHARS = 150  # characters per footer line at the footer's font size on a 5.8 inch sheet
+
+
+def blend_cam(rgb: np.ndarray, cam: np.ndarray, px: tuple[int, int]) -> np.ndarray:
+    """The photo shrunk to ``px`` = (width, height) with the normalised map in colour over it (weight GRADCAM_ALPHA). uint8 RGB."""
+    photo = cv2.resize(rgb, px, interpolation=cv2.INTER_AREA).astype(np.float32)
+    heat = cv2.resize(normalise_cam(cam).astype(np.float32), px, interpolation=cv2.INTER_LINEAR)
+    colour = pyplot().get_cmap(GRADCAM_COLORMAP)(np.clip(heat, 0.0, 1.0))[..., :3] * 255.0
+    return np.clip((1.0 - GRADCAM_ALPHA) * photo + GRADCAM_ALPHA * colour + 0.5, 0, 255).astype(np.uint8)
+
+
+def save_cam_sheet(path: Path, items: list, headings: list, title: str, footer: str) -> Path:
+    """A sheet of Grad-CAM groups. Each item: ``rgb``, ``domain``, ``caption`` (under the photo), ``cams`` (one map per heading
+    after the first), ``labels`` (one text per map) and optionally ``wrong`` (a bool per map, label in red) and ``polygon``
+    (fractional outline drawn on every tile). ``headings`` names the tiles of a group (the photo first)."""
+    plt = pyplot()
+    per_group, groups_per_row = len(headings), 2
+    width_in, margin, group_gap, tile_gap, tile_h, label_h, row_gap, head = 5.8, 0.08, 0.16, 0.03, 1.45, 0.34, 0.07, 0.36
+    tile_w = (width_in - 2 * margin - (groups_per_row - 1) * group_gap - groups_per_row * (per_group - 1) * tile_gap) / (groups_per_row * per_group)
+    n_rows = max(1, math.ceil(len(items) / groups_per_row))
+    footer = textwrap.fill(footer, width=FOOTER_CHARS)
+    foot = 0.1 + 0.085 * (footer.count("\n") + 1)
+    height_in = head + n_rows * (tile_h + label_h + row_gap) + foot
+    with plt.rc_context({"font.size": 6}):
+        fig = plt.figure(figsize=(width_in, height_in))
+        fig.text(margin / width_in, 1 - 0.04 / height_in, title, fontsize=6.3, fontweight="bold", va="top")
+        fig.text(margin / width_in, 0.05 / height_in, footer, fontsize=5.2, va="bottom", color="#333333", linespacing=1.2)
+        for slot, item in enumerate(items):
+            r, g = divmod(slot, groups_per_row)
+            top = height_in - head - r * (tile_h + label_h + row_gap)
+            rgb = item["rgb"]
+            scale = min(tile_w * FIGURE_DPI / rgb.shape[1], tile_h * FIGURE_DPI / rgb.shape[0])
+            px = (max(1, round(rgb.shape[1] * scale)), max(1, round(rgb.shape[0] * scale)))
+            w, h = px[0] / FIGURE_DPI, px[1] / FIGURE_DPI
+            for t in range(per_group):
+                left = margin + g * (group_gap + per_group * tile_w + (per_group - 1) * tile_gap) + t * (tile_w + tile_gap)
+                ax = fig.add_axes(((left + (tile_w - w) / 2) / width_in, (top - tile_h + (tile_h - h) / 2) / height_in, w / width_in, h / height_in))
+                tile = cv2.resize(rgb, px, interpolation=cv2.INTER_AREA) if t == 0 else blend_cam(rgb, item["cams"][t - 1], px)
+                ax.imshow(tile, extent=(0, 1, 1, 0), interpolation="none", aspect="auto")
+                if item.get("polygon") is not None:
+                    closed = np.vstack([item["polygon"], item["polygon"][:1]])
+                    ax.plot(closed[:, 0], closed[:, 1], color="black", linewidth=1.2, solid_joinstyle="round")
+                    ax.plot(closed[:, 0], closed[:, 1], color=ANNOTATION_OUTLINE, linewidth=0.6, solid_joinstyle="round")
+                ax.set_xlim(0, 1)
+                ax.set_ylim(1, 0)
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_edgecolor(DOMAIN_COLORS[item["domain"]])
+                    spine.set_linewidth(1.4)
+                if t == 0:
+                    ax.text(0.04, 0.985, DOMAIN_LABELS[item["domain"]].split()[0], transform=ax.transAxes, ha="left", va="top", fontsize=5.2,
+                            fontweight="bold", color="white" if item["domain"] == "white" else "black",
+                            bbox={"boxstyle": "square,pad=0.2", "fc": DOMAIN_COLORS[item["domain"]], "ec": "none"})
+                if r == 0:
+                    fig.text((left + tile_w / 2) / width_in, (top + 0.04) / height_in, headings[t], ha="center", va="bottom", fontsize=5.6, fontweight="bold")
+                wrong = t > 0 and item.get("wrong", [False] * per_group)[t - 1]
+                fig.text((left + tile_w / 2) / width_in, (top - tile_h - 0.03) / height_in, item["caption"] if t == 0 else item["labels"][t - 1],
+                         ha="center", va="top", fontsize=5.2, linespacing=1.15, color=OKABE_ITO["vermilion"] if wrong else "black")
+        return finish_figure(fig, path)
+
+
+def cam_label(measure: Measurement, true_index: int, extra: str = "") -> str:
+    """'true ->' over 'predicted (p)' (and an optional third line), for under a map."""
+    return f"{CLASS_NAMES[true_index]} ->\n{CLASS_NAMES[measure.pred]} ({measure.probs[measure.pred]:.2f})" + (f"\n{extra}" if extra else "")
+
+
+def case_items(data_root, picks: list, measured: dict, exp_ids: tuple) -> list:
+    """Sheet items for ``picks`` = [(case row, split)]: the photo and one map per model, labelled on that split."""
+    items = []
+    for row, split_seed in picks:
+        key, true_index = (split_seed, row["filename"]), CLASS_NAMES.index(row["true"])
+        found = [measured[exp_id][key] for exp_id in exp_ids]
+        items.append({"rgb": read_cached_rgb(data_root, row["filename"]), "domain": row["domain"], "caption": f"{row['filename']}\nsplit {split_seed}",
+                      "cams": [m.cam for m in found], "labels": [cam_label(m, true_index) for m in found], "wrong": [m.pred != true_index for m in found]})
+    return items
+
+
+def select_annotated_examples(rows: list, n: int = GRADCAM_ANNOTATED_IMAGES) -> list:
+    """The pairs of the annotated-leaf figure: test pairs of images that are not flagged ambiguous, one image per class in turn
+    (images in filename order, each once, its first split), so no class is skipped before another is repeated. No look at the
+    energies."""
+    queues = []
+    for cls in CLASS_NAMES:
+        seen, queue = set(), []
+        for r in sorted((r for r in rows if r["cls"] == cls and r["part"] == "test" and not r["ambiguous"]), key=lambda r: (r["filename"], r["split"])):
+            if r["filename"] not in seen:
+                seen.add(r["filename"])
+                queue.append(r)
+        queues.append(queue)
+    picked = []
+    while len(picked) < n and any(queues):
+        for queue in queues:
+            if queue and len(picked) < n:
+                picked.append(queue.pop(0))
+    return picked
+
+
+def annotated_items(data_root, pairs_by_key: dict, rows: list, exp_ids: tuple) -> list:
+    """Sheet items of the annotated-leaf figure: photo with the polygon, and each model's map with its energy inside."""
+    items = []
+    for r in rows:
+        true_index = CLASS_NAMES.index(r["cls"])
+        found = [r[exp_id] for exp_id in exp_ids]
+        items.append({"rgb": read_cached_rgb(data_root, r["filename"]), "domain": "field", "polygon": pairs_by_key[(r["split"], r["filename"])]["polygon"],
+                      "caption": f"{r['filename']}\nsplit {r['split']}, leaf {r['area']:.0%} of image",
+                      "cams": [m.cam for m in found], "labels": [cam_label(m, true_index, f"inside {m.energy_pred:.0%}") for m in found],
+                      "wrong": [m.pred != true_index for m in found]})
+    return items
+
+GRADCAM_SIGNIFICANT_SE = 2.0  # a paired difference counts as a difference when it is this many standard errors from zero
+
+
+def gradcam_reading(rows: list, plain: str, other: str) -> str:
+    """The plain-language reading of the shortcut check, by the fixed rule: judge the difference on the per-image averages (every
+    image once); it is a difference only beyond GRADCAM_SIGNIFICANT_SE standard errors of zero."""
+    images = energy_stats(per_image_rows(rows, (plain, other)), plain, other, "energy_pred")
+    mean, std = images["diff"]
+    standard_error = std / math.sqrt(images["n"])
+    sub_signs = {math.copysign(1.0, energy_stats(subset, plain, other, "energy_pred")["diff"][0])
+                 for subset in ([r for r in rows if keep(r)] for _, keep in ENERGY_SUBSETS) if subset}
+    consistent = len(sub_signs) == 1 and math.copysign(1.0, mean) in sub_signs
+    name, base = gradcam_label(other), gradcam_label(plain)
+    if abs(mean) < GRADCAM_SIGNIFICANT_SE * standard_error:
+        verdict = (f"{name} and {base} put about the same share of their map on the leaf (per-image difference {mean:+.3f}, "
+                   f"{abs(mean) / standard_error:.1f} standard errors from zero), so this check shows no effect of the composites on where the model looks.")
+    elif mean > 0:
+        verdict = (f"{name} puts more of its map on the annotated leaf than {base} (per-image difference {mean:+.3f}, {mean / standard_error:.1f} standard "
+                   f"errors from zero), which is the direction the motivation of Method A predicts: composites put leaves on mismatched backgrounds, "
+                   "so the background should carry less evidence.")
+    else:
+        verdict = (f"{name} puts less of its map on the annotated leaf than {base} (per-image difference {mean:+.3f}, {abs(mean) / standard_error:.1f} "
+                   "standard errors from zero), the opposite of what the motivation of Method A predicts, so this check does not support it.")
+    return (verdict + f" The sign of the difference is {'the same' if consistent else 'not the same'} in all five subsets of the table. "
+            f"This is {images['n']} images with one or two splits each, and Grad-CAM at the last stage has a very coarse grid, so read it as a "
+            "direction and a size, not as proof.")
+
+
+def gradcam_findings(rows: list, plain: str, other: str, device: str) -> str:
+    """The `auto:gradcam` section of findings.md: set-up, the numbers for the predicted-class maps and the true-class maps, a reading."""
+    all_pairs = energy_stats(rows, plain, other, "energy_pred")
+    per_image = energy_stats(per_image_rows(rows, (plain, other)), plain, other, "energy_pred")
+    by_part = {part: energy_stats([r for r in rows if r["part"] == part], plain, other, "energy_pred") for part in GRADCAM_PARTS}
+    clean = energy_stats([r for r in rows if not r["ambiguous"]], plain, other, "energy_pred")
+    true_view = energy_stats(rows, plain, other, "energy_true")
+    base, name = gradcam_label(plain), gradcam_label(other)
+    checked = [m.reported for r in rows for m in (r[plain], r[other]) if m.reported is not None]
+    paragraphs = [
+        f"Shortcut check: how much of the Grad-CAM map lies inside the hand-annotated salient leaf. {all_pairs['n']} (image, split) pairs from "
+        f"{all_pairs['images']} annotated field images ({by_part['test']['n']} test, {by_part['val']['n']} validation; an image counts in every split where it "
+        "was not a training image). The map explains the class the model predicted; it was computed on "
+        f"{device} from the retrained checkpoints, whose predictions equal the reported runs' on {sum(checked)} of {len(checked)} pairs checked. "
+        "The leaf area share is the chance level: a uniform map would put exactly that share inside the polygon.",
+        f"- Leaf area share (chance): {all_pairs['area']:.3f}.\n"
+        f"- {base}: energy inside {format_stat(all_pairs[plain])} ({all_pairs[plain][0] / all_pairs['area']:.1f}x chance).\n"
+        f"- {name}: energy inside {format_stat(all_pairs[other])} ({all_pairs[other][0] / all_pairs['area']:.1f}x chance).\n"
+        f"- Paired difference {name} - {base}: {all_pairs['diff'][0]:+.3f} +- {all_pairs['diff'][1]:.3f}; {name} ahead in {all_pairs['ahead']} of {all_pairs['n']} pairs.",
+        "Sub-groups of the same difference: "
+        + "; ".join(f"{label} {stats['diff'][0]:+.3f} +- {stats['diff'][1]:.3f} ({stats['ahead']} of {stats['n']})"
+                    for label, stats in (("test pairs", by_part["test"]), ("validation pairs", by_part["val"]),
+                                         ("without ambiguous images", clean), ("each image once", per_image)))
+        + f". With the true class explained instead of the predicted one: {base} {format_stat(true_view[plain])}, {name} {format_stat(true_view[other])}, "
+        f"difference {true_view['diff'][0]:+.3f} +- {true_view['diff'][1]:.3f}.",
+        "Reading: " + gradcam_reading(rows, plain, other),
+    ]
+    return "\n\n".join(paragraphs)
+
+
+def gradcam_tasks(case_picks: dict, pairs: list) -> dict:
+    """The images to explain, {(split, filename): {"true", "part", "polygon"}}: the figure images (test, no polygon) and the pairs."""
+    tasks = {}
+    for picks in case_picks.values():
+        for row, split_seed in picks:
+            tasks[(split_seed, row["filename"])] = {"true": CLASS_NAMES.index(row["true"]), "part": "test", "polygon": None}
+    for pair in pairs:
+        tasks[(pair["split"], pair["filename"])] = {"true": CLASS_NAMES.index(pair["cls"]), "part": pair["part"], "polygon": pair["polygon"]}
+    return tasks
+
+
+def gradcam_case_picks(rows: list, split_seed: int | None) -> dict:
+    """{category: [(case row, split)]} for the success and failure sheets: the images ``select_cases`` shows on the T7.4 contact
+    sheets, each on the first split where it was a test image (only ``split_seed`` when given; images it did not test are left out)."""
+    picks = {}
+    for category in ("success", "failure"):
+        picks[category] = []
+        for row in select_cases(rows, category):
+            splits = [k for k, pred in zip(ANALYSIS_SPLITS, row["preds"]) if pred and (split_seed is None or k == split_seed)]
+            if splits:
+                picks[category].append((row, splits[0]))
+    return picks
+
+
+def run_gradcam(data_root, exp_id: str | None, compare_id: str, device: str, split_seed: int | None = None, runs_override=None, out=print) -> list:
+    """T7.5: the Grad-CAM figures of the success and failure images, the shortcut check on the annotated field images and its
+    findings section. ``exp_id`` is the plain model whose cases are shown (default: the recommended one), ``compare_id`` the second
+    model. With ``split_seed`` only that split is used and the files get a `_split<k>` suffix. Returns the files written."""
+    data_root = Path(data_root)
+    choices = load_choices(data_root)
+    exp_id = exp_id or recommended_experiment(choices)
+    if not exp_id:
+        raise ExperimentError(f"no --exp given and {choices.path} has no 'recommended' experiment (gate G2). Pass --exp ID, for example --exp E2-swin-U")
+    exp_ids = (exp_id, compare_id)
+    exp, problems = load_experiment(data_root, exp_id, choices)
+    if exp is None:
+        raise ExperimentError(f"{exp_id} has no complete reported runs ({'; '.join(problems)}), so its cases cannot be selected")
+    tag = "" if split_seed is None else f"_split{split_seed}"
+    rows = case_rows(pool_predictions(data_root, exp))
+    case_picks = gradcam_case_picks(rows, split_seed)
+    pairs = annotated_pairs(data_root, splits=ANALYSIS_SPLITS if split_seed is None else (split_seed,))
+    tasks = gradcam_tasks(case_picks, pairs)
+    missing = sorted({name for _, name in tasks if not (cache_dir(data_root) / name).is_file()})
+    if missing:
+        raise DatasetError(f"the image cache lacks {len(missing)} images (for example {missing[0]}); run `prepare`")
+    measured = {e: measure_model(data_root, choices, e, tasks, device, runs_override, out) for e in dict.fromkeys(exp_ids)}
+    written = []
+    headings = ["Photo", *[gradcam_label(e) for e in exp_ids]]
+    footer = (f"Grad-CAM of the predicted class at the last stage ({GRADCAM_COLORMAP} at {GRADCAM_ALPHA:.0%}; red = most evidence for the class, each map scaled to its own maximum). "
+              "Label under a map: true -> predicted (probability of the predicted class) of that model on that split; red = wrong.")
+    for category, picks in case_picks.items():
+        if picks:
+            adjective = {"success": "consistent successes", "failure": "consistent failures"}[category]
+            written.append(save_cam_sheet(figures_dir(data_root) / f"gradcam_{category}{tag}.png", case_items(data_root, picks, measured, exp_ids), headings,
+                                          f"{exp_id}: Grad-CAM of the {adjective} (test images, one split each)", footer))
+    if pairs:
+        rows_energy = energy_rows(pairs, measured, exp_ids)
+        pairs_by_key = {(p["split"], p["filename"]): p for p in pairs}
+        examples = select_annotated_examples(rows_energy)
+        written.append(save_cam_sheet(figures_dir(data_root) / f"gradcam_annotated{tag}.png", annotated_items(data_root, pairs_by_key, examples, exp_ids), headings,
+                                      "Grad-CAM against the annotated salient leaf (yellow outline), test images", footer.replace("Label under a map", "Under a map: share of the map inside the outline; label")))
+        path = results_dir(data_root) / f"gradcam_energy{tag}.csv"
+        write_text_atomic(path, energy_csv(rows_energy, exp_ids))
+        written.append(path)
+        written.extend(write_table(data_root, table_gradcam(rows_energy, exp_id, compare_id, GRADCAM_TABLE_NAME + tag)))
+        if split_seed is None:
+            findings = results_dir(data_root) / "findings.md"
+            existing = read_file_bytes(findings).decode("utf-8") if findings.is_file() else None
+            block = auto_block("gradcam", "Grad-CAM shortcut check (T7.5)", gradcam_findings(rows_energy, exp_id, compare_id, device))
+            write_text_atomic(findings, update_findings_text(existing, {"gradcam": block}))
+            written.append(findings)
+    for path in written:
+        out(f"gradcam: wrote {path}")
+    return written
+
 # ---- from 90_cli.ipynb ----
 import argparse
 import shutil
@@ -6931,6 +7473,16 @@ def cmd_predict(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     return EXIT_OK
 
+
+def cmd_gradcam(args: argparse.Namespace) -> int:
+    """T7.5: Grad-CAM figures and the shortcut check on the annotated field images (see `run_gradcam`)."""
+    try:
+        run_gradcam(Path(args.data_root), args.exp, args.compare, resolve_device(args.device), args.split, args.runs_dir)
+    except (ExperimentError, DatasetError, RuntimeError) as exc:
+        print(f"gradcam: FAIL - {exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    return EXIT_OK
+
 def cmd_gate(args: argparse.Namespace) -> int:
     try:
         run_gate(Path(args.data_root), args.gate, cut=tuple(args.cut or ()), force=args.force)
@@ -7263,8 +7815,16 @@ def _configure_gate(parser: argparse.ArgumentParser) -> None:
 
 
 def _configure_gradcam(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--exp", required=True, metavar="ID", help="experiment ID")
-    parser.add_argument("--split", type=int, required=True, metavar="K", help="split seed")
+    parser.add_argument("--exp", default=None, metavar="ID",
+                        help="the plain model, whose T7.4 success and failure images are shown (default: the recommended one in choices.json)")
+    parser.add_argument("--compare", default=GRADCAM_COMPARE_EXPERIMENT, metavar="ID",
+                        help=f"the model compared with it (default: {GRADCAM_COMPARE_EXPERIMENT}, Method A)")
+    parser.add_argument("--split", type=int, default=None, metavar="K",
+                        help="use split K only and add _splitK to every file name (default: every image on a split where it was a test image, "
+                             "annotated images on every split where they were test or validation; findings.md is only written without --split)")
+    parser.add_argument("--runs-dir", type=Path, default=None, metavar="DIR",
+                        help="DIR/<run folder>/split_<k>/best.pt instead of the retrained checkpoints (default: _work/runs/<run folder>/ if it kept "
+                             "best.pt, else _work/runs/retrain/<run folder>/)")
 
 
 def _configure_predict(parser: argparse.ArgumentParser) -> None:
@@ -7336,7 +7896,12 @@ COMMANDS = (
         "time inference per image of the three backbones on this device and write _work/results/inference_benchmark.json (summarize reads it)",
         cmd_benchmark,
     ),
-    Command("gradcam", "Grad-CAM figures for one experiment and split", not_implemented("gradcam", "07"), _configure_gradcam),
+    Command(
+        "gradcam",
+        "Grad-CAM of the plain model and Method A: figures of the success and failure images, and the shortcut check on the annotated field images",
+        cmd_gradcam,
+        _configure_gradcam,
+    ),
     Command("predict", "classify a single image and print class probabilities", cmd_predict, _configure_predict),
     Command("smoke", "tiny end-to-end check: imports, device, data path, one tiny experiment and predict", cmd_smoke),
     Command(
