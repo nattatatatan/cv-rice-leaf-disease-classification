@@ -175,3 +175,7 @@ Sub-groups of the same difference: test pairs -0.013 +- 0.092 (8 of 22); validat
 
 Reading: Method A (E3-A) and Plain (E2-swin-U) put about the same share of their map on the leaf (per-image difference +0.011, 0.4 standard errors from zero), so this check shows no effect of the composites on where the model looks. The sign of the difference is not the same in all five subsets of the table. This is 24 images with one or two splits each, and Grad-CAM at the last stage has a very coarse grid, so read it as a direction and a size, not as proof.
 <!-- auto:gradcam:end -->
+
+## Possible background shortcut for Rice Tungro (field)
+
+On two correct Rice Tungro field predictions, `rtf_13` (`gradcam_success.png`) and `rtf_24` (`gradcam_annotated.png`), both models put most of the Grad-CAM map on muddy water and soil, not on the leaf. Nattan counted muddy water in the background of about 40 of the 76 Rice Tungro field photos. In the annotated sample, the Tungro leaf covers only 2% of the image on average (6-12% for the other classes), and 0.063 of the plain model's map falls inside it: 3.2x chance, against 3.9-4.2x for Brown Spot, Leaf Scald and Rice Blast (Sheath Blight, whose annotated leaves are the largest, is at 2.0x). So the model may partly recognise the Tungro scene rather than the symptom. This is a possible shortcut, not a confirmed one: the share of muddy-water backgrounds in the other classes was not counted, and the annotated sample has 9 Tungro pairs. A check would be the Tungro field F1 on photos with and without muddy water.
