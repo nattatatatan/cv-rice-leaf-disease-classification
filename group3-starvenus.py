@@ -2,14 +2,61 @@
 
 Group: group3-starvenus
 
-GENERATED FILE - DO NOT EDIT. It is built from the notebooks in notebooks/ by
-tools/export_py.py. Edit the notebooks and re-run the export instead.
-
 Run `python group3-starvenus.py --help` to list the commands.
+
+How to read this file
+---------------------
+It is self-contained: the four data blocks at the top are embedded snapshots of
+files that live outside the repo's data tree (annotations/ and the frozen
+choices.json), and the rest is the pipeline code, stitched in order from six
+notebooks by tools/export_py.py. Each stitch point is marked:
+
+    # ---- embedded:<source file> ----     a snapshot of one external file
+    # ---- from <NN_name>.ipynb ----      one notebook, in notebook order
+
+Sections in order:
+    10_data           dataset audit, the image index, cache, splits,
+                      duplicate audit, white pseudo-masks, prepare
+    20_classifier     training and evaluation of the classifier rows
+    30_copy_paste     Method A: copy-paste composites (white leaves onto
+                      field backgrounds as extra training samples)
+    40_segmentation   leaf annotations, the S-seg segmenter,
+                      Method B (crop to the predicted leaf box)
+    50_analysis       summarize: metric tables, figures, findings
+    90_cli            the experiment registry (_ROWS/EXPERIMENTS) and the
+                      argparse CLI that ties the commands together
+
+Commands (main pipeline in order): `prepare` (build <data_root>/_work/:
+index, cache, duplicate audit, splits, pseudo-masks, annotation selection),
+`run --exp ID` (train one experiment or a group such as E1 on each split),
+`choose-lr` / `choose-composites` (freeze learning-rate and Method A choices),
+`gate g0|g1|g2` (freeze the input mode, the backbone, then the recommended
+method into choices.json), `summarize` (tables, figures, findings), and
+`reproduce` (runs the whole chain end to end).
+
+Everything the code generates lives under <data_root>/_work/: cache/ (resized
+images), splits/ (the five train/val/test split JSONs), runs/ (one folder per
+experiment, split_k/ inside), results/ (choices.json and audit outputs),
+figures/, masks/ and annotations/. The dataset itself (default root
+Dhan-Shomadhan/, the Kaggle rice leaf disease images plus their CSV) is never
+modified.
+
+The five train/val/test splits are shared by every experiment: each keeps all
+members of every duplicate group (from DUPLICATE_GROUPS) in one side, so no
+near-duplicate image straddles train and test. Gates and choices: g0 picks the
+input mode, g1 the backbone, g2 the recommended method; each writes its decision
+with evidence into _work/results/choices.json. That file is what runs read so
+that all experiments train with the same frozen decisions; its shipped content
+is embedded at the top of this file as FROZEN_CHOICES.
 """
 
 # ---- embedded:annotations/duplicate_groups.json ----
-# Embedded from annotations/duplicate_groups.json by tools/export_py.py. Edit that file, not this block.
+# Snapshot of annotations/duplicate_groups.json, embedded by tools/export_py.py so this file is
+# self-contained. Edit the source file and re-export, not this block.
+# Each inner list is one group of near-duplicate images (consecutive shots of the same leaf, e.g.
+# rtf_7..rtf_10). The split builder (prepare, in section 10_data) keeps every member of a group on
+# the same side of a split, so no near-duplicate can straddle train and test. Validated against the
+# image index by validate_duplicate_groups(); `prepare` also reports them as its duplicate audit.
 DUPLICATE_GROUPS = [
     ["bs_wb_4.jpg", "bs_wb_5.jpg"],
     ["bs_wb_55.jpg", "bs_wb_56.jpg"],
@@ -51,7 +98,14 @@ DUPLICATE_GROUPS = [
 
 
 # ---- embedded:annotations/white_rejects.json ----
-# Embedded from annotations/white_rejects.json by tools/export_py.py. Edit that file, not this block.
+# Snapshot of annotations/white_rejects.json, embedded by tools/export_py.py. Edit the source file,
+# not this block.
+# White-background pseudo-masks are produced automatically (section 30_copy_paste) and are not
+# always right. This records the manual QC verdict: "rejects" maps each failed image to the reason
+# and the split it falls in ("train"/"val"/"test"). 33 of 769 white images were rejected (4.3%).
+# A rejected image is never a composite source (Method A) nor a segmenter target (S-seg/Method B).
+# white_rejects() returns exactly this list on the full expected dataset; the frozen fingerprint
+# covers it, so changing the list changes every Method A / segmenter fingerprint.
 WHITE_REJECTS = {
     "note": "T5.1 white pseudo-mask rejects: first pass by the agent, then Nattan's visual review of pseudo_mask_qc_*.png (MASK_V_MIN 20, MASK_CLOSE_KSIZE 45). 33 of 769 rejected (4.3%). A rejected leaf is never a composite source or a segmenter target. The review record is _work/results/white_mask_first_pass.txt.",
     "rejects": {
@@ -93,7 +147,13 @@ WHITE_REJECTS = {
 
 
 # ---- embedded:annotations/field_salient_leaf.json ----
-# Embedded from annotations/field_salient_leaf.json by tools/export_py.py. Edit that file, not this block.
+# Snapshot of annotations/field_salient_leaf.json, embedded by tools/export_py.py. Edit the source
+# file, not this block.
+# Manual leaf outlines for field-background images: one polygon per annotated image, as fractional
+# (x, y) points in [0, 1] relative to image width and height. `ambiguous` flags a hard image
+# (the `annotations` command draws these for review). Field images have no clean white background,
+# so these hand polygons are the ground truth for judging the segmenter (S-seg) and Method B
+# crops. `prepare` writes the selection of images to annotate; this file holds the result.
 FIELD_ANNOTATIONS = {
     "bsf_11.jpg": {
         "polygon": [
@@ -398,7 +458,16 @@ FIELD_ANNOTATIONS = {
 
 
 # ---- embedded:Dhan-Shomadhan/_work/results/choices.json ----
-# Embedded from Dhan-Shomadhan/_work/results/choices.json by tools/export_py.py. Edit that file, not this block.
+# Snapshot of the choices.json written into the data root's _work/results/ by the gates and
+# chooser commands, embedded by tools/export_py.py. Edit the source file, not this block.
+# Every decision frozen during the project, each with the evidence that produced it:
+#   "input_mode"     gate g0: squash vs pad vs rect (mean validation mixed macro-F1 over 5 splits)
+#   "lr"             choose-lr: one learning rate per backbone, from the split-0 sweep
+#   "backbone"       gate g1: the winning backbone of E2
+#   "composite_n_factor"  choose-composites: Method A composites per epoch
+#   "recommended"    gate g2: the method the report recommends (experiment ID)
+# `prepare` copies this embedded dict to _work/results/choices.json, so a reviewer can rerun every
+# experiment with exactly the decisions the shipped results used.
 FROZEN_CHOICES = {
     "lr": {
         "resnet50": {
@@ -846,6 +915,11 @@ FROZEN_CHOICES = {
 
 
 # ---- from 10_data.ipynb ----
+# One of six sections stitched by tools/export_py.py; the marker above is its stitch point. This
+# section audits and indexes the dataset (LABEL_TABLE/EXPECTED_COUNTS, filename prefixes like
+# bs_wb_ for "Brown Spot, white background"), hashes and caches the images, builds the five splits
+# that keep duplicate groups together, audits duplicates, generates the white pseudo-masks, and
+# assembles the `prepare` command.
 import csv
 import hashlib
 import json
@@ -1997,6 +2071,9 @@ def run_data_smoke(data_root, n_images: int = 20, workers: int = 2, log=print, e
             extra_checks(tmp_root, selected)
 
 # ---- from 20_classifier.ipynb ----
+# Training and evaluation: the backbone and input-mode constants, ExperimentConfig validation,
+# the run command that trains one split (and the optional --sweep-lr variant), checkpointing and
+# the metrics.json written per split.
 import gc
 import math
 import platform
@@ -2069,7 +2146,8 @@ class ExperimentConfig:
             raise ValueError(f"{self.exp_id}: kind must be one of {KINDS}, got {self.kind!r}")
         if self.backbone is not None and self.backbone not in BACKBONES and self.kind == "classifier":
             raise ValueError(f"{self.exp_id}: unknown backbone {self.backbone!r}")
-        if self.kind == "segmenter" and self.backbone not in SEG_ARCHITECTURES:  # SEG_ARCHITECTURES: 40_segmentation.ipynb
+        # SEG_ARCHITECTURES is defined later in this file (section 40_segmentation).
+        if self.kind == "segmenter" and self.backbone not in SEG_ARCHITECTURES:
             raise ValueError(f"{self.exp_id}: unknown segmenter {self.backbone!r}, expected one of {tuple(SEG_ARCHITECTURES)}")
         if self.input_mode is not None and self.input_mode not in INPUT_MODES:
             raise ValueError(f"{self.exp_id}: unknown input mode {self.input_mode!r}")
@@ -3186,6 +3264,8 @@ def explain_images(model: nn.Module, checkpoint: dict, rgbs: list, device: str, 
     return explanations
 
 # ---- from 30_copy_paste.ipynb ----
+# Method A: the white pseudo-mask recipe and the copy-paste composites that paste white-background
+# leaves onto field backgrounds as extra training samples, plus the composite figures `prepare` writes.
 import math
 import time
 
@@ -4243,6 +4323,9 @@ def build_composite_source(data_root, split_seed: int, seed: int, *, n_factor: f
     return CompositeSource(data_root, split_seed, min(n, limit) if limit else n, seed, pool=pool)
 
 # ---- from 40_segmentation.ipynb ----
+# Leaf segmentation: the annotation selection (which field images to outline), the S-seg segmenter
+# (LRASPP-MobileNetV3, trained on composites + white pseudo-masks), Method B (crop to the predicted
+# leaf box, then classify), and the `annotations` command for the manual polygon workflow.
 ANNOTATION_SEED = 2026
 ANNOTATIONS_PER_CLASS = 6
 ANNOTATION_DEV_PER_CLASS = 2
@@ -5231,6 +5314,9 @@ def run_seg_split(resolved: "ResolvedExperiment", split_seed: int, *, data_root,
     return {"status": "done", "metrics": metrics, "out_dir": out_dir}
 
 # ---- from 50_analysis.ipynb ----
+# Reading run folders and turning them into the report: the summarize command (metric tables,
+# figures, findings.md), the fingerprint checks that prove a run folder matches its config, and
+# the domain-balanced scoring.
 import re
 from typing import NamedTuple
 
@@ -7348,6 +7434,11 @@ def run_gradcam(data_root, exp_id: str | None, compare_id: str, device: str, spl
     return written
 
 # ---- from 90_cli.ipynb ----
+# The experiment registry and the CLI. _ROWS/EXPERIMENTS below define every experiment ID the
+# report mentions (E0 input-mode ablation, E1 domain rows, E2 backbones, E3-A Method A, S-seg and
+# E4-B Method B, X-* analysis-only rows); resolve_experiment turns an ID into a concrete config
+# with backbone/input_mode/lr filled in from choices.json. The argparse parser at the end of this
+# section wires up every command named in the module docstring.
 import argparse
 import shutil
 import sys
